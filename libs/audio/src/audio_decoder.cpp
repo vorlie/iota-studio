@@ -1,5 +1,7 @@
 #include "iota/audio/audio_decoder.hpp"
 
+#include "iota/core/utf8_path.hpp"
+
 #include "miniaudio.h"
 
 #include <windows.h>
@@ -137,11 +139,11 @@ void probeTagsWithFfprobe(const std::filesystem::path& path, AudioTrackData& tra
     const std::string key = asciiLower(std::string_view(line).substr(0, eq));
     const std::string val = line.substr(eq + 1);
     if (key == "tag:title") {
-      track.title = val;
+      track.title = iota::core::sanitizeUtf8(val);
     } else if (key == "tag:artist") {
-      track.artist = val;
+      track.artist = iota::core::sanitizeUtf8(val);
     } else if (key == "tag:album") {
-      track.album = val;
+      track.album = iota::core::sanitizeUtf8(val);
     }
   }
 }
@@ -180,16 +182,13 @@ std::optional<AudioTrackData> decodeWithFfmpeg(const std::filesystem::path& path
   AudioTrackData track;
   track.sampleRate = std::max(8000, targetSampleRate);
   track.channels = 2;
-  const auto u8Path = path.u8string();
-  track.filePath = u8Path.empty()
-                       ? path.string()
-                       : std::string(reinterpret_cast<const char*>(u8Path.data()), u8Path.size());
+  track.filePath = iota::core::pathToUtf8(path);
   track.interleavedPcm.resize(stereoAligned);
   std::memcpy(track.interleavedPcm.data(), proc.stdoutBytes.data(), stereoAligned * sizeof(float));
 
   probeTagsWithFfprobe(path, track);
   if (track.title.empty()) {
-    track.title = path.stem().string();
+    track.title = iota::core::pathStemUtf8(path);
   }
   rebuildMonoAndDuration(track);
   return track;
@@ -211,8 +210,8 @@ std::optional<AudioTrackData> decodeWithMiniaudio(const std::filesystem::path& p
   AudioTrackData track;
   track.sampleRate = static_cast<int>(decoder.outputSampleRate);
   track.channels = 2;
-  track.filePath = path.string();
-  track.title = path.stem().string();
+  track.filePath = iota::core::pathToUtf8(path);
+  track.title = iota::core::pathStemUtf8(path);
 
   constexpr ma_uint64 kChunkFrames = 8192;
   std::vector<float> chunk(static_cast<size_t>(kChunkFrames) * 2);
@@ -268,9 +267,9 @@ void rebuildMonoAndDuration(AudioTrackData& track) {
 std::optional<AudioTrackData> decodeAudioFile(const std::filesystem::path& path,
                                               int targetSampleRate,
                                               std::string* outError) {
-  if (!std::filesystem::exists(path)) {
+  if (!iota::core::pathExistsNoThrow(path)) {
     if (outError) {
-      *outError = "Audio file does not exist: " + path.string();
+      *outError = "Audio file does not exist: " + iota::core::pathToUtf8(path);
     }
     return std::nullopt;
   }

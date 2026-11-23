@@ -79,6 +79,21 @@ iota::core::Vec2 evalSlot(const iota::model::MeasuredVar& slot,
   if (m == "Beat") {
     return {a * ctx.beat, b * ctx.beat};
   }
+  if (m == "SoundKeys1" || m == "SoundKeys2" || m == "SoundKeys3") {
+    const size_t idx = static_cast<size_t>(m.back() - '1');
+    const float v = ctx.soundKeys[idx];
+    return {a * v, b * v};
+  }
+  if (m == "SoundKeysShake1" || m == "SoundKeysShake2" || m == "SoundKeysShake3") {
+    const size_t idx = static_cast<size_t>(m.back() - '1');
+    const float mag = std::clamp(active ? (ctx.soundKeys[idx] * 2.5f) : 0.0f, 0.0f, 1.0f);
+    const auto s = sampleHarmonicShake(time * 0.5f * mag * b, false);
+    const float gain = mag * mag * a * 0.06f;
+    const iota::core::Vec2 target{(s.x - 0.5f) * gain, (s.y - 0.5f) * gain};
+    const float alpha = frameRateIndependentAlpha(0.8f, ctx.dt);
+    state.prev = {lerpf(state.prev.x, target.x, alpha), lerpf(state.prev.y, target.y, alpha)};
+    return state.prev;
+  }
   if (m == "TrackPosition") {
     const float p = (ctx.trackDurationSec > 1e-4)
                         ? std::clamp(static_cast<float>(ctx.trackPositionSec / ctx.trackDurationSec), 0.0f, 1.0f)

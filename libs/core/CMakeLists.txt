@@ -1,5 +1,6 @@
 add_library(iota_core STATIC
   src/types.cpp
+  src/utf8_path.cpp
   src/zip_archive.cpp
   src/procedural_assets.cpp
 )

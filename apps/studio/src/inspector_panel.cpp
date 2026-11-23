@@ -1,5 +1,6 @@
 #include "inspector_panel.hpp"
 
+#include "asset_browser_panel.hpp"
 #include "iota/core/types.hpp"
 #include "iota/model/measured_var.hpp"
 
@@ -433,6 +434,18 @@ void renderPropertyEntry(const std::string& key,
         actions.modified = true;
       }
       markDeactivated("Change URI");
+      if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetDragDropPayload)) {
+          const char* dropped = static_cast<const char*>(payload->Data);
+          if (dropped != nullptr && *dropped != '\0') {
+            s = dropped;
+            actions.modified = true;
+            actions.undoSnapshotNeeded = true;
+            actions.editLabel = "Drop Asset onto " + key;
+          }
+        }
+        ImGui::EndDragDropTarget();
+      }
       if (ImGui::SmallButton("Pick")) {
         ImGui::OpenPopup("AssetPickPopup");
       }
@@ -466,14 +479,25 @@ void renderPropertyEntry(const std::string& key,
         entry.value = std::string{};
       }
       auto& s = std::get<std::string>(entry.value);
-      if (spec.choices.empty()) {
+      std::vector<std::string> dynChoices;
+      const auto* choiceList = &spec.choices;
+      if (key == "measureWhat" && !spec.choices.empty()) {
+        dynChoices = spec.choices;
+        for (std::string_view m : iota::model::allMeasureWhatModes()) {
+          if (std::find(dynChoices.begin(), dynChoices.end(), m) == dynChoices.end()) {
+            dynChoices.emplace_back(m);
+          }
+        }
+        choiceList = &dynChoices;
+      }
+      if (choiceList->empty()) {
         if (drawInputTextString("##v", s)) {
           actions.modified = true;
         }
         markDeactivated("Edit");
       } else {
         if (ImGui::BeginCombo("##v", s.c_str())) {
-          for (const auto& rawChoice : spec.choices) {
+          for (const auto& rawChoice : *choiceList) {
             std::string label = rawChoice;
             const size_t colon = rawChoice.find(':');
             if ((spec.tag == PropertyTypeTag::Asset || spec.tag == PropertyTypeTag::ProAsset) &&
@@ -500,14 +524,25 @@ void renderPropertyEntry(const std::string& key,
       ImGui::TableNextRow();
       const bool open = drawTableTreeLabelCell(key, entry.hint, depth, true);
       ImGui::TableSetColumnIndex(1);
-      if (!spec.choices.empty()) {
+      std::vector<std::string> dynChoices;
+      const auto* choiceList = &spec.choices;
+      if (key == "measureWhat" && !spec.choices.empty()) {
+        dynChoices = spec.choices;
+        for (std::string_view m : iota::model::allMeasureWhatModes()) {
+          if (std::find(dynChoices.begin(), dynChoices.end(), m) == dynChoices.end()) {
+            dynChoices.emplace_back(m);
+          }
+        }
+        choiceList = &dynChoices;
+      }
+      if (!choiceList->empty()) {
         if (!std::holds_alternative<std::string>(entry.value)) {
           entry.value = std::string{};
         }
         auto& cur = std::get<std::string>(entry.value);
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::BeginCombo("##variant", cur.c_str())) {
-          for (const auto& ch : spec.choices) {
+          for (const auto& ch : *choiceList) {
             if (ImGui::Selectable(ch.c_str(), cur == ch)) {
               cur = ch;
               actions.modified = true;

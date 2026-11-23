@@ -1,12 +1,17 @@
 #pragma once
 
+#include "asset_browser_panel.hpp"
+#include "project_manager_modal.hpp"
+
 #include "iota/audio/audio_engine.hpp"
 #include "iota/engine/scene_renderer.hpp"
 #include "iota/export/video_exporter.hpp"
 #include "iota/model/command_stack.hpp"
 #include "iota/model/scene.hpp"
+#include "iota/preset_io/project_manager.hpp"
 #include "iota/rhi/gl45_device.hpp"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -33,12 +38,21 @@ class EditorApp {
   void drawMenuBar();
   void drawViewportPanel();
   void drawHierarchyPanel();
+  void drawAssetBrowserPanel();
   void drawInspectorPanel();
   void drawAudioTimelinePanel();
+  void drawSoundKeysPanel();
+  void drawProjectManagerModal();
   void drawExportModal();
   void handleShortcuts();
 
   void pushUndoState(std::string label);
+  void updateWindowTitle();
+  void applyProjectMetadata(const iota::model::ProjectMetadata& meta);
+  bool loadProjectFromPath(const std::filesystem::path& path);
+  bool saveCurrentProject();
+  bool saveProjectAsDialog(const char* preferredExt);
+  void recordProjectInLibrary(const std::filesystem::path& path);
 
   void actionOpenPreset();
   void actionSavePreset(bool asViz);
@@ -48,6 +62,7 @@ class EditorApp {
   GLFWwindow* window_ = nullptr;
   bool imguiInitialized_ = false;
   bool dockLayoutBuilt_ = false;
+  bool isSmokeTest_ = false;
 
   iota::rhi::Gl45RenderDevice device_;
   iota::engine::SceneRenderer renderer_;
@@ -56,11 +71,16 @@ class EditorApp {
 
   iota::model::Project project_;
   iota::model::CommandStack undoStack_;
+  std::filesystem::path currentProjectPath_;
+  bool projectDirty_ = false;
 
   int selectedCompIdx_ = 0;
   int selectedElemIdx_ = -1;
   bool showHiddenProps_ = false;
   bool preciseNumericInputs_ = false;
+  bool showSoundKeysPanel_ = true;
+  bool showAssetBrowserPanel_ = true;
+  int activeSoundKeysRange_ = 0;
   bool fxaaEnabled_ = true;
   int previewWidth_ = 1280;
   int previewHeight_ = 720;
@@ -70,6 +90,11 @@ class EditorApp {
   double playAccumTimeSec_ = 0.0;
   double lastWallTimeSec_ = 0.0;
   iota::engine::RenderFrameStats frameStats_;
+
+  AssetBrowserState assetBrowserState_;
+  ProjectManagerModalState projectManagerState_;
+  iota::preset_io::ProjectLibrary projectLibrary_;
+  bool openProjectManagerModal_ = false;
 
   iota::export_video::ExportSettings exportCfg_;
   bool openExportModal_ = false;

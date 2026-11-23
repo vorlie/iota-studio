@@ -26,7 +26,8 @@ enum class ElementType {
   MirrorEffect,
   AppLogo,
   StatText,
-  CustomShader
+  CustomShader,
+  SoundKeys
 };
 
 ElementType elementTypeFromString(std::string_view name) noexcept;
@@ -63,12 +64,25 @@ struct KeyframeTrack {
   std::vector<Keyframe> keyframes;
 };
 
+struct ProjectMetadata {
+  std::string name = "Untitled Project";
+  std::string notes;
+  std::string audioPath;
+  int previewWidth = 1280;
+  int previewHeight = 720;
+  int targetFps = 60;
+  std::map<std::string, std::string> assetFolders;  // localAsset filename -> virtual folder
+  std::vector<std::string> customFolders;           // user-created empty/active bins
+  std::map<std::string, std::string> audioAssets;   // audio asset label -> file path
+};
+
 struct Project {
   std::string version = "10";
   int templateId = 0;
+  ProjectMetadata metadata;
   std::vector<Composition> compositions;
 
-  // Bundled local assets inside .viz archives (keyed by filename for "local:<filename>")
+  // Bundled local assets inside .viz / .iota archives (keyed by filename for "local:<filename>")
   std::map<std::string, std::vector<uint8_t>> localAssets;
 
   // Optional desktop timeline extension
@@ -78,6 +92,12 @@ struct Project {
 Element createDefaultElement(ElementType type);
 Composition createDefaultComposition(int index);
 Project createStarterProject();
+
+// UI-independent project asset inspection & management helpers
+int countAssetReferences(const Project& project, std::string_view assetUri) noexcept;
+bool renameLocalAsset(Project& project, std::string_view oldName, std::string_view newName);
+int removeUnusedLocalAssets(Project& project);
+bool assignAssetToElement(Element& el, std::string_view uri, bool asMask = false);
 
 // Helpers to ensure Base transform props exist cleanly on newly created Elements
 void addBaseElementProperties(PropertyBag& props, int id, iota::core::BlendMode defaultBlend);

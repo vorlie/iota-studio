@@ -161,6 +161,12 @@ const std::vector<std::string_view>& allMeasureWhatModes() noexcept {
       "BeatCamShakeRotLess",
       "PeakBarIndex",
       "BeatTriggerAnim",
+      "SoundKeys1",
+      "SoundKeys2",
+      "SoundKeys3",
+      "SoundKeysShake1",
+      "SoundKeysShake2",
+      "SoundKeysShake3",
   };
   return kModes;
 }

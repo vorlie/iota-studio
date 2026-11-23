@@ -1,5 +1,7 @@
 #include "iota/export/video_exporter.hpp"
 
+#include "iota/core/utf8_path.hpp"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -118,11 +120,9 @@ bool VideoExportSession::begin(const ExportSettings& settings,
       L" -r " + std::to_wstring(impl_->cfg.fps) + L" -i pipe:0";
 
   const std::string audioPathStr = audio.currentFilePath();
-  const std::filesystem::path audioDiskPath(
-      reinterpret_cast<const char8_t*>(audioPathStr.c_str()),
-      reinterpret_cast<const char8_t*>(audioPathStr.c_str() + audioPathStr.size()));
+  const std::filesystem::path audioDiskPath = iota::core::pathFromUtf8(audioPathStr);
   const bool hasDiskAudio = audio.hasTrack() && !audioPathStr.empty() &&
-                            std::filesystem::exists(audioDiskPath);
+                            iota::core::pathExistsNoThrow(audioDiskPath);
   if (hasDiskAudio) {
     wchar_t ssBuf[32];
     wchar_t durBuf[32];

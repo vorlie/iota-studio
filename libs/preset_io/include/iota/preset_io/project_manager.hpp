@@ -1,0 +1,65 @@
+#pragma once
+
+#include "iota/model/scene.hpp"
+
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace iota::preset_io {
+
+enum class ProjectTemplateKind {
+  MinimalCircular = 0,
+  DualCompGlow,
+  HorizontalCurve,
+  Blank,
+};
+
+struct ProjectTemplateInfo {
+  ProjectTemplateKind kind;
+  const char* title;
+  const char* description;
+};
+
+const std::vector<ProjectTemplateInfo>& projectTemplates() noexcept;
+
+iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
+                                               std::string name,
+                                               int width = 1280,
+                                               int height = 720,
+                                               int fps = 60);
+
+struct RecentProjectEntry {
+  std::string name;
+  std::string path;
+  std::string lastOpened;
+  int compositionCount = 0;
+  int assetCount = 0;
+};
+
+/// Persistent recent-project registry stored outside the workspace by default.
+class ProjectLibrary {
+ public:
+  static std::filesystem::path defaultRegistryPath();
+
+  bool load(const std::filesystem::path& path);
+  bool save(const std::filesystem::path& path) const;
+
+  void recordOpened(RecentProjectEntry entry);
+  bool removeEntry(std::string_view path);
+  int pruneMissing();
+  void clear() noexcept { entries_.clear(); }
+
+  [[nodiscard]] const std::vector<RecentProjectEntry>& entries() const noexcept { return entries_; }
+
+ private:
+  std::vector<RecentProjectEntry> entries_;
+};
+
+/// Saves a Project in .json (if extension is .json/.txt) or zipped archive (.iota/.viz/.zip).
+bool saveProjectAutoFormat(const iota::model::Project& project,
+                           const std::filesystem::path& path,
+                           std::string* outError = nullptr);
+
+}  // namespace iota::preset_io

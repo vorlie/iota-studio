@@ -60,6 +60,10 @@ std::optional<std::vector<ZipEntryData>> readZipFromFile(
     return std::nullopt;
   }
   const auto sz = in.tellg();
+  if (sz < 0) {
+    if (outError) *outError = "Failed determining ZIP file size";
+    return std::nullopt;
+  }
   in.seekg(0, std::ios::beg);
   std::vector<uint8_t> buf(static_cast<size_t>(sz));
   if (sz > 0 && !in.read(reinterpret_cast<char*>(buf.data()), sz)) {

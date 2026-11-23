@@ -1,5 +1,6 @@
 add_library(iota_preset_io STATIC
   src/preset_io.cpp
+  src/project_manager.cpp
 )
 target_include_directories(iota_preset_io PUBLIC include)
 target_link_libraries(iota_preset_io

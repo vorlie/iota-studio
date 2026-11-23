@@ -1,8 +1,11 @@
 #include "iota/preset_io/preset_io.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <nlohmann/json.hpp>
 
+#include "iota/core/utf8_path.hpp"
 #include "iota/core/zip_archive.hpp"
 
 namespace iota::preset_io {
@@ -159,17 +162,46 @@ Json serializeComposition(const iota::model::Composition& comp) {
   return j;
 }
 
+bool asciiEndsWithCaseInsensitive(std::string_view s, std::string_view suffix) noexcept {
+  if (s.size() < suffix.size()) return false;
+  const size_t offset = s.size() - suffix.size();
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(s[offset + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool hasNonDefaultMetadata(const iota::model::ProjectMetadata& m) noexcept {
+  return m.name != "Untitled Project" || !m.notes.empty() || !m.audioPath.empty() ||
+         m.previewWidth != 1280 || m.previewHeight != 720 || m.targetFps != 60 ||
+         !m.assetFolders.empty() || !m.customFolders.empty() || !m.audioAssets.empty();
+}
+
 } // namespace
 
 std::optional<iota::model::Project> parseProjectJsonString(
     std::string_view jsonText,
     std::string* outError) {
+  const std::string_view trimmed = iota::core::stripUtf8Bom(jsonText);
   Json root;
   try {
-    root = Json::parse(jsonText.begin(), jsonText.end());
-  } catch (const std::exception& ex) {
-    if (outError) *outError = std::string("JSON parse error: ") + ex.what();
-    return std::nullopt;
+    root = Json::parse(trimmed.begin(), trimmed.end());
+  } catch (const std::exception& firstEx) {
+    const std::string sanitized = iota::core::sanitizeUtf8(trimmed);
+    if (sanitized != trimmed) {
+      try {
+        root = Json::parse(sanitized.begin(), sanitized.end());
+      } catch (const std::exception& ex) {
+        if (outError) *outError = std::string("JSON parse error: ") + ex.what();
+        return std::nullopt;
+      }
+    } else {
+      if (outError) *outError = std::string("JSON parse error: ") + firstEx.what();
+      return std::nullopt;
+    }
   }
 
   if (!root.is_object()) {
@@ -178,34 +210,71 @@ std::optional<iota::model::Project> parseProjectJsonString(
   }
 
   iota::model::Project proj;
-  if (auto it = root.find("ver"); it != root.end() && it->is_string()) {
-    proj.version = it->get<std::string>();
-  }
-  if (auto it = root.find("template"); it != root.end() && it->is_number_integer()) {
-    proj.templateId = it->get<int>();
-  }
-
-  if (auto it = root.find("compositions"); it != root.end() && it->is_array()) {
-    for (const auto& cj : *it) {
-      if (cj.is_object()) proj.compositions.push_back(parseComposition(cj));
+  try {
+    if (auto it = root.find("ver"); it != root.end() && it->is_string()) {
+      proj.version = it->get<std::string>();
     }
-  }
+    if (auto it = root.find("template"); it != root.end() && it->is_number_integer()) {
+      proj.templateId = it->get<int>();
+    }
 
-  if (auto it = root.find("_desktopExt"); it != root.end() && it->is_object()) {
-    if (auto tracksIt = it->find("keyframeTracks"); tracksIt != it->end() && tracksIt->is_array()) {
-      for (const auto& tj : *tracksIt) {
-        iota::model::KeyframeTrack tr;
-        tr.compositionIndex = tj.value("comp", 0);
-        tr.elementIndex = tj.value("elem", 0);
-        tr.propertyPath = tj.value("prop", "");
-        if (auto kfsIt = tj.find("keys"); kfsIt != tj.end() && kfsIt->is_array()) {
-          for (const auto& kj : *kfsIt) {
-            tr.keyframes.push_back({kj.value("t", 0.0), kj.value("v", 0.0f)});
-          }
-        }
-        proj.desktopTracks.push_back(std::move(tr));
+    if (auto it = root.find("compositions"); it != root.end() && it->is_array()) {
+      for (const auto& cj : *it) {
+        if (cj.is_object()) proj.compositions.push_back(parseComposition(cj));
       }
     }
+
+    if (auto it = root.find("_desktopExt"); it != root.end() && it->is_object()) {
+      if (auto tracksIt = it->find("keyframeTracks"); tracksIt != it->end() && tracksIt->is_array()) {
+        for (const auto& tj : *tracksIt) {
+          if (!tj.is_object()) continue;
+          iota::model::KeyframeTrack tr;
+          tr.compositionIndex = tj.value("comp", 0);
+          tr.elementIndex = tj.value("elem", 0);
+          tr.propertyPath = tj.value("prop", "");
+          if (auto kfsIt = tj.find("keys"); kfsIt != tj.end() && kfsIt->is_array()) {
+            for (const auto& kj : *kfsIt) {
+              if (!kj.is_object()) continue;
+              tr.keyframes.push_back({kj.value("t", 0.0), kj.value("v", 0.0f)});
+            }
+          }
+          proj.desktopTracks.push_back(std::move(tr));
+        }
+      }
+      if (auto metaIt = it->find("projectMeta"); metaIt != it->end() && metaIt->is_object()) {
+        auto& pm = proj.metadata;
+        pm.name = metaIt->value("name", pm.name);
+        pm.notes = metaIt->value("notes", pm.notes);
+        pm.audioPath = metaIt->value("audioPath", pm.audioPath);
+        pm.previewWidth = std::max(16, metaIt->value("width", pm.previewWidth));
+        pm.previewHeight = std::max(16, metaIt->value("height", pm.previewHeight));
+        pm.targetFps = std::clamp(metaIt->value("fps", pm.targetFps), 1, 240);
+        if (auto afIt = metaIt->find("assetFolders"); afIt != metaIt->end() && afIt->is_object()) {
+          for (auto fIt = afIt->begin(); fIt != afIt->end(); ++fIt) {
+            if (fIt.value().is_string()) {
+              pm.assetFolders[fIt.key()] = fIt.value().get<std::string>();
+            }
+          }
+        }
+        if (auto cfIt = metaIt->find("customFolders"); cfIt != metaIt->end() && cfIt->is_array()) {
+          for (const auto& folderVal : *cfIt) {
+            if (folderVal.is_string() && !folderVal.get_ref<const std::string&>().empty()) {
+              pm.customFolders.push_back(folderVal.get<std::string>());
+            }
+          }
+        }
+        if (auto aaIt = metaIt->find("audioAssets"); aaIt != metaIt->end() && aaIt->is_object()) {
+          for (auto aIt = aaIt->begin(); aIt != aaIt->end(); ++aIt) {
+            if (aIt.value().is_string()) {
+              pm.audioAssets[aIt.key()] = aIt.value().get<std::string>();
+            }
+          }
+        }
+      }
+    }
+  } catch (const std::exception& ex) {
+    if (outError) *outError = std::string("Preset JSON structure error: ") + ex.what();
+    return std::nullopt;
   }
 
   return proj;
@@ -222,24 +291,43 @@ std::string serializeProjectToJsonString(const iota::model::Project& project, in
   root["template"] = project.templateId;
   root["objType"] = "Root";
 
-  if (!project.desktopTracks.empty()) {
-    Json tracks = Json::array();
-    for (const auto& tr : project.desktopTracks) {
-      Json keys = Json::array();
-      for (const auto& k : tr.keyframes) {
-        keys.push_back({{"t", k.timeSec}, {"v", k.value}});
+  const bool writeMeta = hasNonDefaultMetadata(project.metadata);
+  if (!project.desktopTracks.empty() || writeMeta) {
+    Json ext = Json::object();
+    if (!project.desktopTracks.empty()) {
+      Json tracks = Json::array();
+      for (const auto& tr : project.desktopTracks) {
+        Json keys = Json::array();
+        for (const auto& k : tr.keyframes) {
+          keys.push_back({{"t", k.timeSec}, {"v", k.value}});
+        }
+        tracks.push_back({
+            {"comp", tr.compositionIndex},
+            {"elem", tr.elementIndex},
+            {"prop", tr.propertyPath},
+            {"keys", std::move(keys)},
+        });
       }
-      tracks.push_back({
-          {"comp", tr.compositionIndex},
-          {"elem", tr.elementIndex},
-          {"prop", tr.propertyPath},
-          {"keys", std::move(keys)},
-      });
+      ext["keyframeTracks"] = std::move(tracks);
     }
-    root["_desktopExt"] = Json{{"keyframeTracks", std::move(tracks)}};
+    if (writeMeta) {
+      const auto& pm = project.metadata;
+      Json meta = Json::object();
+      meta["name"] = pm.name;
+      if (!pm.notes.empty()) meta["notes"] = pm.notes;
+      if (!pm.audioPath.empty()) meta["audioPath"] = pm.audioPath;
+      meta["width"] = pm.previewWidth;
+      meta["height"] = pm.previewHeight;
+      meta["fps"] = pm.targetFps;
+      if (!pm.assetFolders.empty()) meta["assetFolders"] = pm.assetFolders;
+      if (!pm.customFolders.empty()) meta["customFolders"] = pm.customFolders;
+      if (!pm.audioAssets.empty()) meta["audioAssets"] = pm.audioAssets;
+      ext["projectMeta"] = std::move(meta);
+    }
+    root["_desktopExt"] = std::move(ext);
   }
 
-  return indent >= 0 ? root.dump(indent) : root.dump();
+  return root.dump(indent >= 0 ? indent : -1, ' ', false, Json::error_handler_t::replace);
 }
 
 std::optional<iota::model::Project> loadProjectFromMemory(
@@ -252,12 +340,12 @@ std::optional<iota::model::Project> loadProjectFromMemory(
     const iota::core::ZipEntryData* sceneEntry = nullptr;
     const iota::core::ZipEntryData* fallbackJson = nullptr;
     for (const auto& e : *entriesOpt) {
-      std::string fname = std::filesystem::path(e.name).filename().string();
+      const std::string fname = iota::core::baseNameFromSlashPath(e.name);
       if (fname == "scene.json") {
         sceneEntry = &e;
         break;
       }
-      if (e.name.size() >= 5 && e.name.substr(e.name.size() - 5) == ".json") {
+      if (asciiEndsWithCaseInsensitive(fname, ".json")) {
         fallbackJson = &e;
       }
     }
@@ -275,7 +363,7 @@ std::optional<iota::model::Project> loadProjectFromMemory(
 
     for (auto& e : *entriesOpt) {
       if (&e == sceneEntry) continue;
-      std::string baseName = std::filesystem::path(e.name).filename().string();
+      std::string baseName = iota::core::baseNameFromSlashPath(e.name);
       if (!baseName.empty()) {
         projOpt->localAssets.emplace(std::move(baseName), e.bytes);
       }
@@ -292,10 +380,14 @@ std::optional<iota::model::Project> loadProjectFromFile(
     std::string* outError) {
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) {
-    if (outError) *outError = "Cannot open preset file: " + path.string();
+    if (outError) *outError = "Cannot open preset file: " + iota::core::pathToUtf8(path);
     return std::nullopt;
   }
   const auto sz = in.tellg();
+  if (sz < 0) {
+    if (outError) *outError = "Failed determining preset file size: " + iota::core::pathToUtf8(path);
+    return std::nullopt;
+  }
   in.seekg(0, std::ios::beg);
   std::vector<uint8_t> buf(static_cast<size_t>(sz));
   if (sz > 0 && !in.read(reinterpret_cast<char*>(buf.data()), sz)) {
@@ -311,7 +403,7 @@ bool saveProjectAsJson(
     std::string* outError) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
-    if (outError) *outError = "Cannot open output JSON path: " + path.string();
+    if (outError) *outError = "Cannot open output JSON path: " + iota::core::pathToUtf8(path);
     return false;
   }
   const std::string txt = serializeProjectToJsonString(project, 2);

@@ -3,15 +3,25 @@
 #include "iota/audio/audio_engine.hpp"
 #include "iota/dsp/mvar_evaluator.hpp"
 #include "iota/dsp/sample_providers.hpp"
+#include "iota/dsp/sound_keys.hpp"
 #include "iota/engine/font_atlas.hpp"
 #include "iota/model/scene.hpp"
 #include "iota/rhi/rhi.hpp"
 
+#include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace iota::engine {
+
+struct AssetThumbnail {
+  iota::rhi::TextureHandle texture{};
+  int width = 0;
+  int height = 0;
+  bool flipV = false;
+};
 
 struct FrameTiming {
   float dt = 1.0f / 60.0f;
@@ -29,6 +39,12 @@ struct RenderFrameStats {
   float beat = 0.0f;
   float peakBarIndex = 0.0f;
   std::vector<float> lastBars;
+  std::array<float, 3> soundKeysOutputs{0.0f, 0.0f, 0.0f};
+  std::array<float, 3> soundKeysRaw{0.0f, 0.0f, 0.0f};
+  std::vector<float> soundKeysSpectrum;
+  std::vector<float> soundKeysBarFreqsHz;
+  float soundKeysCeiling = 50.0f;
+  float soundKeysPeak = 0.0f;
   std::string lastError;
 };
 
@@ -64,6 +80,10 @@ class SceneRenderer {
 
   /// Invalidates cached `local:` image textures (call after modifying Project::localAssets).
   void invalidateLocalAssets();
+
+  /// Resolves a preview texture handle and native dimensions for `local:`, `internalres:`, or `composition:` URIs.
+  [[nodiscard]] AssetThumbnail resolveAssetPreview(const iota::model::Project& project,
+                                                     std::string_view uri);
 
  private:
   struct Impl;

@@ -4,6 +4,7 @@
 #include "iota/dsp/filters.hpp"
 #include "iota/dsp/mvar_evaluator.hpp"
 #include "iota/dsp/sample_providers.hpp"
+#include "iota/dsp/sound_keys.hpp"
 #include "iota/dsp/windows.hpp"
 
 #include <algorithm>
@@ -375,4 +376,201 @@ TEST_CASE("CurveInterpolationMode subdivides open and closed bar arrays accurate
   const std::vector<float> flat = {5.0f, 5.0f, 5.0f, 5.0f};
   interpolateBarCurve(flat, CurveInterpolationMode::CubicBSpline, 4, true, out);
   CHECK(out[7] == doctest::Approx(5.0f).epsilon(1e-4));
+}
+
+TEST_CASE("SoundKeys isolates frequency bands and evaluates Peak/Average/OnOff modes") {
+  using namespace iota::dsp;
+
+  auto analyzeTone = [](float freqHz) {
+    SpectrumConfig scfg;
+    scfg.kind = SampleProviderKind::Spectrum;
+    scfg.sampleOutCount = 64;
+    scfg.lowerHz = 40.0f;
+    scfg.higherHz = 12000.0f;
+    scfg.hzLinearFactor = 0.0f;
+    scfg.smooth = 1.0f;
+
+    AudioAnalyzer analyzer;
+    analyzer.setConfig(scfg);
+    const auto tone = makeSine(freqHz, 44100, 4096, 0.5f);
+    AudioAnalysisResult ares;
+    for (int f = 0; f < 6; ++f) {
+      ares = analyzer.process({tone, 44100, 1.0f / 60.0f, f / 60.0, f / 60.0, 5.0, true, false});
+    }
+
+    SoundKeysConfig skCfg;
+    for (auto& r : skCfg.ranges) {
+      r.falloffMode = SoundKeysFalloffMode::None;
+      r.minAmplitude = 2.0f;
+      r.maxAmplitude = 40.0f;
+    }
+    SoundKeysProcessor proc;
+    return proc.process(ares.smoothedBars, skCfg, 1.0f / 60.0f);
+  };
+
+  const auto bassRes = analyzeTone(120.0f);
+  CHECK(bassRes.outputs[0] > 0.3f);
+  CHECK(bassRes.outputs[2] < 0.05f);
+
+  const auto trebleRes = analyzeTone(4000.0f);
+  CHECK(trebleRes.outputs[2] > 0.3f);
+  CHECK(trebleRes.outputs[0] < 0.05f);
+
+  // Synthetic range mode and output scaling verification
+  SoundKeysConfig modeCfg;
+  modeCfg.ranges[0].minFreq = 0.0f;
+  modeCfg.ranges[0].maxFreq = 1.0f;
+  modeCfg.ranges[0].minAmplitude = 10.0f;
+  modeCfg.ranges[0].maxAmplitude = 50.0f;
+  modeCfg.ranges[0].falloffMode = SoundKeysFalloffMode::None;
+  modeCfg.ranges[0].outputMin = 2.0f;
+  modeCfg.ranges[0].outputMax = 10.0f;
+  modeCfg.ranges[1].enabled = false;
+  modeCfg.ranges[2].enabled = false;
+
+  const std::array<float, 4> bars = {0.0f, 20.0f, 40.0f, 0.0f};
+  SoundKeysProcessor proc;
+
+  modeCfg.ranges[0].rangeMode = SoundKeysRangeMode::Peak;
+  CHECK(proc.process(bars, modeCfg, 1.0f / 60.0f).outputs[0] == doctest::Approx(8.0f).epsilon(1e-4));
+
+  modeCfg.ranges[0].rangeMode = SoundKeysRangeMode::Average;
+  CHECK(proc.process(bars, modeCfg, 1.0f / 60.0f).outputs[0] == doctest::Approx(3.0f).epsilon(1e-4));
+
+  modeCfg.ranges[0].rangeMode = SoundKeysRangeMode::OnOff;
+  CHECK(proc.process(bars, modeCfg, 1.0f / 60.0f).outputs[0] == doctest::Approx(10.0f).epsilon(1e-4));
+
+  const std::array<float, 4> quietBars = {0.0f, 5.0f, 8.0f, 0.0f};
+  CHECK(proc.process(quietBars, modeCfg, 1.0f / 60.0f).outputs[0] == doctest::Approx(2.0f).epsilon(1e-4));
+}
+
+TEST_CASE("SoundKeys falloff modes and MVar bindings match across 60 FPS vs 144 FPS") {
+  using namespace iota::dsp;
+
+  const std::array<float, 8> hotBars = {50.0f, 50.0f, 50.0f, 50.0f, 50.0f, 50.0f, 50.0f, 50.0f};
+  const std::array<float, 8> zeroBars = {};
+
+  for (SoundKeysFalloffMode fm : {SoundKeysFalloffMode::None,
+                                  SoundKeysFalloffMode::Linear,
+                                  SoundKeysFalloffMode::Exponential,
+                                  SoundKeysFalloffMode::Integrate}) {
+    auto runAtFps = [&](int fps) {
+      SoundKeysConfig cfg;
+      cfg.ranges[0].minFreq = 0.0f;
+      cfg.ranges[0].maxFreq = 1.0f;
+      cfg.ranges[0].minAmplitude = 0.0f;
+      cfg.ranges[0].maxAmplitude = 50.0f;
+      cfg.ranges[0].falloffMode = fm;
+      cfg.ranges[0].attackMs = 20.0f;
+      cfg.ranges[0].falloffTimeSec = 0.5f;
+      cfg.ranges[0].integrateSpeed = 2.0f;
+      cfg.ranges[1].enabled = false;
+      cfg.ranges[2].enabled = false;
+
+      SoundKeysProcessor proc;
+      const float dt = 1.0f / static_cast<float>(fps);
+      const int quarterSecFrames = fps / 4;  // Exact integer at both 60 and 144 Hz
+      SoundKeysResult res;
+      for (int f = 0; f < quarterSecFrames; ++f) {
+        res = proc.process(hotBars, cfg, dt);
+      }
+      if (fm != SoundKeysFalloffMode::Integrate) {
+        for (int f = 0; f < quarterSecFrames; ++f) {
+          res = proc.process(zeroBars, cfg, dt);
+        }
+      }
+      return res.outputs[0];
+    };
+
+    const float v60 = runAtFps(60);
+    const float v144 = runAtFps(144);
+    CHECK(v144 == doctest::Approx(v60).epsilon(0.01));
+    if (fm == SoundKeysFalloffMode::Linear || fm == SoundKeysFalloffMode::Integrate) {
+      CHECK(v60 == doctest::Approx(0.5f).epsilon(0.02));
+    }
+  }
+
+  auto evalSkMVarAtFps = [](int fps, std::string_view mode) {
+    MVarEvaluator ev;
+    iota::model::MVariableFloat var;
+    var.slots.push_back({std::string(mode), 1.5f, 0.75f});
+    const float dt = 1.0f / static_cast<float>(fps);
+    const int steps = fps / 2;
+    iota::core::Vec2 outVec{};
+    for (int f = 0; f < steps; ++f) {
+      MVarEvalContext ctx;
+      ctx.dt = dt;
+      ctx.totalTimeSec = static_cast<double>(f + 1) * dt;
+      ctx.playAccumTimeSec = ctx.totalTimeSec;
+      ctx.soundKeys = {0.8f, 0.4f, 0.2f};
+      ctx.isPlaying = true;
+      ctx.frameCounter = static_cast<uint32_t>(f);
+      outVec = ev.evaluateVec2(7, var, ctx);
+    }
+    return outVec;
+  };
+
+  const auto sk1 = evalSkMVarAtFps(60, "SoundKeys1");
+  CHECK(sk1.x == doctest::Approx(1.2f));
+  CHECK(sk1.y == doctest::Approx(0.6f));
+
+  const auto sk2 = evalSkMVarAtFps(60, "SoundKeys2");
+  CHECK(sk2.x == doctest::Approx(0.6f));
+
+  const auto sk3 = evalSkMVarAtFps(60, "SoundKeys3");
+  CHECK(sk3.x == doctest::Approx(0.3f));
+
+  for (std::string_view shakeMode : {"SoundKeysShake1", "SoundKeysShake2", "SoundKeysShake3"}) {
+    const auto s60 = evalSkMVarAtFps(60, shakeMode);
+    const auto s144 = evalSkMVarAtFps(144, shakeMode);
+    CHECK(s144.x == doctest::Approx(s60.x).epsilon(0.03).scale(1.0));
+    CHECK(s144.y == doctest::Approx(s60.y).epsilon(0.03).scale(1.0));
+  }
+}
+
+TEST_CASE("SoundKeys auto-ceiling prevents spectrum cap-out on high-magnitude signals") {
+  using namespace iota::dsp;
+
+  SoundKeysConfig cfg;
+  cfg.autoScaleCeiling = true;
+  cfg.displayCeiling = 100.0f;
+  cfg.ranges[0].minFreq = 0.0f;
+  cfg.ranges[0].maxFreq = 1.0f;
+  cfg.ranges[0].minAmplitude = 0.0f;
+  cfg.ranges[0].maxAmplitude = 1500.0f;
+  cfg.ranges[0].falloffMode = SoundKeysFalloffMode::None;
+  cfg.ranges[1].enabled = false;
+  cfg.ranges[2].enabled = false;
+
+  SoundKeysProcessor proc;
+  const std::array<float, 8> hot = {200.0f, 1200.0f, 400.0f, 100.0f, 50.0f, 20.0f, 10.0f, 5.0f};
+  const auto rHot = proc.process(hot, cfg, 1.0f / 60.0f);
+  CHECK(rHot.spectrumPeak == doctest::Approx(1200.0f));
+  CHECK(rHot.effectiveCeiling == doctest::Approx(1500.0f));
+  CHECK(rHot.outputs[0] == doctest::Approx(0.8f).epsilon(1e-4));
+
+  const std::array<float, 8> mid = {100.0f, 600.0f, 200.0f, 50.0f, 25.0f, 10.0f, 5.0f, 2.0f};
+  const auto rMid = proc.process(mid, cfg, 1.0f / 60.0f);
+  CHECK(rMid.outputs[0] == doctest::Approx(0.4f).epsilon(1e-4));
+
+  auto runDecayAtFps = [](int fps) {
+    SoundKeysConfig c;
+    c.autoScaleCeiling = true;
+    c.displayCeiling = 100.0f;
+    c.ranges[0].enabled = false;
+    c.ranges[1].enabled = false;
+    c.ranges[2].enabled = false;
+
+    SoundKeysProcessor p;
+    const std::array<float, 4> spike = {1000.0f, 100.0f, 50.0f, 10.0f};
+    const std::array<float, 4> silent = {};
+    const float dt = 1.0f / static_cast<float>(fps);
+    p.process(spike, c, dt);
+    SoundKeysResult r;
+    for (int f = 0; f < fps; ++f) {
+      r = p.process(silent, c, dt);
+    }
+    return r.effectiveCeiling;
+  };
+  CHECK(runDecayAtFps(144) == doctest::Approx(runDecayAtFps(60)).epsilon(0.01));
 }

@@ -3,6 +3,7 @@
 #include "iota/core/types.hpp"
 #include "iota/model/measured_var.hpp"
 
+#include <array>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -17,6 +18,7 @@ struct MVarEvalContext {
   double trackDurationSec = 0.0;
   float beat = 0.0f;
   float peakBarIndex = 0.0f;
+  std::array<float, 3> soundKeys{0.0f, 0.0f, 0.0f};
   bool isPlaying = false;
   bool isExporting = false;
   uint32_t frameCounter = 0;

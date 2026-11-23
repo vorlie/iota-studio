@@ -203,4 +203,25 @@ std::optional<RgbaImage> generateInternalResource(std::string_view uri) {
   return std::nullopt;
 }
 
+const std::vector<std::string_view>& listInternalResources() noexcept {
+  static const std::vector<std::string_view> kResources = {
+      "internalres:placeholderart5",
+      "internalres:white",
+      "internalres:black",
+      "internalres:transparent",
+      "internalres:vignette80",
+      "internalres:rainbow128",
+      "internalres:lens_flare",
+      "internalres:lens_flare_2",
+      "internalres:snowflake",
+      "internalres:particle_blur01",
+      "internalres:particle_blur01_more",
+      "internalres:particle_blur_inv",
+      "internalres:particle_circle_blur4",
+      "internalres:particle_circle_w_a_64",
+      "internalres:particle_sharp",
+  };
+  return kResources;
+}
+
 } // namespace iota::core

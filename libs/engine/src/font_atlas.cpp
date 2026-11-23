@@ -1,5 +1,7 @@
 #include "iota/engine/font_atlas.hpp"
 
+#include "iota/core/utf8_path.hpp"
+
 #ifdef _MSC_VER
 #pragma warning(push, 0)
 #endif
@@ -198,7 +200,7 @@ struct FontAtlasCache::Impl {
 
     std::vector<uint8_t> ttfBytes;
     for (const auto& candidate : candidateFontPaths(key)) {
-      if (std::filesystem::exists(candidate)) {
+      if (iota::core::pathExistsNoThrow(candidate)) {
         ttfBytes = readFileBytes(candidate);
         if (!ttfBytes.empty()) {
           break;

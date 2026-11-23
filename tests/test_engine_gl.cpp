@@ -2,11 +2,13 @@
 
 #include "iota/audio/audio_decoder.hpp"
 #include "iota/audio/audio_engine.hpp"
+#include "iota/core/utf8_path.hpp"
 #include "iota/engine/font_atlas.hpp"
 #include "iota/engine/layout.hpp"
 #include "iota/engine/scene_renderer.hpp"
 #include "iota/model/scene.hpp"
 #include "iota/preset_io/preset_io.hpp"
+#include "iota/preset_io/project_manager.hpp"
 #include "iota/rhi/gl45_device.hpp"
 
 #include <GLFW/glfw3.h>
@@ -14,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 
 TEST_CASE("Layout coordinate math and 16 text tokens work accurately") {
   using namespace iota::engine;
@@ -216,6 +219,125 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
       lumaSum += rgba[i] + rgba[i + 1] + rgba[i + 2];
     }
     CHECK(lumaSum > 50000);
+  }
+
+  SUBCASE("SoundKeys drives BlurEffect and RgbSplitEffect from selected spectrum range") {
+    iota::model::Project proj;
+    proj.version = "10";
+
+    auto comp0 = iota::model::createDefaultComposition(0);
+    auto blurEl = iota::model::createDefaultElement(iota::model::ElementType::BlurEffect);
+    blurEl.props.setInt("sourceCompositionIndex", 1, 1, 5, "1_appearance");
+    blurEl.props.setMVar("measureBlurRadius",
+                         iota::model::MVariableFloat{{{"SoundKeys1", 2.0f, 0.0f}}},
+                         "mvarf 0.0 3.0",
+                         "2_blur");
+    comp0.elements.push_back(std::move(blurEl));
+
+    auto splitEl = iota::model::createDefaultElement(iota::model::ElementType::RgbSplitEffect);
+    splitEl.props.setString("targetImage", "composition:1", "img composition:0", "1_appearance");
+    splitEl.props.setMVar("splitMultiplier",
+                          iota::model::MVariableFloat{{{"SoundKeys1", 3.0f, 0.0f}}},
+                          "mvarf 0.0 6.0",
+                          "2_splitEffect");
+    splitEl.props.setMVar("splitAmount",
+                          iota::model::MVariableFloat{{{"SoundKeysShake1", 0.5f, 0.5f}}},
+                          "mvarf2 -0.5 0.5",
+                          "2_splitEffect");
+    comp0.elements.push_back(std::move(splitEl));
+
+    auto comp1 = iota::model::createDefaultComposition(1);
+    comp1.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::AudioProvider));
+    comp1.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::SoundKeys));
+    comp1.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::Bars));
+
+    proj.compositions.push_back(std::move(comp0));
+    proj.compositions.push_back(std::move(comp1));
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats stats;
+    for (int f = 0; f < 15; ++f) {
+      iota::engine::FrameTiming timing{1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f};
+      REQUIRE(renderer.renderFrame(proj, audio, timing, 320, 240, {}, &stats));
+    }
+    CHECK(stats.compositionsRendered == 2);
+    CHECK(stats.drawCalls > 0);
+    CHECK(stats.soundKeysOutputs[0] > 0.3f);
+    CHECK(stats.soundKeysOutputs[0] < 0.95f);
+    CHECK(stats.soundKeysOutputs[2] < 0.05f);
+    CHECK(stats.soundKeysCeiling >= stats.soundKeysPeak * 1.2f);
+    CHECK(stats.soundKeysSpectrum.size() >= 32);
+    CHECK(stats.soundKeysBarFreqsHz.size() == stats.soundKeysSpectrum.size());
+
+    std::vector<uint8_t> rgba;
+    int rw = 0, rh = 0;
+    REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, rgba, true));
+    uint64_t lumaSum = 0;
+    for (size_t i = 0; i + 3 < rgba.size(); i += 4) {
+      lumaSum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+    }
+    CHECK(lumaSum > 50000);
+  }
+
+  SUBCASE("SceneRenderer resolves AssetThumbnail previews and renders DualCompGlow template") {
+    auto proj = iota::preset_io::createProjectFromTemplate(
+        iota::preset_io::ProjectTemplateKind::DualCompGlow, "Glow Test", 320, 240, 60);
+
+    // 2x2 uncompressed 24-bit BMP image payload (70 bytes)
+    const std::vector<uint8_t> tinyBmp = {
+        'B', 'M', 70, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0,
+        40, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 24, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        255, 0, 0, 0, 255, 0, 0, 0,
+        0, 0, 255, 255, 255, 255, 0, 0,
+    };
+    proj.localAssets["tiny.bmp"] = tinyBmp;
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats stats;
+    for (int f = 0; f < 6; ++f) {
+      iota::engine::FrameTiming timing{1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f};
+      REQUIRE(renderer.renderFrame(proj, audio, timing, 320, 240, {}, &stats));
+    }
+    CHECK(stats.compositionsRendered == 2);
+    CHECK(stats.drawCalls > 0);
+
+    const auto builtInThumb = renderer.resolveAssetPreview(proj, "internalres:lens_flare");
+    CHECK(builtInThumb.texture);
+    CHECK(builtInThumb.width == 128);
+    CHECK(builtInThumb.height == 128);
+    CHECK_FALSE(builtInThumb.flipV);
+
+    const auto localThumb = renderer.resolveAssetPreview(proj, "local:tiny.bmp");
+    CHECK(localThumb.texture);
+    CHECK(localThumb.width == 2);
+    CHECK(localThumb.height == 2);
+    CHECK_FALSE(localThumb.flipV);
+
+    const auto compThumb = renderer.resolveAssetPreview(proj, "composition:1");
+    CHECK(compThumb.texture);
+    CHECK(compThumb.width == 320);
+    CHECK(compThumb.height == 240);
+    CHECK(compThumb.flipV);
+
+    // Unicode filesystem image path + malformed invalid-byte fallback must never throw
+    const std::filesystem::path unicodeBmp =
+        std::filesystem::temp_directory_path() /
+        std::filesystem::path(L"iota_za\u017C\u00F3\u0142\u0107_\u97F3\u697D_\U0001F3B5.bmp");
+    {
+      std::ofstream bmpOut(unicodeBmp, std::ios::binary | std::ios::trunc);
+      REQUIRE(bmpOut.is_open());
+      bmpOut.write(reinterpret_cast<const char*>(tinyBmp.data()), static_cast<std::streamsize>(tinyBmp.size()));
+      REQUIRE(bmpOut.good());
+    }
+    const auto unicodeDiskThumb = renderer.resolveAssetPreview(proj, iota::core::pathToUtf8(unicodeBmp));
+    std::error_code ec;
+    std::filesystem::remove(unicodeBmp, ec);
+    CHECK(unicodeDiskThumb.texture);
+    CHECK(unicodeDiskThumb.width == 2);
+    CHECK(unicodeDiskThumb.height == 2);
+
+    const auto badPathThumb = renderer.resolveAssetPreview(proj, "C:/nonexistent:*?\xFF/bad.png");
+    CHECK(badPathThumb.texture);
   }
 
   renderer.shutdown();

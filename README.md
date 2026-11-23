@@ -10,22 +10,30 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
 
 - **Multi-Composition Scene Graph & Layer Types**
   - Compose multi-pass visual scenes with cross-composition references and layer blend modes.
-  - Built-in element types: `AudioProvider`, `Bars`, `Particles`, `Image`, `Text`, `StatText`, `BlurEffect`, `RgbSplitEffect`, `MotionBlurEffect`, `MirrorEffect`, `AppLogo`, and `CustomShader`.
+  - Built-in element types: `AudioProvider`, `SoundKeys`, `Bars`, `Particles`, `Image`, `Text`, `StatText`, `BlurEffect`, `RgbSplitEffect`, `MotionBlurEffect`, `MirrorEffect`, `AppLogo`, and `CustomShader`.
 - **Frame-Rate-Independent Audio Analysis (DSP)**
   - Three analysis providers: `Waveform`, `Spectrum` (`kissfft`), and `Spectrum2` (direct DFT filterbank).
   - Automatic Gain Control (`AgcEnvelope`), IEC A-weighting calibration, beat detection, and a 64-frame time-indexed bar history ring (`BarHistoryRing`) for layer reaction delay and accumulation.
   - Continuous exponential **Temporal Smoothing** with configurable `temporalSmooth`, `attackMs`, and `releaseMs` (plus frame-rate-independent fallback for legacy `smooth` presets).
   - Separate **Frequency Smoothing** stage across spectrum bins (`None`, `MovingAverage`, `Gaussian`, `SavitzkyGolay`) before temporal envelopes.
+- **Sound Keys (Spectrum Range Extraction)**
+  - Dedicated `SoundKeys` layer and docked **Sound Keys** panel with 3 independent frequency/amplitude bands (`R1`, `R2`, `R3`), interactive click-and-drag spectrum box selection, a `Full` range expansion shortcut, and auto-headroom ceiling tracking (`autoScaleCeiling`) so spectrum peaks stay unclipped.
+  - Supports `Average`, `Peak`, and `OnOff` range evaluation modes alongside frame-rate-independent `None`, `Linear`, `Exponential`, and `Integrate` falloff modes, `attackMs`, `falloffTimeSec`, `integrateSpeed`, and `outputMin`/`outputMax` scaling.
+  - Feeds `SoundKeys1..3` and `SoundKeysShake1..3` bindings into any `MVar` property (such as transforms, `BlurEffect::measureBlurRadius`, `RgbSplitEffect`, and particles) as well as the `vec4 u_soundKeys` (`(R1, R2, R3, beat)`) uniform in `CustomShader`.
 - **Audio-Reactive Properties & Keyframes**
-  - Driven via multi-slot `MVar` evaluators (`Beat`, `TotalTime`, `TotalTimeAndBeat`, `PeakBarIndex`, `TrackPosition`, harmonic/beat camera shake generators, `BeatTriggerAnim`) plus optional desktop property keyframe tracks.
+  - Driven via multi-slot `MVar` evaluators (`Beat`, `TotalTime`, `TotalTimeAndBeat`, `PeakBarIndex`, `TrackPosition`, `SoundKeys1..3`, `SoundKeysShake1..3`, harmonic/beat camera shake generators, `BeatTriggerAnim`) plus optional desktop property keyframe tracks.
 - **Visual Geometry & Curve Interpolation**
   - Configurable `Bars` shapes (`Circle`, `HorizontalLine`, `SidedPolygon`, `Letter`) and segment renderers (`Bars`, `SharpBars`, `RoundBars`, `Line`).
   - Render-time **Curve Interpolation** (`None`, `Linear`, `CatmullRom`, `CubicBSpline` with configurable subdivisions) decoupled from DSP spectrum calculations.
 - **Docking Studio Editor UI**
-  - Multi-panel Dear ImGui workspace with live **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA), **Hierarchy**, **Inspector**, and **Audio & Timeline** transport.
+  - Multi-panel Dear ImGui workspace featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
   - Inspector supports both slider/drag editing (`Ctrl+Click` for inline typing) and a **Precise Inputs** toggle (`Edit -> Precise Numeric Inputs` or the Inspector checkbox) for exact keyboard entry, plus full snapshot Undo/Redo (`CommandStack`).
-- **Presets, Bundled Assets & Video Export**
-  - Load and save `.json` scenes and compressed `.viz` archive presets with embedded `local:<asset>` image resources and procedural `internalres:*` textures.
+- **Asset Browser & Project Manager**
+  - **Assets** panel (`Viewport -> Asset Browser`) with live thumbnail preview header, layer reference usage counts, Grid/List views, category filters (`All`, `Project`, `Audio`, `Comps`, `Built-in`), live search, custom virtual bins, multi-file image import, rename/replace/unused-asset cleanup, and drag-and-drop onto Hierarchy layers or Inspector image/mask fields.
+  - **Project Manager** (`File -> Project Manager...` / `Ctrl+N`) with starter templates (`Minimal Circular`, `Dual Composition Glow`, `Horizontal Spectrum Bar`, `Blank Project`), persistent recent-project history (`%LOCALAPPDATA%/IotaStudio/projects.json`), missing-file pruning, and per-project resolution/FPS/audio/notes metadata.
+- **Projects, Presets, Bundled Assets & Video Export**
+  - Load and save native `.iota` project archives alongside `.viz` presets and `.json` scenes, with embedded `local:<asset>` image resources, `ProjectMetadata`, and procedural `internalres:*` textures.
+  - Cross-platform wide Unicode path handling (`utf8_path`) and UTF-8 sanitization for international filenames, legacy audio metadata tags, UTF-8 BOMs, ZIP archive entry names, and JSON serialization.
   - Audio decoding via `ffmpeg`/`ffprobe` (with `miniaudio` fallback) and deterministic offline MP4 encoding (H.264 / H.265 + AAC) piped to `ffmpeg`.
 
 ## Architecture & Directory Layout
@@ -35,18 +43,18 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 ```text
 .
 ├── apps/
-│   └── studio/       # Dear ImGui docking editor executable (iota_studio)
+│   └── studio/       # Dear ImGui docking editor (Viewport, Hierarchy, Assets, Inspector, Sound Keys, Project Manager)
 ├── libs/
-│   ├── core/         # Math types, color codecs (ARGB/HSLA), procedural internal textures
-│   ├── model/        # Decoupled scene graph, PropertyBag, MVar expressions, Undo/Redo stack
-│   ├── preset_io/    # .json and zipped .viz preset serialization & local asset bundling
-│   ├── dsp/          # Waveform/FFT/DFT analysis, attack/release, frequency smoothing, curve splines, MVar evaluator
+│   ├── core/         # Math types, color codecs (ARGB/HSLA), procedural textures, ZIP & UTF-8/Unicode path utilities
+│   ├── model/        # Decoupled scene graph, PropertyBag, ProjectMetadata, MVar expressions, Undo/Redo stack
+│   ├── preset_io/    # .iota / .viz / .json serialization, starter templates, and ProjectLibrary recent registry
+│   ├── dsp/          # Waveform/FFT/DFT analysis, SoundKeys bands, attack/release, frequency smoothing, curve splines
 │   ├── audio/        # Audio decoding (FFmpeg/miniaudio) and miniaudio real-time playback/PCM windows
 │   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (abstract render device/resources)
 │   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi
 │   ├── engine/       # GPU scene composer, particle simulator, font atlas cache, post-process effects
 │   └── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
-└── tests/            # Automated doctest suite (unit + headless OpenGL 4.5 rendering tests)
+└── tests/            # Automated doctest suite (unit, SoundKeys, Unicode/non-UTF-8 IO, and OpenGL 4.5 tests)
 ```
 
 ## Tech Stack
@@ -96,7 +104,7 @@ Run the headless OpenGL smoke check (creates a hidden window, renders starter fr
 
 ### Run Tests
 
-Core DSP, model, round-trip `.viz`, and OpenGL tests live in `iota_tests.exe`. Two preset-integration test cases expect `IOTA_TEST_PRESETS_DIR` to point to a folder containing `visualizer_0.json`..`visualizer_17.json`:
+Core DSP, SoundKeys, model, Unicode/non-UTF-8 IO, `.iota`/`.viz` round-trip, and OpenGL tests live in `iota_tests.exe`. Two preset-integration test cases expect `IOTA_TEST_PRESETS_DIR` to point to a folder containing `visualizer_0.json`..`visualizer_17.json`:
 
 ```powershell
 # With external preset fixtures available:

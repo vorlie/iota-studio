@@ -4,6 +4,12 @@ add_executable(iota_studio
   src/editor_app.cpp
   src/inspector_panel.hpp
   src/inspector_panel.cpp
+  src/sound_keys_panel.hpp
+  src/sound_keys_panel.cpp
+  src/asset_browser_panel.hpp
+  src/asset_browser_panel.cpp
+  src/project_manager_modal.hpp
+  src/project_manager_modal.cpp
 )
 
 target_link_libraries(iota_studio

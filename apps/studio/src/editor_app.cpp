@@ -1,7 +1,9 @@
 #include "editor_app.hpp"
 
 #include "inspector_panel.hpp"
+#include "sound_keys_panel.hpp"
 
+#include "iota/core/utf8_path.hpp"
 #include "iota/preset_io/preset_io.hpp"
 
 #include <windows.h>
@@ -32,17 +34,17 @@ namespace {
 std::optional<std::filesystem::path> showOpenFileDialog(HWND owner,
                                                         const wchar_t* title,
                                                         const wchar_t* filter) {
-  wchar_t fileBuf[MAX_PATH]{};
+  std::vector<wchar_t> fileBuf(4096, L'\0');
   OPENFILENAMEW ofn{};
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = owner;
   ofn.lpstrFilter = filter;
-  ofn.lpstrFile = fileBuf;
-  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFile = fileBuf.data();
+  ofn.nMaxFile = static_cast<DWORD>(fileBuf.size());
   ofn.lpstrTitle = title;
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (GetOpenFileNameW(&ofn)) {
-    return std::filesystem::path(fileBuf);
+    return std::filesystem::path(fileBuf.data());
   }
   return std::nullopt;
 }
@@ -52,21 +54,21 @@ std::optional<std::filesystem::path> showSaveFileDialog(HWND owner,
                                                         const wchar_t* filter,
                                                         const wchar_t* defExt,
                                                         const wchar_t* initialName) {
-  wchar_t fileBuf[MAX_PATH]{};
+  std::vector<wchar_t> fileBuf(4096, L'\0');
   if (initialName) {
-    wcsncpy_s(fileBuf, initialName, MAX_PATH - 1);
+    wcsncpy_s(fileBuf.data(), fileBuf.size(), initialName, _TRUNCATE);
   }
   OPENFILENAMEW ofn{};
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = owner;
   ofn.lpstrFilter = filter;
-  ofn.lpstrFile = fileBuf;
-  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFile = fileBuf.data();
+  ofn.nMaxFile = static_cast<DWORD>(fileBuf.size());
   ofn.lpstrTitle = title;
   ofn.lpstrDefExt = defExt;
   ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (GetSaveFileNameW(&ofn)) {
-    return std::filesystem::path(fileBuf);
+    return std::filesystem::path(fileBuf.data());
   }
   return std::nullopt;
 }
@@ -82,6 +84,42 @@ std::vector<uint8_t> readAllBytes(const std::filesystem::path& p) {
   return out;
 }
 
+std::vector<std::filesystem::path> showOpenFilesDialog(HWND owner,
+                                                       const wchar_t* title,
+                                                       const wchar_t* filter) {
+  std::vector<wchar_t> buf(32768, L'\0');
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = owner;
+  ofn.lpstrFilter = filter;
+  ofn.lpstrFile = buf.data();
+  ofn.nMaxFile = static_cast<DWORD>(buf.size());
+  ofn.lpstrTitle = title;
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
+              OFN_EXPLORER | OFN_NOCHANGEDIR;
+  std::vector<std::filesystem::path> out;
+  if (!GetOpenFileNameW(&ofn)) {
+    return out;
+  }
+  const wchar_t* p = buf.data();
+  const std::wstring first(p);
+  if (first.empty()) {
+    return out;
+  }
+  p += first.size() + 1;
+  if (*p == L'\0') {
+    out.emplace_back(first);
+    return out;
+  }
+  const std::filesystem::path dir(first);
+  while (*p != L'\0') {
+    const std::wstring fname(p);
+    out.push_back(dir / fname);
+    p += fname.size() + 1;
+  }
+  return out;
+}
+
 }  // namespace
 
 EditorApp::EditorApp() = default;
@@ -91,6 +129,7 @@ EditorApp::~EditorApp() {
 }
 
 bool EditorApp::initialize(bool headlessSmokeTest) {
+  isSmokeTest_ = headlessSmokeTest;
   if (!glfwInit()) {
     std::cerr << "Failed to initialize GLFW\n";
     return false;
@@ -144,9 +183,13 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   project_ = iota::model::createStarterProject();
   if (!project_.compositions.empty() && project_.compositions[0].elements.size() > 3) {
     selectedCompIdx_ = 0;
-    selectedElemIdx_ = 3;  // Circular Spectrum default selection
+    selectedElemIdx_ = 4;  // Circular Spectrum default selection
   }
   undoStack_.clear(project_);
+  if (!isSmokeTest_) {
+    projectLibrary_.load(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+  }
+  updateWindowTitle();
 
   actionLoadBuiltinTestTone(110.0f);
   lastWallTimeSec_ = glfwGetTime();
@@ -196,7 +239,7 @@ void EditorApp::applyStudioTheme() {
 
 void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
   dockLayoutBuilt_ = true;
-  if (std::filesystem::exists("iota_studio_layout.ini")) {
+  if (iota::core::pathExistsNoThrow("iota_studio_layout.ini")) {
     return;
   }
 
@@ -205,13 +248,16 @@ void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
   ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
 
   ImGuiID dockMain = dockspaceId;
-  ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.20f, nullptr, &dockMain);
+  ImGuiID dockLeft = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Left, 0.21f, nullptr, &dockMain);
+  ImGuiID dockLeftBottom = ImGui::DockBuilderSplitNode(dockLeft, ImGuiDir_Down, 0.48f, nullptr, &dockLeft);
   ImGuiID dockRight = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Right, 0.28f, nullptr, &dockMain);
   ImGuiID dockBottom = ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.26f, nullptr, &dockMain);
 
   ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
+  ImGui::DockBuilderDockWindow("Assets", dockLeftBottom);
   ImGui::DockBuilderDockWindow("Inspector", dockRight);
   ImGui::DockBuilderDockWindow("Audio & Timeline", dockBottom);
+  ImGui::DockBuilderDockWindow("Sound Keys", dockBottom);
   ImGui::DockBuilderDockWindow("Viewport", dockMain);
   ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -243,7 +289,7 @@ int EditorApp::run() {
       if (exportSession_.isDone()) {
         std::string finErr;
         if (exportSession_.finish(&finErr)) {
-          statusBanner_ = "Export finished: " + exportCfg_.outputPath.string();
+          statusBanner_ = "Export finished: " + iota::core::pathToUtf8(exportCfg_.outputPath);
         } else {
           statusBanner_ = "Export finish error: " + finErr;
         }
@@ -273,8 +319,11 @@ int EditorApp::run() {
     drawMenuBar();
     drawViewportPanel();
     drawHierarchyPanel();
+    drawAssetBrowserPanel();
     drawInspectorPanel();
     drawAudioTimelinePanel();
+    drawSoundKeysPanel();
+    drawProjectManagerModal();
     drawExportModal();
 
     ImGui::Render();
@@ -332,8 +381,10 @@ int EditorApp::runSmokeTest() {
   drawMenuBar();
   drawViewportPanel();
   drawHierarchyPanel();
+  drawAssetBrowserPanel();
   drawInspectorPanel();
   drawAudioTimelinePanel();
+  drawSoundKeysPanel();
   ImGui::Render();
   device_.bindRenderTarget({}, 320, 240);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -348,17 +399,29 @@ void EditorApp::handleShortcuts() {
   ImGuiIO& io = ImGui::GetIO();
   if (io.WantTextInput) return;
 
-  if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-    if (const auto* snap = undoStack_.undo()) {
-      project_ = *snap;
-      renderer_.invalidateLocalAssets();
-      statusBanner_ = "Undo";
-    }
+  if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S)) {
+    saveProjectAsDialog("iota");
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) {
+    saveCurrentProject();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) {
+    actionOpenPreset();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N)) {
+    openProjectManagerModal_ = true;
   } else if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)))) {
     if (const auto* snap = undoStack_.redo()) {
       project_ = *snap;
       renderer_.invalidateLocalAssets();
+      projectDirty_ = true;
+      updateWindowTitle();
       statusBanner_ = "Redo";
+    }
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+    if (const auto* snap = undoStack_.undo()) {
+      project_ = *snap;
+      renderer_.invalidateLocalAssets();
+      projectDirty_ = true;
+      updateWindowTitle();
+      statusBanner_ = "Undo";
     }
   } else if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
     if (audio_.isPlaying()) audio_.pause();
@@ -368,28 +431,45 @@ void EditorApp::handleShortcuts() {
 
 void EditorApp::pushUndoState(std::string label) {
   undoStack_.pushSnapshot(std::move(label), project_);
+  projectDirty_ = true;
+  updateWindowTitle();
 }
 
 void EditorApp::drawMenuBar() {
   if (!ImGui::BeginMainMenuBar()) return;
 
   if (ImGui::BeginMenu("File")) {
+    if (ImGui::MenuItem("Project Manager...\tCtrl+N")) {
+      openProjectManagerModal_ = true;
+    }
     if (ImGui::MenuItem("New Starter Project")) {
       project_ = iota::model::createStarterProject();
+      currentProjectPath_.clear();
+      projectDirty_ = false;
+      applyProjectMetadata(project_.metadata);
       selectedCompIdx_ = 0;
-      selectedElemIdx_ = 0;
+      selectedElemIdx_ = 4;
+      renderer_.invalidateLocalAssets();
       renderer_.resetSimulation();
       undoStack_.clear(project_);
+      updateWindowTitle();
       statusBanner_ = "Created starter project";
     }
-    if (ImGui::MenuItem("Open Preset (.viz / .json)...")) {
+    if (ImGui::MenuItem("Open Project / Preset...\tCtrl+O")) {
       actionOpenPreset();
     }
-    if (ImGui::MenuItem("Save Preset as .viz...")) {
-      actionSavePreset(true);
+    ImGui::Separator();
+    if (ImGui::MenuItem("Save Project\tCtrl+S")) {
+      saveCurrentProject();
     }
-    if (ImGui::MenuItem("Save Preset as .json...")) {
-      actionSavePreset(false);
+    if (ImGui::MenuItem("Save Project As (.iota)...\tCtrl+Shift+S")) {
+      saveProjectAsDialog("iota");
+    }
+    if (ImGui::MenuItem("Export Preset (.viz)...")) {
+      saveProjectAsDialog("viz");
+    }
+    if (ImGui::MenuItem("Export Scene JSON (.json)...")) {
+      saveProjectAsDialog("json");
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Open Audio Track...")) {
@@ -420,12 +500,16 @@ void EditorApp::drawMenuBar() {
       if (const auto* snap = undoStack_.undo()) {
         project_ = *snap;
         renderer_.invalidateLocalAssets();
+        projectDirty_ = true;
+        updateWindowTitle();
       }
     }
     if (ImGui::MenuItem(redoLabel.c_str(), nullptr, false, undoStack_.canRedo())) {
       if (const auto* snap = undoStack_.redo()) {
         project_ = *snap;
         renderer_.invalidateLocalAssets();
+        projectDirty_ = true;
+        updateWindowTitle();
       }
     }
     ImGui::Separator();
@@ -449,6 +533,8 @@ void EditorApp::drawMenuBar() {
     }
     ImGui::Separator();
     ImGui::MenuItem("FXAA Anti-Aliasing", nullptr, &fxaaEnabled_);
+    ImGui::MenuItem("Asset Browser", nullptr, &showAssetBrowserPanel_);
+    ImGui::MenuItem("Sound Keys Panel", nullptr, &showSoundKeysPanel_);
     ImGui::EndMenu();
   }
 
@@ -537,6 +623,24 @@ void EditorApp::drawHierarchyPanel() {
       selectedCompIdx_ = ci;
       selectedElemIdx_ = -1;
     }
+    if (ImGui::BeginDragDropTarget()) {
+      if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetDragDropPayload)) {
+        const char* dropped = static_cast<const char*>(payload->Data);
+        if (dropped != nullptr && *dropped != '\0') {
+          auto newImg = iota::model::createDefaultElement(iota::model::ElementType::Image);
+          std::string label(dropped);
+          if (label.rfind("local:", 0) == 0) label = label.substr(6);
+          else if (label.rfind("internalres:", 0) == 0) label = label.substr(12);
+          newImg.displayName = label;
+          iota::model::assignAssetToElement(newImg, dropped, false);
+          comp.elements.push_back(std::move(newImg));
+          selectedCompIdx_ = ci;
+          selectedElemIdx_ = static_cast<int>(comp.elements.size()) - 1;
+          pushUndoState("Drop Asset into Comp");
+        }
+      }
+      ImGui::EndDragDropTarget();
+    }
     if (ci > 0 && ImGui::BeginPopupContextItem()) {
       if (ImGui::MenuItem("Delete Composition")) compToDelete = ci;
       ImGui::EndPopup();
@@ -569,6 +673,18 @@ void EditorApp::drawHierarchyPanel() {
         if (ImGui::Selectable(elLabel.c_str(), selected)) {
           selectedCompIdx_ = ci;
           selectedElemIdx_ = ei;
+        }
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetDragDropPayload)) {
+            const char* dropped = static_cast<const char*>(payload->Data);
+            if (dropped != nullptr && *dropped != '\0' &&
+                iota::model::assignAssetToElement(el, dropped, false)) {
+              selectedCompIdx_ = ci;
+              selectedElemIdx_ = ei;
+              pushUndoState("Assign Asset to Layer");
+            }
+          }
+          ImGui::EndDragDropTarget();
         }
         if (ImGui::BeginPopupContextItem()) {
           if (ImGui::MenuItem("Move Up", nullptr, false, ei > 0)) {
@@ -695,6 +811,21 @@ void EditorApp::drawInspectorPanel() {
           actions.editLabel = "Enable Curve Interpolation";
         }
       }
+    } else if (el.type == iota::model::ElementType::SoundKeys) {
+      ImGui::Separator();
+      renderSoundKeysCanvasAndMeters(el, frameStats_, activeSoundKeysRange_, actions, 115.0f);
+    } else if (el.type == iota::model::ElementType::BlurEffect) {
+      if (!el.props.contains("measureBlurRadius")) {
+        if (ImGui::SmallButton("Enable Audio-Reactive Blur Radius")) {
+          el.props.setMVar("measureBlurRadius",
+                           iota::model::MVariableFloat{{{"Nothing", 0.5f, 0.5f}}},
+                           "mvarf 0.0 3.0",
+                           "2_blur");
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = "Enable Audio-Reactive Blur Radius";
+        }
+      }
     }
 
     ImGui::Separator();
@@ -734,7 +865,7 @@ void EditorApp::drawInspectorPanel() {
                                              L"Images (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0")) {
         auto bytes = readAllBytes(*chosen);
         if (!bytes.empty()) {
-          const std::string fname = chosen->filename().string();
+          const std::string fname = iota::core::pathFilenameUtf8(*chosen);
           project_.localAssets[fname] = std::move(bytes);
           el.props.setString(actions.assetTargetPropName, "local:" + fname, "img", "1_image");
           renderer_.invalidateLocalAssets();
@@ -835,6 +966,20 @@ void EditorApp::drawAudioTimelinePanel() {
   ImGui::End();
 }
 
+void EditorApp::drawSoundKeysPanel() {
+  InspectorActions skActions;
+  renderSoundKeysPanel(project_,
+                       frameStats_,
+                       activeSoundKeysRange_,
+                       showSoundKeysPanel_,
+                       selectedCompIdx_,
+                       selectedElemIdx_,
+                       skActions);
+  if (skActions.undoSnapshotNeeded) {
+    pushUndoState(skActions.editLabel.empty() ? "Modify Sound Keys" : skActions.editLabel);
+  }
+}
+
 void EditorApp::drawExportModal() {
   if (openExportModal_) {
     ImGui::OpenPopup("Export Video (MP4)");
@@ -866,10 +1011,11 @@ void EditorApp::drawExportModal() {
     ImGui::InputDouble("Start (sec)", &exportCfg_.startSec, 0.5, 5.0, "%.2f");
     ImGui::InputDouble("End (sec, 0=full)", &exportCfg_.endSec, 0.5, 5.0, "%.2f");
 
-    char outBuf[512]{};
-    std::snprintf(outBuf, sizeof(outBuf), "%s", exportCfg_.outputPath.string().c_str());
+    char outBuf[1024]{};
+    const std::string outUtf8 = iota::core::pathToUtf8(exportCfg_.outputPath);
+    std::snprintf(outBuf, sizeof(outBuf), "%s", outUtf8.c_str());
     if (ImGui::InputText("Output MP4", outBuf, sizeof(outBuf))) {
-      exportCfg_.outputPath = std::filesystem::path(outBuf);
+      exportCfg_.outputPath = iota::core::pathFromUtf8(outBuf);
     }
     ImGui::SameLine();
     if (ImGui::Button("Browse...") && window_) {
@@ -921,41 +1067,296 @@ void EditorApp::drawExportModal() {
   }
 }
 
-void EditorApp::actionOpenPreset() {
-  if (!window_) return;
-  auto chosen = showOpenFileDialog(glfwGetWin32Window(window_),
-                                     L"Open Visualizer Preset (.viz / .json)",
-                                     L"Visualizer Presets (*.viz;*.json;*.txt)\0*.viz;*.json;*.txt\0All Files (*.*)\0*.*\0");
-  if (!chosen) return;
+void EditorApp::drawAssetBrowserPanel() {
+  AssetBrowserActions actions;
+  renderAssetBrowserPanel(project_,
+                          audio_,
+                          device_,
+                          renderer_,
+                          assetBrowserState_,
+                          selectedCompIdx_,
+                          selectedElemIdx_,
+                          showAssetBrowserPanel_,
+                          actions);
 
-  std::string err;
-  auto loaded = iota::preset_io::loadProjectFromFile(*chosen, &err);
-  if (!loaded) {
-    statusBanner_ = "Failed to load preset: " + err;
+  if (actions.selectCompIdx >= 0) {
+    selectedCompIdx_ = actions.selectCompIdx;
+    selectedElemIdx_ = actions.selectElemIdx;
+  }
+  if (actions.invalidateLocalAssets) {
+    renderer_.invalidateLocalAssets();
+  }
+  if (actions.requestImportImages && window_) {
+    const auto chosen = showOpenFilesDialog(
+        glfwGetWin32Window(window_),
+        L"Import Image Assets into Project",
+        L"Images (*.png;*.jpg;*.jpeg;*.bmp;*.tga)\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files (*.*)\0*.*\0");
+    int imported = 0;
+    for (const auto& path : chosen) {
+      auto bytes = readAllBytes(path);
+      if (!bytes.empty()) {
+        const std::string fname = iota::core::pathFilenameUtf8(path);
+        project_.localAssets[fname] = std::move(bytes);
+        assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
+        assetBrowserState_.selectedLabel = fname;
+        assetBrowserState_.selectedUri = "local:" + fname;
+        ++imported;
+      }
+    }
+    if (imported > 0) {
+      renderer_.invalidateLocalAssets();
+      pushUndoState(imported == 1 ? "Import Image Asset" : "Import Image Assets");
+      statusBanner_ = "Imported " + std::to_string(imported) + " asset(s)";
+    }
+  }
+  if (actions.requestReplaceLocalAsset && !actions.replaceTargetName.empty() && window_) {
+    if (auto chosen = showOpenFileDialog(
+            glfwGetWin32Window(window_),
+            L"Replace Local Asset File",
+            L"Images (*.png;*.jpg;*.jpeg;*.bmp;*.tga)\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files (*.*)\0*.*\0")) {
+      auto bytes = readAllBytes(*chosen);
+      if (!bytes.empty()) {
+        project_.localAssets[actions.replaceTargetName] = std::move(bytes);
+        renderer_.invalidateLocalAssets();
+        pushUndoState("Replace Local Asset");
+        statusBanner_ = "Replaced local:" + actions.replaceTargetName;
+      }
+    }
+  }
+  if (actions.requestImportAudio) {
+    actionOpenAudio();
+  }
+  if (actions.requestLoadAudioPath && !actions.loadAudioPath.empty()) {
+    const std::filesystem::path audioDiskPath = iota::core::pathFromUtf8(actions.loadAudioPath);
+    std::string err;
+    if (audio_.loadFile(audioDiskPath, &err)) {
+      project_.metadata.audioPath = iota::core::pathToUtf8(audioDiskPath);
+      playAccumTimeSec_ = 0.0;
+      renderer_.resetSimulation();
+      audio_.play();
+      statusBanner_ = "Playing " + iota::core::pathFilenameUtf8(audioDiskPath);
+    } else {
+      statusBanner_ = "Audio load failed: " + err;
+    }
+  }
+  if (actions.undoSnapshotNeeded) {
+    pushUndoState(actions.editLabel.empty() ? "Modify Assets" : actions.editLabel);
+  }
+}
+
+void EditorApp::drawProjectManagerModal() {
+  ProjectManagerActions actions;
+  renderProjectManagerModal(openProjectManagerModal_,
+                            project_,
+                            currentProjectPath_,
+                            projectDirty_,
+                            projectLibrary_,
+                            projectManagerState_,
+                            actions);
+
+  if (actions.registryModified && !isSmokeTest_) {
+    projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+  }
+  if (actions.openFileDialog) {
+    actionOpenPreset();
+  }
+  if (actions.openRecentFile && !actions.openPath.empty()) {
+    loadProjectFromPath(actions.openPath);
+  }
+  if (actions.createTemplateProject || actions.createAndSaveProject) {
+    project_ = iota::preset_io::createProjectFromTemplate(actions.templateKind,
+                                                          projectManagerState_.newName,
+                                                          projectManagerState_.newWidth,
+                                                          projectManagerState_.newHeight,
+                                                          projectManagerState_.newFps);
+    project_.metadata.notes = projectManagerState_.newNotes;
+    currentProjectPath_.clear();
+    projectDirty_ = false;
+    applyProjectMetadata(project_.metadata);
+    selectedCompIdx_ = 0;
+    selectedElemIdx_ = project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0;
+    renderer_.invalidateLocalAssets();
+    renderer_.resetSimulation();
+    undoStack_.clear(project_);
+    updateWindowTitle();
+    statusBanner_ = "Created project " + project_.metadata.name;
+    if (actions.createAndSaveProject) {
+      saveProjectAsDialog("iota");
+    }
+  }
+  if (actions.applyCurrentSettings) {
+    project_.metadata.name = projectManagerState_.curName;
+    project_.metadata.notes = projectManagerState_.curNotes;
+    project_.metadata.previewWidth = projectManagerState_.curWidth;
+    project_.metadata.previewHeight = projectManagerState_.curHeight;
+    project_.metadata.targetFps = projectManagerState_.curFps;
+    applyProjectMetadata(project_.metadata);
+    pushUndoState("Update Project Settings");
+    statusBanner_ = "Updated project settings";
+  }
+  if (actions.requestChangeAudio) {
+    actionOpenAudio();
+  }
+  if (actions.requestCleanUnusedAssets) {
+    const int removed = iota::model::removeUnusedLocalAssets(project_);
+    if (removed > 0) {
+      renderer_.invalidateLocalAssets();
+      pushUndoState("Remove Unused Assets");
+      statusBanner_ = "Removed " + std::to_string(removed) + " unused asset(s)";
+    } else {
+      statusBanner_ = "No unused local assets found";
+    }
+  }
+  if (actions.requestSave) saveCurrentProject();
+  if (actions.requestSaveAsIota) saveProjectAsDialog("iota");
+  if (actions.requestExportViz) saveProjectAsDialog("viz");
+  if (actions.requestExportJson) saveProjectAsDialog("json");
+}
+
+void EditorApp::updateWindowTitle() {
+  if (isSmokeTest_ || !window_) {
     return;
   }
+  const std::string rawName = project_.metadata.name.empty() ? "Untitled Project" : project_.metadata.name;
+  std::string title = "Iota Studio - " + iota::core::sanitizeUtf8(rawName);
+  if (projectDirty_) {
+    title += " *";
+  }
+  glfwSetWindowTitle(window_, title.c_str());
+}
+
+void EditorApp::applyProjectMetadata(const iota::model::ProjectMetadata& meta) {
+  previewWidth_ = std::max(64, meta.previewWidth);
+  previewHeight_ = std::max(64, meta.previewHeight);
+  exportCfg_.width = previewWidth_;
+  exportCfg_.height = previewHeight_;
+  exportCfg_.fps = std::clamp(meta.targetFps, 15, 240);
+}
+
+void EditorApp::recordProjectInLibrary(const std::filesystem::path& path) {
+  if (isSmokeTest_ || path.empty()) {
+    return;
+  }
+  iota::preset_io::RecentProjectEntry entry;
+  entry.name = project_.metadata.name.empty()
+                   ? iota::core::pathStemUtf8(path)
+                   : iota::core::sanitizeUtf8(project_.metadata.name);
+  entry.path = iota::core::pathToUtf8(path);
+  entry.compositionCount = static_cast<int>(project_.compositions.size());
+  entry.assetCount = static_cast<int>(project_.localAssets.size());
+  projectLibrary_.recordOpened(std::move(entry));
+  projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+}
+
+bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
+  std::string err;
+  auto loaded = iota::preset_io::loadProjectFromFile(path, &err);
+  if (!loaded) {
+    statusBanner_ = "Failed to load preset: " + err;
+    return false;
+  }
   project_ = std::move(*loaded);
+  if (project_.metadata.name.empty() || project_.metadata.name == "Untitled Project") {
+    project_.metadata.name = iota::core::pathStemUtf8(path);
+  }
+  currentProjectPath_ = path;
+  projectDirty_ = false;
+  applyProjectMetadata(project_.metadata);
   selectedCompIdx_ = 0;
   selectedElemIdx_ = project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0;
   renderer_.invalidateLocalAssets();
   renderer_.resetSimulation();
-  pushUndoState("Open Preset");
-  statusBanner_ = "Loaded " + chosen->filename().string();
+  undoStack_.clear(project_);
+
+  if (!project_.metadata.audioPath.empty()) {
+    const std::filesystem::path linkedAudio = iota::core::pathFromUtf8(project_.metadata.audioPath);
+    if (iota::core::pathExistsNoThrow(linkedAudio) && audio_.loadFile(linkedAudio)) {
+      playAccumTimeSec_ = 0.0;
+      audio_.pause();
+    }
+  }
+
+  recordProjectInLibrary(path);
+  updateWindowTitle();
+  statusBanner_ = "Loaded " + iota::core::pathFilenameUtf8(path);
+  return true;
+}
+
+bool EditorApp::saveCurrentProject() {
+  if (currentProjectPath_.empty()) {
+    return saveProjectAsDialog("iota");
+  }
+  project_.metadata.previewWidth = previewWidth_;
+  project_.metadata.previewHeight = previewHeight_;
+  project_.metadata.targetFps = exportCfg_.fps;
+
+  std::string err;
+  if (!iota::preset_io::saveProjectAutoFormat(project_, currentProjectPath_, &err)) {
+    statusBanner_ = "Save failed: " + err;
+    return false;
+  }
+  projectDirty_ = false;
+  recordProjectInLibrary(currentProjectPath_);
+  updateWindowTitle();
+  statusBanner_ = "Saved " + iota::core::pathFilenameUtf8(currentProjectPath_);
+  return true;
+}
+
+bool EditorApp::saveProjectAsDialog(const char* preferredExt) {
+  if (!window_) return false;
+  const std::string extStr = preferredExt ? preferredExt : "iota";
+  const wchar_t* title = L"Save Project (.iota)";
+  const wchar_t* filter =
+      L"Iota Project (*.iota)\0*.iota\0Visualizer Preset (*.viz)\0*.viz\0JSON Scene (*.json)\0*.json\0";
+  const wchar_t* defExt = L"iota";
+  const wchar_t* initName = L"project.iota";
+  if (extStr == "viz") {
+    title = L"Export Preset (.viz)";
+    filter = L"Visualizer Preset (*.viz)\0*.viz\0";
+    defExt = L"viz";
+    initName = L"preset.viz";
+  } else if (extStr == "json") {
+    title = L"Export Scene JSON (.json)";
+    filter = L"JSON Scene (*.json)\0*.json\0";
+    defExt = L"json";
+    initName = L"scene.json";
+  }
+
+  auto chosen = showSaveFileDialog(glfwGetWin32Window(window_), title, filter, defExt, initName);
+  if (!chosen) return false;
+
+  project_.metadata.previewWidth = previewWidth_;
+  project_.metadata.previewHeight = previewHeight_;
+  project_.metadata.targetFps = exportCfg_.fps;
+  if (project_.metadata.name.empty() || project_.metadata.name == "Untitled Project") {
+    project_.metadata.name = iota::core::pathStemUtf8(*chosen);
+  }
+
+  std::string err;
+  if (!iota::preset_io::saveProjectAutoFormat(project_, *chosen, &err)) {
+    statusBanner_ = "Save failed: " + err;
+    return false;
+  }
+  currentProjectPath_ = *chosen;
+  projectDirty_ = false;
+  recordProjectInLibrary(*chosen);
+  updateWindowTitle();
+  statusBanner_ = "Saved " + iota::core::pathFilenameUtf8(*chosen);
+  return true;
+}
+
+void EditorApp::actionOpenPreset() {
+  if (!window_) return;
+  auto chosen = showOpenFileDialog(
+      glfwGetWin32Window(window_),
+      L"Open Project / Visualizer Preset (.iota / .viz / .json)",
+      L"Iota & Presets (*.iota;*.viz;*.json;*.txt)\0*.iota;*.viz;*.json;*.txt\0All Files (*.*)\0*.*\0");
+  if (!chosen) return;
+  loadProjectFromPath(*chosen);
 }
 
 void EditorApp::actionSavePreset(bool asViz) {
-  if (!window_) return;
-  auto chosen = showSaveFileDialog(glfwGetWin32Window(window_),
-                                     asViz ? L"Export Preset (.viz)" : L"Save Scene JSON (.json)",
-                                     asViz ? L"Visualizer Preset (*.viz)\0*.viz\0" : L"JSON Preset (*.json)\0*.json\0",
-                                     asViz ? L"viz" : L"json",
-                                     asViz ? L"preset.viz" : L"scene.json");
-  if (!chosen) return;
-
-  std::string err;
-  const bool ok = asViz ? iota::preset_io::saveProjectAsViz(project_, *chosen, &err)
-                        : iota::preset_io::saveProjectAsJson(project_, *chosen, &err);
-  statusBanner_ = ok ? ("Saved " + chosen->filename().string()) : ("Save failed: " + err);
+  saveProjectAsDialog(asViz ? "viz" : "json");
 }
 
 void EditorApp::actionOpenAudio() {
@@ -967,10 +1368,15 @@ void EditorApp::actionOpenAudio() {
 
   std::string err;
   if (audio_.loadFile(*chosen, &err)) {
+    const std::string pathStr = iota::core::pathToUtf8(*chosen);
+    const std::string fname = iota::core::pathFilenameUtf8(*chosen);
+    project_.metadata.audioPath = pathStr;
+    project_.metadata.audioAssets[fname] = pathStr;
     playAccumTimeSec_ = 0.0;
     renderer_.resetSimulation();
     audio_.play();
-    statusBanner_ = "Playing " + chosen->filename().string();
+    pushUndoState("Link Audio Track");
+    statusBanner_ = "Playing " + fname;
   } else {
     statusBanner_ = "Audio load failed: " + err;
   }

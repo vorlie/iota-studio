@@ -1,6 +1,7 @@
 #include "iota/model/scene.hpp"
 
 #include <atomic>
+#include <cctype>
 
 namespace iota::model {
 
@@ -14,9 +15,9 @@ int nextElementId() {
 constexpr const char* kBlendChoices = "_child Alpha PreMulAlpha Screen Add AddAlpha";
 constexpr const char* kAnchorChoices = "sel unset start center end";
 constexpr const char* kPosMeasureChoices =
-    "_child Nothing BeatCamShakeMore BeatCamShakeLess BeatRandomShake ConstantShakeMore ConstantShake TrackPosition";
+    "_child Nothing BeatCamShakeMore BeatCamShakeLess BeatRandomShake ConstantShakeMore ConstantShake TrackPosition SoundKeys1 SoundKeys2 SoundKeys3 SoundKeysShake1 SoundKeysShake2 SoundKeysShake3";
 constexpr const char* kAllMeasureChoices =
-    "_child Nothing Beat TotalTime TotalTimeBackward TotalTimeWhenPlaying TotalTimeAndBeat TrackPosition BeatRandomShake BeatCamShakeRotMore BeatCamShakeRotLess ConstantShakeRotMore ConstantShakeRotLess BeatTriggerAnim";
+    "_child Nothing Beat TotalTime TotalTimeBackward TotalTimeWhenPlaying TotalTimeAndBeat TrackPosition BeatRandomShake BeatCamShakeRotMore BeatCamShakeRotLess ConstantShakeRotMore ConstantShakeRotLess BeatTriggerAnim SoundKeys1 SoundKeys2 SoundKeys3 SoundKeysShake1 SoundKeysShake2 SoundKeysShake3";
 
 void setLegacyChildMVar(PropertyBag& props, std::string_view key, std::string_view what,
                         float a, float b, const char* whatChoices, std::string_view group) {
@@ -106,6 +107,7 @@ ElementType elementTypeFromString(std::string_view name) noexcept {
   if (name == "AppLogo") return ElementType::AppLogo;
   if (name == "StatText") return ElementType::StatText;
   if (name == "CustomShader") return ElementType::CustomShader;
+  if (name == "SoundKeys") return ElementType::SoundKeys;
   return ElementType::Unknown;
 }
 
@@ -125,6 +127,7 @@ std::string_view elementTypeToString(ElementType type) noexcept {
     case ElementType::AppLogo: return "AppLogo";
     case ElementType::StatText: return "StatText";
     case ElementType::CustomShader: return "CustomShader";
+    case ElementType::SoundKeys: return "SoundKeys";
     default: return "None";
   }
 }
@@ -132,6 +135,7 @@ std::string_view elementTypeToString(ElementType type) noexcept {
 const std::vector<ElementType>& addableElementTypes() noexcept {
   static const std::vector<ElementType> kTypes = {
       ElementType::AudioProvider,
+      ElementType::SoundKeys,
       ElementType::Image,
       ElementType::Bars,
       ElementType::Particles,
@@ -353,6 +357,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("MaskImage", "internalres:white", "img internalres:white internalres:vignette80 composition:0", "1_appearance");
       el.props.setFloat("blurRadius", 1.5f, 0.0f, 3.0f, "2_blur");
       el.props.setFloat("blurMultiplier", 4.0f, 1.0f, 6.0f, "2_blur");
+      el.props.setMVar("measureBlurRadius", MVariableFloat{{{"Nothing", 0.5f, 0.5f}}}, "mvarf 0.0 3.0", "2_blur");
       el.props.setBool("showUnblurredContent", true, "1_appearance");
       el.props.setBool("showUnblurredContentUnder", false, "1_appearance");
       el.props.setVec2("1layerScale", {1.0f, 1.0f}, 0.0f, 10.0f, "2_blur");
@@ -416,6 +421,42 @@ Element createDefaultElement(ElementType type) {
       break;
     }
 
+    case ElementType::SoundKeys: {
+      el.displayName = "Sound Keys";
+      el.props.setInt("_id", id, 0, 0, "", "ih");
+      el.props.setBool("visible", true, "0_general", "b");
+      el.props.setInt("audioProviderIndex", 1, 1, 4, "0_general");
+      el.props.setBool("useRawSpectrum", false, "0_general", "b");
+      el.props.setBool("autoScaleCeiling", true, "0_general", "b");
+      el.props.setFloat("displayCeiling", 50.0f, 10.0f, 2000.0f, "0_general");
+
+      struct RangeDef {
+        float minFreq, maxFreq, minAmp, maxAmp;
+      };
+      constexpr RangeDef kRangeDefs[3] = {
+          {0.00f, 0.20f, 2.0f, 70.0f},
+          {0.25f, 0.55f, 2.0f, 55.0f},
+          {0.60f, 0.95f, 2.0f, 45.0f},
+      };
+      for (int r = 0; r < 3; ++r) {
+        const std::string pfx = "range" + std::to_string(r + 1);
+        const std::string grp = std::to_string(r + 1) + "_range" + std::to_string(r + 1);
+        el.props.setBool(pfx + "Enabled", true, grp, "b");
+        el.props.setFloat(pfx + "MinFreq", kRangeDefs[r].minFreq, 0.0f, 1.0f, grp);
+        el.props.setFloat(pfx + "MaxFreq", kRangeDefs[r].maxFreq, 0.0f, 1.0f, grp);
+        el.props.setFloat(pfx + "MinAmp", kRangeDefs[r].minAmp, 0.0f, 1000.0f, grp);
+        el.props.setFloat(pfx + "MaxAmp", kRangeDefs[r].maxAmp, 1.0f, 2000.0f, grp);
+        el.props.setString(pfx + "Mode", "Peak", "sel Average Peak OnOff", grp);
+        el.props.setString(pfx + "Falloff", "Exponential", "sel None Linear Exponential Integrate", grp);
+        el.props.setFloat(pfx + "AttackMs", 15.0f, 0.0f, 250.0f, grp);
+        el.props.setFloat(pfx + "FalloffSec", 0.35f, 0.01f, 5.0f, grp);
+        el.props.setFloat(pfx + "OutputMin", 0.0f, -5.0f, 5.0f, grp);
+        el.props.setFloat(pfx + "OutputMax", 1.0f, -5.0f, 10.0f, grp);
+        el.props.setFloat(pfx + "IntegrateSpeed", 1.0f, 0.05f, 10.0f, grp);
+      }
+      break;
+    }
+
     default: {
       addBaseElementProperties(el.props, id, iota::core::BlendMode::Alpha);
       break;
@@ -441,9 +482,10 @@ Project createStarterProject() {
   proj.version = "10";
   proj.templateId = 0;
 
-  // Composition 0: Final output (AudioProvider + Background Image + Blur Glow + Circular Bars + Text)
+  // Composition 0: Final output (AudioProvider + SoundKeys + Background Image + Particles + Bars + Text)
   Composition finalComp = createDefaultComposition(0);
   finalComp.elements.push_back(createDefaultElement(ElementType::AudioProvider));
+  finalComp.elements.push_back(createDefaultElement(ElementType::SoundKeys));
 
   Element bg = createDefaultElement(ElementType::Image);
   bg.displayName = "Background";
@@ -466,6 +508,160 @@ Project createStarterProject() {
 
   proj.compositions.push_back(std::move(finalComp));
   return proj;
+}
+
+namespace {
+
+int countUriInEntry(const PropertyEntry& entry, std::string_view uri) noexcept {
+  int count = 0;
+  if (const auto* s = std::get_if<std::string>(&entry.value); s != nullptr && *s == uri) {
+    ++count;
+  }
+  for (const auto& ch : entry.children) {
+    count += countUriInEntry(ch.entry, uri);
+  }
+  return count;
+}
+
+void rewriteUriInEntry(PropertyEntry& entry, std::string_view oldUri, std::string_view newUri) {
+  if (auto* s = std::get_if<std::string>(&entry.value); s != nullptr && *s == oldUri) {
+    *s = std::string(newUri);
+  }
+  for (auto& ch : entry.children) {
+    rewriteUriInEntry(ch.entry, oldUri, newUri);
+  }
+}
+
+bool eqIgnoreCaseAscii(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void setUriPropertyPreservingMeta(PropertyBag& bag,
+                                 std::string_view preferredKey,
+                                 std::string_view uri,
+                                 std::string_view defaultTypeTag,
+                                 std::string_view defaultGroup) {
+  for (auto& item : bag.items()) {
+    if (eqIgnoreCaseAscii(item.key, preferredKey)) {
+      item.entry.value = std::string(uri);
+      return;
+    }
+  }
+  bag.setString(preferredKey, uri, defaultTypeTag, defaultGroup);
+}
+
+}  // namespace
+
+int countAssetReferences(const Project& project, std::string_view assetUri) noexcept {
+  if (assetUri.empty()) {
+    return 0;
+  }
+  int total = 0;
+  for (const auto& comp : project.compositions) {
+    for (const auto& item : comp.props.items()) {
+      total += countUriInEntry(item.entry, assetUri);
+    }
+    for (const auto& el : comp.elements) {
+      for (const auto& item : el.props.items()) {
+        total += countUriInEntry(item.entry, assetUri);
+      }
+    }
+  }
+  return total;
+}
+
+bool renameLocalAsset(Project& project, std::string_view oldName, std::string_view newName) {
+  if (oldName.empty() || newName.empty() || oldName == newName) {
+    return false;
+  }
+  const std::string oldKey(oldName);
+  const std::string newKey(newName);
+  auto it = project.localAssets.find(oldKey);
+  if (it == project.localAssets.end() || project.localAssets.find(newKey) != project.localAssets.end()) {
+    return false;
+  }
+
+  auto bytes = std::move(it->second);
+  project.localAssets.erase(it);
+  project.localAssets.emplace(newKey, std::move(bytes));
+
+  if (auto fit = project.metadata.assetFolders.find(oldKey); fit != project.metadata.assetFolders.end()) {
+    std::string folder = std::move(fit->second);
+    project.metadata.assetFolders.erase(fit);
+    project.metadata.assetFolders.emplace(newKey, std::move(folder));
+  }
+
+  const std::string oldUri = "local:" + oldKey;
+  const std::string newUri = "local:" + newKey;
+  for (auto& comp : project.compositions) {
+    for (auto& item : comp.props.items()) {
+      rewriteUriInEntry(item.entry, oldUri, newUri);
+    }
+    for (auto& el : comp.elements) {
+      for (auto& item : el.props.items()) {
+        rewriteUriInEntry(item.entry, oldUri, newUri);
+      }
+    }
+  }
+  return true;
+}
+
+int removeUnusedLocalAssets(Project& project) {
+  int removed = 0;
+  for (auto it = project.localAssets.begin(); it != project.localAssets.end();) {
+    const std::string uri = "local:" + it->first;
+    if (countAssetReferences(project, uri) == 0) {
+      project.metadata.assetFolders.erase(it->first);
+      it = project.localAssets.erase(it);
+      ++removed;
+    } else {
+      ++it;
+    }
+  }
+  return removed;
+}
+
+bool assignAssetToElement(Element& el, std::string_view uri, bool asMask) {
+  if (uri.empty()) {
+    return false;
+  }
+  if (asMask) {
+    if (el.type == ElementType::Image) {
+      setUriPropertyPreservingMeta(el.props, "MaskImage", uri, "img internalres:white", "1_image");
+      return true;
+    }
+    if (el.type == ElementType::BlurEffect) {
+      setUriPropertyPreservingMeta(el.props, "MaskImage", uri, "img internalres:white", "1_appearance");
+      return true;
+    }
+    return false;
+  }
+
+  switch (el.type) {
+    case ElementType::Image:
+      setUriPropertyPreservingMeta(el.props, "customImage", uri, "img internalres:placeholderart5", "1_image");
+      return true;
+    case ElementType::Particles:
+      setUriPropertyPreservingMeta(el.props, "customImage", uri, "pimg internalres:particle_blur01", "appearance");
+      return true;
+    case ElementType::RgbSplitEffect:
+      setUriPropertyPreservingMeta(el.props, "targetImage", uri, "img composition:1", "1_appearance");
+      return true;
+    case ElementType::MotionBlurEffect:
+    case ElementType::MirrorEffect:
+    case ElementType::CustomShader:
+      setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:1", "1_appearance");
+      return true;
+    default:
+      return false;
+  }
 }
 
 } // namespace iota::model

@@ -2,6 +2,7 @@
 
 #include "iota/core/procedural_assets.hpp"
 #include "iota/core/types.hpp"
+#include "iota/core/utf8_path.hpp"
 #include "iota/dsp/filters.hpp"
 #include "iota/engine/builtin_shaders.hpp"
 #include "iota/engine/layout.hpp"
@@ -23,6 +24,8 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <unordered_map>
@@ -520,6 +523,7 @@ struct SceneRenderer::Impl {
 
   FontAtlasCache fontCache;
   iota::dsp::MVarEvaluator mvarEval;
+  iota::dsp::SoundKeysProcessor soundKeysProc;
   std::vector<iota::dsp::AudioAnalyzer> analyzers{1};
   std::unordered_map<int, ParticlePool> particlePools;
   std::unordered_map<int, iota::core::RectF> motionBlurPrevRects;
@@ -654,8 +658,9 @@ struct SceneRenderer::Impl {
       return out;
     }
 
-    // Desktop fallback: allow direct filesystem image path
-    if (std::filesystem::exists(uri)) {
+    // Desktop fallback: allow direct filesystem image path (wide Unicode-safe via pathFromUtf8)
+    const std::filesystem::path diskPath = iota::core::pathFromUtf8(uri);
+    if (iota::core::pathExistsNoThrow(diskPath)) {
       std::string key(uri);
       auto cached = localTexCache.find(key);
       if (cached != localTexCache.end()) {
@@ -663,24 +668,46 @@ struct SceneRenderer::Impl {
         device->textureSize(out.tex, out.texW, out.texH);
         return out;
       }
-      int iw = 0, ih = 0, ch = 0;
-      uint8_t* decoded = stbi_load(key.c_str(), &iw, &ih, &ch, 4);
-      if (decoded && iw > 0 && ih > 0) {
-        iota::rhi::TextureDesc td;
-        td.width = iw;
-        td.height = ih;
-        td.rgbaPixels = decoded;
-        iota::rhi::TextureHandle th = device->createTexture2D(td);
-        stbi_image_free(decoded);
-        if (th) {
-          localTexCache.emplace(std::move(key), th);
-          out.tex = th;
-          out.texW = iw;
-          out.texH = ih;
-          return out;
+      std::vector<uint8_t> imgBytes;
+      {
+        std::ifstream f(diskPath, std::ios::binary | std::ios::ate);
+        if (f.is_open()) {
+          const auto sz = f.tellg();
+          if (sz > 0 &&
+              static_cast<uint64_t>(sz) <= static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+            imgBytes.resize(static_cast<size_t>(sz));
+            f.seekg(0, std::ios::beg);
+            if (!f.read(reinterpret_cast<char*>(imgBytes.data()), sz)) {
+              imgBytes.clear();
+            }
+          }
         }
-      } else if (decoded) {
-        stbi_image_free(decoded);
+      }
+      if (!imgBytes.empty()) {
+        int iw = 0, ih = 0, ch = 0;
+        uint8_t* decoded = stbi_load_from_memory(imgBytes.data(),
+                                                 static_cast<int>(imgBytes.size()),
+                                                 &iw,
+                                                 &ih,
+                                                 &ch,
+                                                 4);
+        if (decoded && iw > 0 && ih > 0) {
+          iota::rhi::TextureDesc td;
+          td.width = iw;
+          td.height = ih;
+          td.rgbaPixels = decoded;
+          iota::rhi::TextureHandle th = device->createTexture2D(td);
+          stbi_image_free(decoded);
+          if (th) {
+            localTexCache.emplace(std::move(key), th);
+            out.tex = th;
+            out.texW = iw;
+            out.texH = ih;
+            return out;
+          }
+        } else if (decoded) {
+          stbi_image_free(decoded);
+        }
       }
     }
 
@@ -1414,7 +1441,13 @@ struct SceneRenderer::Impl {
     }
 
     const iota::rhi::TextureHandle srcTex = device->renderTargetColorTexture(compTargets[static_cast<size_t>(srcIdx)]);
-    const float blurRadius = std::clamp(getFloatCI(p, "blurRadius", 1.5f), 0.0f, 3.0f);
+    const int rid = el.runtimeId();
+    const float baseBlurRadius = getFloatCI(p, "blurRadius", 1.5f);
+    const float reactiveBlur = mvarEval.evaluateScalar(
+        iota::dsp::MVarEvaluator::makeKey(rid, "measureBlurRadius"),
+        p.getMVar("measureBlurRadius"),
+        mctx);
+    const float blurRadius = std::clamp(baseBlurRadius + reactiveBlur, 0.0f, 6.0f);
     const int levels = std::clamp(static_cast<int>(std::lround(getFloatCI(p, "blurMultiplier", 3.0f))),
                                   1, static_cast<int>(blurPyramidRts.size()));
 
@@ -1789,6 +1822,8 @@ struct SceneRenderer::Impl {
     device->setUniformInt(sh, "u_texture", 0);
     device->setUniformFloat(sh, "u_time", static_cast<float>(mctx.totalTimeSec));
     device->setUniformVec2(sh, "u_resolution", static_cast<float>(width), static_cast<float>(height));
+    device->setUniformFloat(sh, "u_beat", mctx.beat);
+    device->setUniformVec4(sh, "u_soundKeys", mctx.soundKeys[0], mctx.soundKeys[1], mctx.soundKeys[2], mctx.beat);
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
   }
@@ -1871,6 +1906,7 @@ void SceneRenderer::shutdown() {
 
 void SceneRenderer::resetSimulation() {
   impl_->mvarEval.reset();
+  impl_->soundKeysProc.reset();
   for (auto& a : impl_->analyzers) {
     a.reset();
   }
@@ -1884,6 +1920,15 @@ void SceneRenderer::invalidateLocalAssets() {
     impl_->device->destroyTexture(t);
   }
   impl_->localTexCache.clear();
+}
+
+AssetThumbnail SceneRenderer::resolveAssetPreview(const iota::model::Project& project,
+                                                      std::string_view uri) {
+  if (!impl_ || !impl_->initialized || !impl_->device) {
+    return {};
+  }
+  const auto resolved = impl_->resolveTextureUri(project, uri);
+  return {resolved.tex, resolved.texW, resolved.texH, resolved.isFbo};
 }
 
 iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Project& project,
@@ -1963,6 +2008,49 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     providerSlot = 1;
   }
 
+  const iota::model::Element* soundKeysEl = nullptr;
+  for (const auto& comp : project.compositions) {
+    for (const auto& el : comp.elements) {
+      if (el.type == iota::model::ElementType::SoundKeys && getBoolCI(el.props, "visible", true)) {
+        soundKeysEl = &el;
+        break;
+      }
+    }
+    if (soundKeysEl) {
+      break;
+    }
+  }
+
+  std::array<float, 3> soundKeysVals{0.0f, 0.0f, 0.0f};
+  if (soundKeysEl) {
+    const auto skCfg = iota::dsp::soundKeysConfigFromElement(*soundKeysEl);
+    const int skSlot = std::clamp(skCfg.audioProviderIndex - 1, 0, std::max(0, providerSlot - 1));
+    const auto& skAnalyzer = impl_->analyzers[static_cast<size_t>(skSlot)];
+    const auto& skBars =
+        skCfg.useRawSpectrum ? skAnalyzer.lastResult().rawBars : skAnalyzer.lastResult().smoothedBars;
+    const auto& skRes = impl_->soundKeysProc.process(skBars, skCfg, timing.dt);
+    soundKeysVals = skRes.outputs;
+    if (outStats) {
+      outStats->soundKeysOutputs = skRes.outputs;
+      outStats->soundKeysRaw = skRes.rawNormalized;
+      outStats->soundKeysSpectrum = skBars;
+      outStats->soundKeysBarFreqsHz = iota::dsp::computeBarFrequencies(skAnalyzer.config());
+      outStats->soundKeysCeiling = skRes.effectiveCeiling;
+      outStats->soundKeysPeak = skRes.spectrumPeak;
+    }
+  } else if (outStats) {
+    outStats->soundKeysOutputs = {};
+    outStats->soundKeysRaw = {};
+    outStats->soundKeysSpectrum = impl_->analyzers[0].lastResult().smoothedBars;
+    outStats->soundKeysBarFreqsHz = iota::dsp::computeBarFrequencies(impl_->analyzers[0].config());
+    float peak = 0.0f;
+    for (float v : outStats->soundKeysSpectrum) {
+      peak = std::max(peak, v);
+    }
+    outStats->soundKeysPeak = peak;
+    outStats->soundKeysCeiling = std::max(50.0f, peak * 1.25f);
+  }
+
   iota::dsp::MVarEvalContext mctx;
   mctx.dt = timing.dt;
   mctx.totalTimeSec = timing.totalTimeSec;
@@ -1971,6 +2059,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
   mctx.trackDurationSec = audio.durationSeconds();
   mctx.beat = outStats ? outStats->beat : impl_->analyzers[0].lastResult().beat;
   mctx.peakBarIndex = outStats ? outStats->peakBarIndex : impl_->analyzers[0].lastResult().peakBarIndex;
+  mctx.soundKeys = soundKeysVals;
   mctx.isPlaying = audio.isPlaying();
   mctx.isExporting = timing.isExporting;
   mctx.frameCounter = static_cast<uint32_t>(timing.totalTimeSec * 60.0);

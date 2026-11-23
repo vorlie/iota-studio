@@ -1,5 +1,6 @@
 add_library(iota_dsp STATIC
   src/sample_providers.cpp
+  src/sound_keys.cpp
   src/mvar_evaluator.cpp
 )
 

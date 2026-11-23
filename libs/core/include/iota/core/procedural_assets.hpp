@@ -16,4 +16,7 @@ struct RgbaImage {
 // Clean-room procedural textures for built-in internalres: identifiers.
 std::optional<RgbaImage> generateInternalResource(std::string_view uri);
 
+/// Returns all built-in `internalres:*` texture identifiers supported by generateInternalResource.
+const std::vector<std::string_view>& listInternalResources() noexcept;
+
 } // namespace iota::core
