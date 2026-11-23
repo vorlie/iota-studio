@@ -6,6 +6,7 @@
 #include "iota/dsp/filters.hpp"
 #include "iota/engine/builtin_shaders.hpp"
 #include "iota/engine/layout.hpp"
+#include "iota/engine/particle_system.hpp"
 
 #ifdef _MSC_VER
 #pragma warning(push, 0)
@@ -421,37 +422,6 @@ void buildShapePathPoints(const iota::model::PropertyEntry* shapeProp,
   }
 }
 
-uint32_t xorshift32(uint32_t& state) noexcept {
-  uint32_t x = state ? state : 0x6D2B79F5u;
-  x ^= x << 13;
-  x ^= x >> 17;
-  x ^= x << 5;
-  state = x;
-  return x;
-}
-
-float rand01(uint32_t& state) noexcept {
-  return static_cast<float>(xorshift32(state) & 0x00FFFFFFu) / 16777215.0f;
-}
-
-struct ParticleInstance {
-  float x = 0.0f, y = 0.0f, z = 0.0f;
-  float vx = 0.0f, vy = 0.0f, vz = 0.0f;
-  float age = 0.0f;
-  float maxAge = 2.0f;
-  float sizeRand = 0.0f;
-  float waveFreq = 1.0f;
-  float waveMag = 1.0f;
-  float wavePhase = 0.0f;
-  bool alive = false;
-};
-
-struct ParticlePool {
-  uint32_t rng = 1337u;
-  float spawnAccum = 0.0f;
-  std::vector<ParticleInstance> pool;
-};
-
 std::string adaptCustomGlslTo450(std::string_view src, bool isFragment) {
   if (src.find("#version") != std::string_view::npos) {
     return std::string(src);
@@ -516,6 +486,7 @@ struct SceneRenderer::Impl {
   iota::rhi::ShaderHandle shRgbSplit{};
   iota::rhi::ShaderHandle shMotionBlur{};
   iota::rhi::ShaderHandle shTemporalBlur{};
+  iota::rhi::ShaderHandle shParticle{};
   iota::rhi::ShaderHandle shFxaa{};
   std::unordered_map<std::string, iota::rhi::ShaderHandle> customShaders;
 
@@ -529,7 +500,7 @@ struct SceneRenderer::Impl {
   iota::dsp::MVarEvaluator mvarEval;
   iota::dsp::SoundKeysProcessor soundKeysProc;
   std::vector<iota::dsp::AudioAnalyzer> analyzers{1};
-  std::unordered_map<int, ParticlePool> particlePools;
+  std::unordered_map<int, ParticleSystem> particleSystems;
 
   struct MotionBlurPrevTransform {
     float centerX = 0.0f;
@@ -554,6 +525,7 @@ struct SceneRenderer::Impl {
   iota::rhi::RenderTargetHandle blurFullA{};
   iota::rhi::RenderTargetHandle blurFullB{};
   iota::rhi::RenderTargetHandle canvasSnapshotRt{};
+  iota::rhi::RenderTargetHandle emitterSampleRt{};
   iota::rhi::RenderTargetHandle activeFinalRt{};
 
   // Reusable CPU geometry / PCM scratch buffers
@@ -563,6 +535,8 @@ struct SceneRenderer::Impl {
   std::vector<float> scratchLayerBars;
   std::vector<float> scratchInterpHeights;
   std::vector<ShapePoint> scratchShape;
+  std::vector<uint8_t> emitterSampleRgba;
+  std::vector<EmitterSamplePoint> scratchEmitterSamples;
   int width = 0;
   int height = 0;
 
@@ -585,6 +559,8 @@ struct SceneRenderer::Impl {
     if (!shMotionBlur) return false;
     shTemporalBlur = device->createShader(shaders::kBlurFullscreenVert, shaders::kTemporalBlurFrag, outError);
     if (!shTemporalBlur) return false;
+    shParticle = device->createShader(shaders::kParticleVert, shaders::kParticleFrag, outError);
+    if (!shParticle) return false;
     shFxaa = device->createShader(shaders::kBlurFullscreenVert, shaders::kFxaaFrag, outError);
     return static_cast<bool>(shFxaa);
   }
@@ -776,6 +752,9 @@ struct SceneRenderer::Impl {
     ensureRt(blurFullA, width, height);
     ensureRt(blurFullB, width, height);
     ensureRt(canvasSnapshotRt, width, height);
+    if (!emitterSampleRt) {
+      emitterSampleRt = device->createRenderTarget(64, 64);
+    }
 
     int pw = width;
     int ph = height;
@@ -811,7 +790,7 @@ struct SceneRenderer::Impl {
             deps[static_cast<size_t>(ci)].push_back(srcIdx);
           }
         }
-        for (const char* propName : {"customImage", "MaskImage", "targetImage"}) {
+        for (const char* propName : {"customImage", "MaskImage", "targetImage", "emitterLayer"}) {
           const auto val = getStringCI(el.props, propName);
           if (auto ref = parseCompositionRef(val)) {
             if (*ref > 0 && *ref < n && *ref != ci) {
@@ -1443,43 +1422,52 @@ struct SceneRenderer::Impl {
                               int compIdx,
                               int elemIdx,
                               const iota::model::Element& el,
+                              iota::rhi::RenderTargetHandle currentTargetRt,
                               const iota::dsp::MVarEvalContext& mctx,
                               RenderFrameStats* stats) {
     const auto& p = el.props;
     const int rid = el.runtimeId();
-    auto& ppool = particlePools[rid];
+    auto& ps = particleSystems[rid];
 
     const LayoutSpec layout = extractLayoutSpec(project, compIdx, elemIdx, el, mvarEval, mctx);
     const iota::core::RectF rect = computeElementRect(layout, width, height);
 
-    const int countLimit = std::clamp(getIntCI(p, "CountLimit", 400), 1, 5000);
-    const float spawnTime = std::clamp(getFloatCI(p, "spawnTime", 0.015f), 0.002f, 0.5f);
-    const float lifetime = std::clamp(getFloatCI(p, "lifetime", 2.2f), 0.05f, 20.0f);
-    const float speedBase = getFloatCI(p, "Speed", 90.0f);
-    const float speedRand = getFloatCI(p, "speedRandom", 40.0f);
-    const float overallMul = std::max(0.0f, 1.0f + mvarEval.evaluateScalar(
+    ParticleSimConfig cfg;
+    cfg.maxParticles = std::clamp(getIntCI(p, "CountLimit", 400), 1, 50000);
+    cfg.spawnTime = std::clamp(getFloatCI(p, "spawnTime", 0.015f), 0.0005f, 0.5f);
+    cfg.particlesPerSec = getFloatCI(p, "particlesPerSec", 0.0f);
+    if (const auto* emitRateProp = findPropCI(p, "measureEmitRate")) {
+      (void)emitRateProp;
+      cfg.emitRateMultiplier = std::max(0.0f, mvarEval.evaluateScalar(
+          iota::dsp::MVarEvaluator::makeKey(rid, "measureEmitRate"),
+          p.getMVar("measureEmitRate", iota::model::MVariableFloat::constant(1.0f)),
+          mctx));
+    } else {
+      cfg.emitRateMultiplier = 1.0f;
+    }
+    cfg.velocityFromMotion = getFloatCI(p, "velocityFromMotion", 0.0f);
+    cfg.lifetime = std::clamp(getFloatCI(p, "lifetime", 2.2f), 0.05f, 30.0f);
+    cfg.lifetimeRandom = std::clamp(getFloatCI(p, "lifetimeRandom", 0.25f), 0.0f, 0.95f);
+    cfg.speedBase = getFloatCI(p, "Speed", 90.0f);
+    cfg.speedRandom = getFloatCI(p, "speedRandom", 40.0f);
+    cfg.directionSpreadDeg = std::clamp(getFloatCI(p, "directionSpread", 35.0f), 0.0f, 180.0f);
+    cfg.overallSpeedMultiplier = std::max(0.0f, 1.0f + mvarEval.evaluateScalar(
         iota::dsp::MVarEvaluator::makeKey(rid, "MeasureOverallSpeed"),
         p.getMVar("MeasureOverallSpeed"),
         mctx));
 
-    const auto gravity = p.getVec2("gravity", {0.0f, 0.0f});
-    const float sineFreq = getFloatCI(p, "sideSineWaveFreq", 0.0f);
-    const float sineMag = getFloatCI(p, "sideSineWaveMag", 0.0f);
-    const bool vortex = (getStringCI(p, "ForceField", "None") == "Vortex");
-    const bool mirrorX = getBoolCI(p, "mirrorX", false);
-    const bool mirrorY = getBoolCI(p, "mirrorY", false);
-
-    const float perspDepth = std::max(0.0f, getFloatCI(p, "perspectiveDepth", 0.0f));
-    const float perspFov = std::clamp(getFloatCI(p, "perspectiveFov", 110.0f), 20.0f, 170.0f);
-
-    if (static_cast<int>(ppool.pool.size()) < countLimit) {
-      ppool.pool.resize(static_cast<size_t>(countLimit));
-    }
+    cfg.emitterSizeZ = getFloatCI(p, "emitterSizeZ", 0.0f);
+    cfg.preRunSec = std::clamp(getFloatCI(p, "preRunSec", 0.0f), 0.0f, 10.0f);
+    cfg.mirrorX = getBoolCI(p, "mirrorX", false);
+    cfg.mirrorY = getBoolCI(p, "mirrorY", false);
+    cfg.perspectiveDepth = std::max(0.0f, getFloatCI(p, "perspectiveDepth", 0.0f));
+    cfg.perspectiveFov = std::clamp(getFloatCI(p, "perspectiveFov", 110.0f), 20.0f, 170.0f);
 
     const auto* spawnArea = findPropCI(p, "SpawnArea");
     const std::string spawnKind = spawnArea && std::get_if<std::string>(&spawnArea->value)
                                       ? std::get<std::string>(spawnArea->value)
                                       : std::string("Rectangle");
+    cfg.emitterType = particleEmitterTypeFromString(spawnKind);
     auto spawnChildBool = [&](std::string_view k, bool def) -> bool {
       if (spawnArea) {
         if (const auto* c = spawnArea->findChild(k)) {
@@ -1498,161 +1486,162 @@ struct SceneRenderer::Impl {
       }
       return def;
     };
+    cfg.vectorRelativeToCenter = spawnChildBool("vectorRelativeToCenter", true);
+    cfg.useRandomVector = spawnChildBool("useRandomVectorInstead", false);
+    cfg.vectorAngleRad = spawnChildFloat("vectorAngle", 270.0f) * (kPi / 180.0f);
+    cfg.vectorAngleZ = spawnChildFloat("vectorAngleZ", 0.0f);
 
-    const bool relCenter = spawnChildBool("vectorRelativeToCenter", true);
-    const bool rndDir = spawnChildBool("useRandomVectorInstead", false);
-    const float vecAngleRad = spawnChildFloat("vectorAngle", 270.0f) * (kPi / 180.0f);
-    const float vecAngleZ = spawnChildFloat("vectorAngleZ", 0.0f);
+    cfg.shapeType = particleShapeTypeFromString(getStringCI(p, "particleShape", "Sprite"));
+    cfg.feather = std::clamp(getFloatCI(p, "feather", 0.5f), 0.0f, 1.0f);
+    cfg.particleScale = getFloatCI(p, "particleScale", 2.5f);
+    cfg.startSize = getFloatCI(p, "startSize", 1.0f);
+    cfg.fadeInSize = getFloatCI(p, "fadeInSize", 1.0f);
+    cfg.endSize = getFloatCI(p, "endSize", 0.2f);
+    cfg.sizeRandom = std::clamp(getFloatCI(p, "sizeRandom", 0.2f), 0.0f, 1.0f);
+    cfg.endSizeRandom = getFloatCI(p, "endSizeRandom", 0.0f);
+    cfg.endSizeZFactor = getFloatCI(p, "endSizeZFactor", 0.0f);
+    cfg.sizeAspectRatio = std::max(0.1f, getFloatCI(p, "sizeAspectRatio", 1.0f));
+    cfg.fadeInAndOutTime = std::clamp(getFloatCI(p, "fadeInAndOutTime", 0.25f), 0.01f, 0.49f);
+    cfg.sizeOverLife = particleCurvePresetFromString(getStringCI(p, "sizeOverLife", "Linear"));
+    cfg.opacityOverLife = particleCurvePresetFromString(getStringCI(p, "opacityOverLife", "FadeInOut"));
+    cfg.baseTint = getColorArgbCI(p, "color", {255, 255, 255, 255});
+    cfg.colorFrom = getColorHslaCI(p, "ColorFrom", {0.55f, 0.8f, 0.65f, 0.85f});
+    cfg.colorMid = getColorHslaCI(p, "ColorMid", {0.70f, 0.9f, 0.65f, 0.90f});
+    cfg.colorTo = getColorHslaCI(p, "ColorTo", {0.85f, 0.9f, 0.55f, 0.0f});
+    cfg.useMidColor = getBoolCI(p, "useMidColor", false);
+    cfg.colorRandomHue = std::clamp(getFloatCI(p, "colorRandomHue", 0.0f), 0.0f, 1.0f);
+    cfg.trailLength = std::max(0.0f, getFloatCI(p, "trailLength", 0.0f));
+    cfg.velocityAngle = getBoolCI(p, "velocityAngle", true);
+    cfg.initialRotationRandom = getBoolCI(p, "initialRotationRandom", false);
+    cfg.spinSpeedDeg = getFloatCI(p, "spinSpeed", 0.0f);
+    cfg.spinRandomDeg = getFloatCI(p, "spinRandom", 0.0f);
 
-    const float dt = std::clamp(mctx.dt, 0.0f, 0.05f);
-    ppool.spawnAccum += dt;
-    while (ppool.spawnAccum >= spawnTime) {
-      ppool.spawnAccum -= spawnTime;
-      for (int i = 0; i < countLimit; ++i) {
-        auto& pt = ppool.pool[static_cast<size_t>(i)];
-        if (pt.alive) continue;
+    cfg.gravity = p.getVec2("gravity", {0.0f, 0.0f});
+    cfg.gravityZ = getFloatCI(p, "gravityZ", 0.0f);
+    cfg.wind = {getFloatCI(p, "windX", 0.0f), getFloatCI(p, "windY", 0.0f), getFloatCI(p, "windZ", 0.0f)};
+    cfg.airResistance = std::max(0.0f, getFloatCI(p, "airResistance", 0.0f));
+    cfg.sideSineWaveFreq = getFloatCI(p, "sideSineWaveFreq", 0.0f);
+    cfg.sideSineWaveFreqRandom = getFloatCI(p, "sideSineWaveFreqRandom", 0.0f);
+    cfg.sideSineWaveMag = getFloatCI(p, "sideSineWaveMag", 0.0f);
+    cfg.sideSineWaveMagRandom = getFloatCI(p, "sideSineWaveMagRandom", 0.0f);
+    cfg.forceField = particleForceFieldFromString(getStringCI(p, "ForceField", "None"));
+    cfg.forceFieldStrength = getFloatCI(p, "forceFieldStrength", 60.0f);
+    cfg.forceFieldRadius = std::max(20.0f, getFloatCI(p, "forceFieldRadius", 400.0f));
+    cfg.bounceEnabled = getBoolCI(p, "bounceEnabled", false);
+    cfg.bounceFloorY = getFloatCI(p, "bounceFloorY", 0.9f);
+    cfg.bounceRestitution = std::clamp(getFloatCI(p, "bounceRestitution", 0.6f), 0.0f, 1.0f);
+    cfg.bounceFriction = std::clamp(getFloatCI(p, "bounceFriction", 0.2f), 0.0f, 1.0f);
 
-        pt.alive = true;
-        pt.age = 0.0f;
-        pt.maxAge = lifetime * (0.75f + 0.5f * rand01(ppool.rng));
-        pt.sizeRand = rand01(ppool.rng);
-        pt.waveFreq = sineFreq + getFloatCI(p, "sideSineWaveFreqRandom", 0.0f) * (rand01(ppool.rng) - 0.5f);
-        pt.waveMag = sineMag + getFloatCI(p, "sideSineWaveMagRandom", 0.0f) * (rand01(ppool.rng) - 0.5f);
-        pt.wavePhase = rand01(ppool.rng) * kTwoPi;
+    cfg.turbulenceAffectPos = getFloatCI(p, "turbulenceAffectPos", 0.0f);
+    cfg.turbulenceAffectSize = getFloatCI(p, "turbulenceAffectSize", 0.0f);
+    cfg.turbulenceAffectOpacity = getFloatCI(p, "turbulenceAffectOpacity", 0.0f);
+    cfg.turbulenceScale = getFloatCI(p, "turbulenceScale", 1.5f);
+    cfg.turbulenceEvolution = getFloatCI(p, "turbulenceEvolution", 0.6f);
+    cfg.turbulenceOctaves = std::clamp(getIntCI(p, "turbulenceOctaves", 2), 1, 3);
+    cfg.turbulenceFadeIn = std::max(0.0f, getFloatCI(p, "turbulenceFadeIn", 0.35f));
 
-        if (spawnKind == "HorizontalLine") {
-          pt.x = rect.left + rand01(ppool.rng) * rect.width();
-          pt.y = rect.centerY();
-          pt.z = perspDepth > 0.0f ? (rand01(ppool.rng) * perspDepth) : 0.0f;
-        } else {
-          pt.x = rect.left + rand01(ppool.rng) * rect.width();
-          pt.y = rect.top + rand01(ppool.rng) * rect.height();
-          pt.z = perspDepth > 0.0f ? (rand01(ppool.rng) * perspDepth) : 0.0f;
-        }
+    cfg.auxMode = particleAuxModeFromString(getStringCI(p, "auxEmitMode", "Off"));
+    cfg.auxParticlesPerSec = std::max(0.0f, getFloatCI(p, "auxParticlesPerSec", 12.0f));
+    cfg.auxBurstCount = std::clamp(getIntCI(p, "auxBurstCount", 6), 1, 32);
+    cfg.auxLifetime = std::clamp(getFloatCI(p, "auxLifetime", 0.6f), 0.05f, 10.0f);
+    cfg.auxSizeScale = std::max(0.05f, getFloatCI(p, "auxSizeScale", 0.45f));
+    cfg.auxVelocityScale = std::max(0.0f, getFloatCI(p, "auxVelocityScale", 0.08f));
+    cfg.auxColorFromMain = std::clamp(getFloatCI(p, "auxColorFromMain", 0.75f), 0.0f, 1.0f);
+    cfg.auxColor = getColorHslaCI(p, "auxColor", {0.12f, 0.95f, 0.65f, 0.80f});
+    cfg.auxOpacity = std::clamp(getFloatCI(p, "auxOpacity", 0.65f), 0.0f, 1.0f);
 
-        float dx = std::cos(vecAngleRad);
-        float dy = std::sin(vecAngleRad);
-        float dz = vecAngleZ;
-        if (rndDir) {
-          const float a = rand01(ppool.rng) * kTwoPi;
-          dx = std::cos(a);
-          dy = std::sin(a);
-          dz = (rand01(ppool.rng) - 0.5f) * 0.5f;
-        } else if (spawnKind != "HorizontalLine" && relCenter) {
-          const float rx = pt.x - rect.centerX();
-          const float ry = pt.y - rect.centerY();
-          const float len = std::hypot(rx, ry);
-          if (len > 1e-3f) {
-            dx = rx / len;
-            dy = ry / len;
+    cfg.camera3DEnabled = getBoolCI(p, "camera3DEnabled", false);
+    cfg.cameraDistance = std::max(40.0f, getFloatCI(p, "cameraDistance", 420.0f));
+    cfg.cameraOrbitYawDeg = getFloatCI(p, "cameraOrbitYaw", 0.0f);
+    cfg.cameraOrbitPitchDeg = getFloatCI(p, "cameraOrbitPitch", 0.0f);
+    cfg.nearCameraFadeOutDistance = std::max(1.0f, getFloatCI(p, "nearCameraFadeOutDistance", 40.0f));
+    cfg.dofEnabled = getBoolCI(p, "dofEnabled", false);
+    cfg.dofFocusDist = std::max(25.0f, getFloatCI(p, "dofFocusDist", 420.0f));
+    cfg.dofAperture = std::clamp(getFloatCI(p, "dofAperture", 0.35f), 0.0f, 3.0f);
+    cfg.dofMaxBlur = std::clamp(getFloatCI(p, "dofMaxBlur", 0.85f), 0.0f, 1.0f);
+
+    // Optional LayerMask GPU-to-64x64 sampling when emitterType == LayerMask
+    scratchEmitterSamples.clear();
+    if (cfg.emitterType == ParticleEmitterType::LayerMask && emitterSampleRt) {
+      const std::string layerUri = getStringCI(p, "emitterLayer", "");
+      const auto layerRef = parseCompositionRef(layerUri);
+      const bool sampleCanvasBelow = layerUri.empty() ||
+          (layerRef && (*layerRef <= 0 || *layerRef >= static_cast<int>(compTargets.size()) || *layerRef == compIdx));
+      iota::rhi::TextureHandle srcLayerTex{};
+      bool srcLayerIsFbo = true;
+      if (sampleCanvasBelow) {
+        srcLayerTex = captureCanvasSnapshot(currentTargetRt, stats);
+        srcLayerIsFbo = true;
+      } else {
+        const auto resolvedLayer = resolveTextureUri(project, layerUri);
+        srcLayerTex = resolvedLayer.tex;
+        srcLayerIsFbo = resolvedLayer.isFbo;
+      }
+      if (srcLayerTex) {
+        device->bindRenderTarget(emitterSampleRt, 64, 64);
+        device->clear(0.0f, 0.0f, 0.0f, 0.0f);
+        drawQuadWithBufferShader(srcLayerTex,
+                                 makeOrthoProjView(64, 64),
+                                 {0.0f, 0.0f, 64.0f, 64.0f},
+                                 0xFFFFFFFFu,
+                                 iota::core::BlendMode::Opaque,
+                                 srcLayerIsFbo,
+                                 stats);
+        int sw = 0, sh = 0;
+        if (device->readRenderTargetRgba(emitterSampleRt, sw, sh, emitterSampleRgba, true) &&
+            sw == 64 && sh == 64 && emitterSampleRgba.size() == 64u * 64u * 4u) {
+          for (int sy = 0; sy < 64; ++sy) {
+            for (int sx = 0; sx < 64; ++sx) {
+              const size_t idx = static_cast<size_t>((sy * 64 + sx) * 4);
+              const uint8_t cr = emitterSampleRgba[idx + 0];
+              const uint8_t cg = emitterSampleRgba[idx + 1];
+              const uint8_t cb = emitterSampleRgba[idx + 2];
+              const uint8_t ca = emitterSampleRgba[idx + 3];
+              if (ca > 24 && (static_cast<int>(cr) + cg + cb) > 36) {
+                scratchEmitterSamples.push_back({
+                    (static_cast<float>(sx) + 0.5f) / 64.0f,
+                    (static_cast<float>(sy) + 0.5f) / 64.0f,
+                    cr, cg, cb, ca,
+                });
+              }
+            }
           }
         }
-        const float spd = speedBase + (rand01(ppool.rng) - 0.5f) * speedRand;
-        pt.vx = dx * spd;
-        pt.vy = dy * spd;
-        pt.vz = dz * spd;
-        break;
+        device->bindRenderTarget(currentTargetRt, width, height);
       }
     }
 
-    const float scalePx = getFloatCI(p, "particleScale", 2.5f) * (std::min(width, height) * 0.004f);
-    const float startSize = getFloatCI(p, "startSize", 1.0f);
-    const float fadeSize = getFloatCI(p, "fadeInSize", 1.0f);
-    const float endSize = getFloatCI(p, "endSize", 0.2f);
-    const float fadeTimeFrac = std::clamp(getFloatCI(p, "fadeInAndOutTime", 0.25f), 0.01f, 0.49f);
-    const float aspect = std::max(0.1f, getFloatCI(p, "sizeAspectRatio", 1.0f));
-
-    const auto baseTint = getColorArgbCI(p, "color", {255, 255, 255, 255});
-    const auto colFrom = getColorHslaCI(p, "ColorFrom", {0.55f, 0.8f, 0.65f, 0.85f});
-    const auto colTo = getColorHslaCI(p, "ColorTo", {0.85f, 0.9f, 0.55f, 0.0f});
-
-    const auto sprite = resolveTextureUri(project, getStringCI(p, "customImage", "internalres:particle_blur01"));
-    const float nearFadeDist = std::max(1.0f, getFloatCI(p, "nearCameraFadeOutDistance", 40.0f));
-    const float focalScale = 1.0f / std::max(0.15f, std::tan((perspFov * 0.5f) * (kPi / 180.0f)));
-
-    scratchVerts.clear();
-    scratchIndices.clear();
-
-    for (int i = 0; i < countLimit; ++i) {
-      auto& pt = ppool.pool[static_cast<size_t>(i)];
-      if (!pt.alive) continue;
-
-      pt.age += dt;
-      if (pt.age >= pt.maxAge) {
-        pt.alive = false;
-        continue;
-      }
-
-      if (vortex) {
-        const float rx = pt.x - rect.centerX();
-        const float ry = pt.y - rect.centerY();
-        const float inv = 1.0f / std::max(20.0f, std::hypot(rx, ry));
-        pt.vx += (-ry * inv) * 60.0f * dt;
-        pt.vy += (rx * inv) * 60.0f * dt;
-      }
-      pt.vx += gravity.x * dt;
-      pt.vy += gravity.y * dt;
-
-      const float lateral = std::sin(pt.age * pt.waveFreq * kTwoPi + pt.wavePhase) * pt.waveMag * 20.0f;
-      const float spdLen = std::max(1e-3f, std::hypot(pt.vx, pt.vy));
-      const float perpX = -pt.vy / spdLen;
-      const float perpY = pt.vx / spdLen;
-
-      pt.x += (pt.vx * overallMul + perpX * lateral) * dt;
-      pt.y += (pt.vy * overallMul + perpY * lateral) * dt;
-      pt.z += pt.vz * overallMul * dt;
-
-      const float lifeT = std::clamp(pt.age / pt.maxAge, 0.0f, 1.0f);
-      float envAlpha = 1.0f;
-      if (lifeT < fadeTimeFrac) {
-        envAlpha = lifeT / fadeTimeFrac;
-      } else if (lifeT > (1.0f - fadeTimeFrac)) {
-        envAlpha = (1.0f - lifeT) / fadeTimeFrac;
-      }
-
-      float szCurve = (lifeT < fadeTimeFrac)
-                          ? (startSize + (fadeSize - startSize) * (lifeT / fadeTimeFrac))
-                          : (fadeSize + (endSize - fadeSize) * ((lifeT - fadeTimeFrac) / (1.0f - fadeTimeFrac)));
-      float perspFactor = 1.0f;
-      if (perspDepth > 0.0f) {
-        const float camZ = std::max(10.0f, pt.z + 120.0f);
-        perspFactor = std::clamp((focalScale * 180.0f) / camZ, 0.1f, 3.5f);
-        if (camZ < nearFadeDist) {
-          envAlpha *= (camZ / nearFadeDist);
-        }
-      }
-
-      auto hsla = iota::core::ColorHslaNorm::lerp(colFrom, colTo, lifeT);
-      auto col = hsla.toRgba();
-      col.r = static_cast<uint8_t>((static_cast<uint32_t>(col.r) * baseTint.r) / 255u);
-      col.g = static_cast<uint8_t>((static_cast<uint32_t>(col.g) * baseTint.g) / 255u);
-      col.b = static_cast<uint8_t>((static_cast<uint32_t>(col.b) * baseTint.b) / 255u);
-      col.a = static_cast<uint8_t>(std::clamp(static_cast<float>(col.a) * (baseTint.a / 255.0f) * envAlpha, 0.0f, 255.0f));
-      const uint32_t abgr = col.toPackedAbgrU32();
-
-      const float halfW = std::max(1.0f, scalePx * szCurve * perspFactor);
-      const float halfH = halfW * aspect;
-
-      auto emitCopy = [&](float sx, float sy) {
-        appendQuadVertices({sx - halfW, sy - halfH, sx + halfW, sy + halfH},
-                           abgr,
-                           sprite.isFbo,
-                           scratchVerts,
-                           scratchIndices);
-      };
-      emitCopy(pt.x, pt.y);
-      if (mirrorX) emitCopy(rect.left + rect.right - pt.x, pt.y);
-      if (mirrorY) emitCopy(pt.x, rect.top + rect.bottom - pt.y);
-      if (mirrorX && mirrorY) emitCopy(rect.left + rect.right - pt.x, rect.top + rect.bottom - pt.y);
+    ps.step(cfg, rect, width, height, mctx.dt, scratchEmitterSamples);
+    if (stats) {
+      stats->activeParticles += ps.activeCount();
+      stats->activeAuxParticles += ps.auxCount();
     }
+
+    const ResolvedTexture sprite = (cfg.shapeType == ParticleShapeType::Sprite)
+                                       ? resolveTextureUri(project, getStringCI(p, "customImage", "internalres:particle_blur01"))
+                                       : ResolvedTexture{texWhite, 1, 1, true};
+
+    const auto blend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Add"));
+    const bool sortBackToFront =
+        (blend == iota::core::BlendMode::Alpha || blend == iota::core::BlendMode::PreMulAlpha) &&
+        (cfg.camera3DEnabled || cfg.perspectiveDepth > 0.0f);
+
+    ps.buildGeometry(cfg, rect, width, height, sprite.isFbo, sortBackToFront, scratchVerts, scratchIndices);
 
     if (!scratchVerticesEmpty()) {
-      const auto blend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Add"));
+      const float premulRgb = (blend == iota::core::BlendMode::Add ||
+                               blend == iota::core::BlendMode::Screen ||
+                               blend == iota::core::BlendMode::PreMulAlpha)
+                                  ? 1.0f
+                                  : 0.0f;
       device->setBlendMode(blend);
-      device->useShader(shBuffer);
-      device->setUniformMat4(shBuffer, "u_projView", makeOrthoProjView(width, height));
+      device->useShader(shParticle);
+      device->setUniformMat4(shParticle, "u_projView", makeOrthoProjView(width, height));
       device->bindTexture(0, sprite.tex);
-      device->setUniformInt(shBuffer, "u_texture", 0);
+      device->setUniformInt(shParticle, "u_texture", 0);
+      device->setUniformInt(shParticle, "u_particleShape", static_cast<int>(cfg.shapeType));
+      device->setUniformFloat(shParticle, "u_feather", cfg.feather);
+      device->setUniformFloat(shParticle, "u_premulRgb", premulRgb);
       device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
       if (stats) stats->drawCalls += 1;
     }
@@ -2227,7 +2216,8 @@ void SceneRenderer::shutdown() {
 
   for (auto rt : impl_->compTargets) impl_->device->destroyRenderTarget(rt);
   impl_->compTargets.clear();
-  for (auto* rt : {&impl_->finalRt, &impl_->blurFullA, &impl_->blurFullB, &impl_->canvasSnapshotRt}) {
+  for (auto* rt : {&impl_->finalRt, &impl_->blurFullA, &impl_->blurFullB,
+                   &impl_->canvasSnapshotRt, &impl_->emitterSampleRt}) {
     if (*rt) {
       impl_->device->destroyRenderTarget(*rt);
       *rt = {};
@@ -2275,7 +2265,7 @@ void SceneRenderer::shutdown() {
 
   for (auto* sh : {&impl_->shBuffer, &impl_->shFxLight, &impl_->shKawaseDown, &impl_->shKawaseUp,
                    &impl_->shGaussianSep, &impl_->shRadialBlur, &impl_->shRgbSplit,
-                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shFxaa}) {
+                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle, &impl_->shFxaa}) {
     if (*sh) {
       impl_->device->destroyShader(*sh);
       *sh = {};
@@ -2291,7 +2281,7 @@ void SceneRenderer::resetSimulation() {
   for (auto& a : impl_->analyzers) {
     a.reset();
   }
-  impl_->particlePools.clear();
+  impl_->particleSystems.clear();
   impl_->motionBlurPrevTransforms.clear();
   for (auto& [id, hist] : impl_->temporalBlurHistories) {
     hist.initialized = false;
@@ -2474,7 +2464,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
           impl_->renderBarsElement(project, compIdx, elemIdx, el, mctx, providerSlot, outStats);
           break;
         case iota::model::ElementType::Particles:
-          impl_->renderParticlesElement(project, compIdx, elemIdx, el, mctx, outStats);
+          impl_->renderParticlesElement(project, compIdx, elemIdx, el, rt, mctx, outStats);
           break;
         case iota::model::ElementType::Text:
         case iota::model::ElementType::StatText:

@@ -28,6 +28,11 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
 - **GPU Blur & Motion Blur Effects**
   - Resolution-independent `BlurEffect` supporting **Dual Kawase** (continuous downsample + tent upsample pyramid), separable **Gaussian**, **Radial** zoom, and **Directional** blur modes, audio-reactive `measureBlurRadius`, single-composition canvas-below blurring (`sourceCompositionIndex = 0`), and per-layer `Image` blur (`blurEnabled`, `blurDivider`, `blurRadius`).
   - Frame-rate-independent `MotionBlurEffect` with an IGN-jittered 4–64 sample shutter blur (`shutterAngle`, `shutterPhase`, `blurSamples`, `blurCenter`) across translation, signed radial zoom, and aspect-corrected spin, supporting `EffectTransform`, `Manual` (`manualAngle`/`manualDirectional`/`manualZoom`/`manualSpin`), `Temporal` (exponential persistence buffer with `Mix`/`Lighten`/`Screen` trail blending), and `Hybrid` modes alongside single-composition canvas-below capture.
+- **3D Particular-Grade Particle Engine (`ParticleSystem`)**
+  - Up to 50,000 active particles with `preRunSec` warm-up, velocity inheritance (`velocityFromMotion`), 3D cone `directionSpread`, and `MVar`-driven emission (`measureEmitRate` / `MeasureOverallSpeed`).
+  - Eight emitter geometries: `Rectangle`, `HorizontalLine`, `Point`, `Box3D`, `Sphere`, `Ring`, `Grid`, and `LayerMask` (GPU-sampled color/alpha emission from any composition or canvas-below layers).
+  - Frame-rate-independent physics & air: exponential `airResistance`, gravity & wind XYZ, `Vortex`/`Attract`/`Repel`/`TurbulentVortex` force fields, 3-octave 3D divergence-free curl turbulence (`turbulenceAffectPos`/`Size`/`Opacity`), spin/velocity orientation, and floor bounce collision.
+  - Procedural GPU particle shaders (`Sprite`, `Sphere`, `GlowSphere`, `Star`, `BokehRing`, `Streaklet`) with `feather`, velocity `trailLength`, over-life size/opacity curves, 3-stop `ColorFrom`/`ColorMid`/`ColorTo` gradients, **Aux System** sub-particles (`Continuously`, `AtBounce`, `AtDeath`), true **3D Orbit Camera** with depth sorting, and **Depth-of-Field (DoF) Bokeh**, plus 1-click Inspector presets (`3D Bokeh`, `Audio Sparks`, `Curl Smoke`, `Aux Trails`, `Layer Emit`).
 - **Docking Studio Editor UI**
   - Multi-panel Dear ImGui workspace featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
   - Inspector supports both slider/drag editing (`Ctrl+Click` for inline typing) and a **Precise Inputs** toggle (`Edit -> Precise Numeric Inputs` or the Inspector checkbox) for exact keyboard entry, plus full snapshot Undo/Redo (`CommandStack`).
@@ -55,9 +60,9 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 │   ├── audio/        # Audio decoding (FFmpeg/miniaudio) and miniaudio real-time playback/PCM windows
 │   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (abstract render device/resources)
 │   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi
-│   ├── engine/       # GPU scene composer, particle simulator, font atlas, multi-pass Dual Kawase/Gaussian blur & shutter/temporal motion blur
+│   ├── engine/       # GPU scene composer, 3D Particular ParticleSystem (curl turbulence, DoF bokeh, Aux), font atlas, Dual Kawase/Gaussian blur & motion blur
 │   └── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
-└── tests/            # Automated doctest suite (unit, SoundKeys, Unicode/non-UTF-8 IO, and OpenGL 4.5 blur/render tests)
+└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, Unicode/non-UTF-8 IO, and OpenGL 4.5 tests)
 ```
 
 ## Tech Stack

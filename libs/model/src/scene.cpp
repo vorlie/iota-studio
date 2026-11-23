@@ -290,16 +290,24 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("customImage", "internalres:particle_blur01",
                          "pimg internalres:particle_blur01 internalres:particle_circle_blur4 internalres:particle_circle_w_a_64 internalres:particle_sharp composition:0",
                          "appearance");
+      el.props.setString("particleShape", "Sprite",
+                         "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+      el.props.setFloat("feather", 0.5f, 0.0f, 1.0f, "appearance");
       el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_overall");
-      el.props.setInt("CountLimit", 400, 1, 5000, "1_overall");
-      el.props.setFloat("particleScale", 2.5f, 0.25f, 8.0f, "appearance");
-      el.props.setFloat("spawnTime", 0.015f, 0.005f, 0.05f, "behaviour");
+      el.props.setInt("CountLimit", 400, 1, 50000, "1_overall");
+      el.props.setFloat("particleScale", 2.5f, 0.25f, 16.0f, "appearance");
+      el.props.setFloat("spawnTime", 0.015f, 0.001f, 0.5f, "behaviour");
+      el.props.setFloat("particlesPerSec", 0.0f, 0.0f, 5000.0f, "1_overall");
+      el.props.setMVar("measureEmitRate", MVariableFloat::constant(1.0f), "mvarf 0.0 5.0", "1_overall");
+      el.props.setFloat("preRunSec", 0.0f, 0.0f, 10.0f, "1_overall");
       el.props.setBool("mirrorX", false, "1_overall");
       el.props.setBool("mirrorY", false, "1_overall");
+      el.props.setFloat("emitterSizeZ", 0.0f, 0.0f, 1000.0f, "1_overall");
+      el.props.setString("emitterLayer", "", "img composition:0", "1_overall");
       el.props.setFloat("perspectiveDepth", 0.0f, 0.0f, 1000.0f, "1_overall");
-      el.props.setFloat("perspectiveFov", 110.0f, 30.0f, 180.0f, "1_overall");
+      el.props.setFloat("perspectiveFov", 110.0f, 25.0f, 170.0f, "1_overall");
       auto& sa = el.props.getOrAdd("SpawnArea");
-      sa.typeTag = "_child HorizontalLine Rectangle";
+      sa.typeTag = "_child HorizontalLine Rectangle Point Box3D Sphere Ring Grid LayerMask";
       sa.groupTag = "1_overall";
       sa.value = std::string("Rectangle");
       sa.getOrAddChild("vectorRelativeToCenter").value = static_cast<int64_t>(1);
@@ -312,27 +320,80 @@ Element createDefaultElement(ElementType type) {
       sa.getOrAddChild("vectorAngleZ").typeTag = "f -1.0 1.0";
 
       setLegacyChildMVar(el.props, "MeasureOverallSpeed", "Beat", 1.5f, 1.5f, kAllMeasureChoices, "behaviour");
-      el.props.setFloat("Speed", 90.0f, -300.0f, 300.0f, "behaviour");
-      el.props.setFloat("speedRandom", 40.0f, -300.0f, 300.0f, "behaviour");
-      el.props.setFloat("trailLength", 0.0f, 0.0f, 1.0f, "appearance");
+      el.props.setFloat("Speed", 90.0f, -500.0f, 500.0f, "behaviour");
+      el.props.setFloat("speedRandom", 40.0f, 0.0f, 500.0f, "behaviour");
+      el.props.setFloat("directionSpread", 35.0f, 0.0f, 180.0f, "behaviour");
+      el.props.setFloat("velocityFromMotion", 0.0f, -2.0f, 2.0f, "behaviour");
+      el.props.setFloat("airResistance", 0.0f, 0.0f, 10.0f, "behaviour");
+      el.props.setFloat("trailLength", 0.0f, 0.0f, 5.0f, "appearance");
       el.props.setColorHsla("ColorFrom", {0.55f, 0.8f, 0.65f, 0.85f}, "appearance");
+      el.props.setColorHsla("ColorMid", {0.70f, 0.9f, 0.65f, 0.90f}, "appearance");
       el.props.setColorHsla("ColorTo", {0.85f, 0.9f, 0.55f, 0.0f}, "appearance");
-      el.props.setFloat("lifetime", 2.2f, 0.1f, 10.0f, "behaviour");
+      el.props.setBool("useMidColor", false, "appearance");
+      el.props.setFloat("colorRandomHue", 0.0f, 0.0f, 1.0f, "appearance");
+      el.props.setFloat("lifetime", 2.2f, 0.05f, 20.0f, "behaviour");
+      el.props.setFloat("lifetimeRandom", 0.25f, 0.0f, 0.95f, "behaviour");
       el.props.setFloat("fadeInAndOutTime", 0.25f, 0.0f, 0.5f, "appearance");
-      el.props.setVec2("gravity", {0.0f, -20.0f}, -300.0f, 300.0f, "behaviour");
+      el.props.setVec2("gravity", {0.0f, -20.0f}, -500.0f, 500.0f, "behaviour");
+      el.props.setFloat("gravityZ", 0.0f, -500.0f, 500.0f, "behaviour");
+      el.props.setFloat("windX", 0.0f, -500.0f, 500.0f, "behaviour");
+      el.props.setFloat("windY", 0.0f, -500.0f, 500.0f, "behaviour");
+      el.props.setFloat("windZ", 0.0f, -500.0f, 500.0f, "behaviour");
       el.props.setBool("velocityAngle", true, "appearance");
+      el.props.setBool("initialRotationRandom", false, "appearance");
+      el.props.setFloat("spinSpeed", 0.0f, -360.0f, 360.0f, "appearance");
+      el.props.setFloat("spinRandom", 0.0f, 0.0f, 360.0f, "appearance");
       el.props.setFloat("sizeAspectRatio", 1.0f, 0.1f, 10.0f, "appearance");
+      el.props.setString("sizeOverLife", "Linear",
+                         "sel Linear FadeInOut EaseOut EaseIn Pulse Constant", "appearance");
+      el.props.setString("opacityOverLife", "FadeInOut",
+                         "sel FadeInOut Linear EaseOut EaseIn Pulse Constant", "appearance");
       el.props.setFloat("startSize", 1.0f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("fadeInSize", 1.0f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("endSize", 0.2f, 0.0f, 20.0f, "appearance");
+      el.props.setFloat("sizeRandom", 0.2f, 0.0f, 1.0f, "appearance");
       el.props.setFloat("endSizeRandom", 0.0f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("endSizeZFactor", 0.0f, 0.0f, 40.0f, "appearance");
       el.props.setFloat("sideSineWaveFreq", 2.0f, 0.0f, 10.0f, "waveBehaviour");
       el.props.setFloat("sideSineWaveFreqRandom", 1.0f, -10.0f, 10.0f, "waveBehaviour");
       el.props.setFloat("sideSineWaveMag", 1.5f, 0.0f, 10.0f, "waveBehaviour");
       el.props.setFloat("sideSineWaveMagRandom", 1.0f, -10.0f, 10.0f, "waveBehaviour");
-      el.props.setString("ForceField", "None", "_child None Vortex", "1_overall");
+      el.props.setString("ForceField", "None",
+                         "_child None Vortex Attract Repel TurbulentVortex", "1_overall");
+      el.props.setFloat("forceFieldStrength", 60.0f, -500.0f, 500.0f, "behaviour");
+      el.props.setFloat("forceFieldRadius", 400.0f, 20.0f, 2000.0f, "behaviour");
+      el.props.setBool("bounceEnabled", false, "behaviour");
+      el.props.setFloat("bounceFloorY", 0.9f, 0.0f, 1.2f, "behaviour");
+      el.props.setFloat("bounceRestitution", 0.6f, 0.0f, 1.0f, "behaviour");
+      el.props.setFloat("bounceFriction", 0.2f, 0.0f, 1.0f, "behaviour");
       el.props.setFloat("nearCameraFadeOutDistance", 40.0f, 0.0f, 500.0f, "appearance");
+
+      el.props.setFloat("turbulenceAffectPos", 0.0f, 0.0f, 500.0f, "4_turbulence");
+      el.props.setFloat("turbulenceAffectSize", 0.0f, 0.0f, 2.0f, "4_turbulence");
+      el.props.setFloat("turbulenceAffectOpacity", 0.0f, 0.0f, 1.0f, "4_turbulence");
+      el.props.setFloat("turbulenceScale", 1.5f, 0.1f, 10.0f, "4_turbulence");
+      el.props.setFloat("turbulenceEvolution", 0.6f, 0.0f, 5.0f, "4_turbulence");
+      el.props.setInt("turbulenceOctaves", 2, 1, 3, "4_turbulence");
+      el.props.setFloat("turbulenceFadeIn", 0.35f, 0.0f, 5.0f, "4_turbulence");
+
+      el.props.setString("auxEmitMode", "Off", "sel Off Continuously AtBounce AtDeath", "5_auxSystem");
+      el.props.setFloat("auxParticlesPerSec", 12.0f, 0.0f, 60.0f, "5_auxSystem");
+      el.props.setInt("auxBurstCount", 6, 1, 24, "5_auxSystem");
+      el.props.setFloat("auxLifetime", 0.6f, 0.05f, 5.0f, "5_auxSystem");
+      el.props.setFloat("auxSizeScale", 0.45f, 0.1f, 3.0f, "5_auxSystem");
+      el.props.setFloat("auxVelocityScale", 0.08f, 0.0f, 1.0f, "5_auxSystem");
+      el.props.setFloat("auxColorFromMain", 0.75f, 0.0f, 1.0f, "5_auxSystem");
+      el.props.setColorHsla("auxColor", {0.12f, 0.95f, 0.65f, 0.8f}, "5_auxSystem");
+      el.props.setFloat("auxOpacity", 0.65f, 0.0f, 1.0f, "5_auxSystem");
+
+      el.props.setBool("camera3DEnabled", false, "6_cameraDof");
+      el.props.setFloat("cameraDistance", 420.0f, 80.0f, 2000.0f, "6_cameraDof");
+      el.props.setFloat("cameraOrbitYaw", 0.0f, -180.0f, 180.0f, "6_cameraDof");
+      el.props.setFloat("cameraOrbitPitch", 0.0f, -85.0f, 85.0f, "6_cameraDof");
+      el.props.setBool("dofEnabled", false, "6_cameraDof");
+      el.props.setFloat("dofFocusDist", 420.0f, 40.0f, 2000.0f, "6_cameraDof");
+      el.props.setFloat("dofAperture", 0.35f, 0.0f, 2.0f, "6_cameraDof");
+      el.props.setFloat("dofMaxBlur", 0.85f, 0.0f, 1.0f, "6_cameraDof");
       break;
     }
 

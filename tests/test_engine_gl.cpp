@@ -607,6 +607,150 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     CHECK(std::abs(temp60 - temp144) < 12.0f);
   }
 
+  SUBCASE("Particular 3D Particles: procedural shapes, DoF bokeh, curl turbulence, aux trails, and LayerMask emitter") {
+    constexpr int kW = 320;
+    constexpr int kH = 240;
+    auto measureTotalLuma = [&](std::vector<uint8_t>& outBuf) {
+      int rw = 0, rh = 0;
+      REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, outBuf, true));
+      REQUIRE(rw == kW);
+      REQUIRE(rh == kH);
+      uint64_t sum = 0;
+      for (size_t i = 0; i + 3 < outBuf.size(); i += 4) {
+        sum += outBuf[i] + outBuf[i + 1] + outBuf[i + 2];
+      }
+      return sum;
+    };
+
+    // 1. All procedural particle shapes + Sprite render cleanly with preRunSec & curl turbulence
+    for (const std::string shape : {"Sprite", "Sphere", "GlowSphere", "Star", "BokehRing", "Streaklet"}) {
+      iota::model::Project p;
+      p.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto pt = iota::model::createDefaultElement(iota::model::ElementType::Particles);
+      pt.props.setString("particleShape", shape,
+                         "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+      pt.props.getOrAdd("SpawnArea").value = std::string("Sphere");
+      pt.props.setFloat("particlesPerSec", 140.0f, 0.0f, 5000.0f, "1_overall");
+      pt.props.setFloat("preRunSec", 0.5f, 0.0f, 10.0f, "1_overall");
+      pt.props.setFloat("particleScale", 5.5f, 0.25f, 16.0f, "appearance");
+      pt.props.setFloat("turbulenceAffectPos", 50.0f, 0.0f, 500.0f, "4_turbulence");
+      pt.props.setFloat("trailLength", shape == "Streaklet" ? 1.5f : 0.0f, 0.0f, 5.0f, "appearance");
+      pt.props.setColorHsla("ColorFrom", {0.55f, 0.9f, 0.70f, 0.95f}, "appearance");
+      pt.props.setColorHsla("ColorTo", {0.85f, 0.9f, 0.60f, 0.40f}, "appearance");
+      comp0.elements.push_back(std::move(pt));
+      p.compositions.push_back(std::move(comp0));
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      REQUIRE(renderer.renderFrame(p, audio, {1.0f / 60.0f, 0.1, 0.1, true, 0.0f, false, 60.0f}, kW, kH, {}, &st));
+      std::vector<uint8_t> rgba;
+      const uint64_t luma = measureTotalLuma(rgba);
+      CHECK_MESSAGE(st.activeParticles > 20, "Shape failed to emit: " << shape);
+      CHECK_MESSAGE(luma > 5000, "Shape produced dark frame: " << shape);
+    }
+
+    // 2. LayerMask emitter samples colors directly from Comp 1 (cyan rectangle)
+    {
+      iota::model::Project lm;
+      lm.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto pt = iota::model::createDefaultElement(iota::model::ElementType::Particles);
+      pt.props.getOrAdd("SpawnArea").value = std::string("LayerMask");
+      pt.props.setString("emitterLayer", "composition:1", "img composition:0", "1_overall");
+      pt.props.setString("particleShape", "Sphere", "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+      pt.props.setFloat("particlesPerSec", 400.0f, 0.0f, 5000.0f, "1_overall");
+      pt.props.setFloat("preRunSec", 0.5f, 0.0f, 10.0f, "1_overall");
+      pt.props.setFloat("Speed", 5.0f, -500.0f, 500.0f, "behaviour");
+      pt.props.setFloat("speedRandom", 2.0f, 0.0f, 500.0f, "behaviour");
+      pt.props.setFloat("particleScale", 5.0f, 0.25f, 16.0f, "appearance");
+      pt.props.setColorHsla("ColorFrom", {0.0f, 0.0f, 1.0f, 1.0f}, "appearance");
+      pt.props.setColorHsla("ColorTo", {0.0f, 0.0f, 1.0f, 1.0f}, "appearance");
+      pt.props.setString("opacityOverLife", "Constant", "sel FadeInOut Linear EaseOut EaseIn Pulse Constant", "appearance");
+      comp0.elements.push_back(std::move(pt));
+
+      auto comp1 = iota::model::createDefaultComposition(1);
+      auto cyan = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      cyan.props.setString("customImage", "internalres:white", "img", "1_image");
+      cyan.props.setVec2("position", {0.75f, 0.5f}, -1.0f, 1.0f, "0_general");
+      cyan.props.setVec2("scale", {0.4f, 0.8f}, 0.0f, 2.0f, "0_general");
+      cyan.props.setColorHsla("Color", {0.50f, 1.0f, 0.50f, 1.0f}, "2_color");  // Pure cyan RGB(0,255,255)
+      cyan.props.setColorHsla("ColorTo", {0.50f, 1.0f, 0.50f, 1.0f}, "2_color");
+      comp1.elements.push_back(std::move(cyan));
+
+      lm.compositions.push_back(std::move(comp0));
+      lm.compositions.push_back(std::move(comp1));
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      REQUIRE(renderer.renderFrame(lm, audio, {1.0f / 60.0f, 0.1, 0.1, true, 0.0f, false, 60.0f}, kW, kH, {}, &st));
+      std::vector<uint8_t> rgba;
+      (void)measureTotalLuma(rgba);
+      uint64_t rSum = 0, gSum = 0, bSum = 0, leftGSum = 0;
+      for (int y = 0; y < kH; ++y) {
+        for (int x = 0; x < kW / 2; ++x) {
+          const size_t i = static_cast<size_t>((y * kW + x) * 4);
+          leftGSum += rgba[i + 1];
+        }
+        for (int x = kW / 2; x < kW; ++x) {
+          const size_t i = static_cast<size_t>((y * kW + x) * 4);
+          rSum += rgba[i + 0];
+          gSum += rgba[i + 1];
+          bSum += rgba[i + 2];
+        }
+      }
+      CHECK(st.activeParticles > 50);
+      CHECK(gSum > rSum + 15000);
+      CHECK(bSum > rSum + 15000);
+      CHECK(gSum > leftGSum + 15000);
+    }
+
+    // 3. Full 3D DoF Bokeh + Aux Trails + SoundKeys reactive emission
+    {
+      iota::model::Project fullP;
+      fullP.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      comp0.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::AudioProvider));
+      comp0.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::SoundKeys));
+
+      auto pt = iota::model::createDefaultElement(iota::model::ElementType::Particles);
+      pt.props.setString("particleShape", "BokehRing",
+                         "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+      pt.props.getOrAdd("SpawnArea").value = std::string("Box3D");
+      pt.props.setInt("CountLimit", 1500, 1, 50000, "1_overall");
+      pt.props.setFloat("particlesPerSec", 90.0f, 0.0f, 5000.0f, "1_overall");
+      pt.props.setMVar("measureEmitRate",
+                       iota::model::MVariableFloat{{{"Constant", 0.4f, 0.0f}, {"SoundKeys1", 2.5f, 0.0f}}},
+                       "mvarf 0.0 5.0",
+                       "1_overall");
+      pt.props.setFloat("preRunSec", 0.5f, 0.0f, 10.0f, "1_overall");
+      pt.props.setFloat("emitterSizeZ", 350.0f, 0.0f, 1000.0f, "1_overall");
+      pt.props.setFloat("turbulenceAffectPos", 70.0f, 0.0f, 500.0f, "4_turbulence");
+      pt.props.setString("auxEmitMode", "Continuously", "sel Off Continuously AtBounce AtDeath", "5_auxSystem");
+      pt.props.setFloat("auxParticlesPerSec", 20.0f, 0.0f, 60.0f, "5_auxSystem");
+      pt.props.setBool("camera3DEnabled", true, "6_cameraDof");
+      pt.props.setFloat("cameraDistance", 420.0f, 80.0f, 2000.0f, "6_cameraDof");
+      pt.props.setBool("dofEnabled", true, "6_cameraDof");
+      pt.props.setFloat("dofFocusDist", 420.0f, 40.0f, 2000.0f, "6_cameraDof");
+      pt.props.setFloat("dofAperture", 0.8f, 0.0f, 2.0f, "6_cameraDof");
+      pt.props.setFloat("particleScale", 5.0f, 0.25f, 16.0f, "appearance");
+      comp0.elements.push_back(std::move(pt));
+      fullP.compositions.push_back(std::move(comp0));
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      for (int f = 0; f < 15; ++f) {
+        REQUIRE(renderer.renderFrame(fullP, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f},
+                                     kW, kH, {}, &st));
+      }
+      std::vector<uint8_t> rgba;
+      const uint64_t luma = measureTotalLuma(rgba);
+      CHECK(st.activeParticles > 30);
+      CHECK(st.activeAuxParticles > 10);
+      CHECK(luma > 20000);
+    }
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

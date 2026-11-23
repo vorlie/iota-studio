@@ -829,6 +829,152 @@ void EditorApp::drawInspectorPanel() {
     } else if (el.type == iota::model::ElementType::SoundKeys) {
       ImGui::Separator();
       renderSoundKeysCanvasAndMeters(el, frameStats_, activeSoundKeysRange_, actions, 115.0f);
+    } else if (el.type == iota::model::ElementType::Particles) {
+      ImGui::TextDisabled("Active: %d particles (%d aux)",
+                          frameStats_.activeParticles,
+                          frameStats_.activeAuxParticles);
+      if (ImGui::SmallButton("Reset Sim")) {
+        renderer_.resetSimulation();
+      }
+      auto upgradeParticularProps = [&]() {
+        const auto defEl = iota::model::createDefaultElement(iota::model::ElementType::Particles);
+        for (const auto& defItem : defEl.props.items()) {
+          if (!el.props.contains(defItem.key)) {
+            el.props.items().push_back(defItem);
+          }
+        }
+        el.props.getOrAdd("CountLimit").typeTag = "i 1 50000";
+        el.props.getOrAdd("trailLength").typeTag = "f 0.0 5.0";
+        el.props.getOrAdd("SpawnArea").typeTag =
+            "_child HorizontalLine Rectangle Point Box3D Sphere Ring Grid LayerMask";
+        el.props.getOrAdd("ForceField").typeTag =
+            "_child None Vortex Attract Repel TurbulentVortex";
+      };
+      if (!el.props.contains("turbulenceAffectPos")) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Enable Particular 3D Controls")) {
+          upgradeParticularProps();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = "Enable Particular 3D Controls";
+        }
+      }
+
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Presets:");
+      const float maxWrapX = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+      auto applyPreset = [&](const char* label, const auto& applyFn) {
+        const float btnW = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + btnW <= maxWrapX) {
+          ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(label)) {
+          upgradeParticularProps();
+          applyFn();
+          renderer_.resetSimulation();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = std::string("Apply Particle Preset: ") + label;
+        }
+      };
+      applyPreset("3D Bokeh", [&]() {
+        el.props.setString("particleShape", "BokehRing",
+                           "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+        el.props.getOrAdd("SpawnArea").value = std::string("Box3D");
+        el.props.setInt("CountLimit", 800, 1, 50000, "1_overall");
+        el.props.setFloat("particlesPerSec", 90.0f, 0.0f, 5000.0f, "1_overall");
+        el.props.setMVar("measureEmitRate", iota::model::MVariableFloat::constant(1.0f), "mvarf 0.0 5.0", "1_overall");
+        el.props.setFloat("emitterSizeZ", 350.0f, 0.0f, 1000.0f, "1_overall");
+        el.props.setFloat("preRunSec", 1.5f, 0.0f, 10.0f, "1_overall");
+        el.props.setFloat("Speed", 45.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("airResistance", 0.6f, 0.0f, 10.0f, "behaviour");
+        el.props.setFloat("particleScale", 6.0f, 0.25f, 16.0f, "appearance");
+        el.props.setFloat("colorRandomHue", 0.15f, 0.0f, 1.0f, "appearance");
+        el.props.setFloat("turbulenceAffectPos", 40.0f, 0.0f, 500.0f, "4_turbulence");
+        el.props.setString("auxEmitMode", "Off", "sel Off Continuously AtBounce AtDeath", "5_auxSystem");
+        el.props.setBool("camera3DEnabled", true, "6_cameraDof");
+        el.props.setFloat("cameraDistance", 420.0f, 80.0f, 2000.0f, "6_cameraDof");
+        el.props.setBool("dofEnabled", true, "6_cameraDof");
+        el.props.setFloat("dofFocusDist", 420.0f, 40.0f, 2000.0f, "6_cameraDof");
+        el.props.setFloat("dofAperture", 0.75f, 0.0f, 2.0f, "6_cameraDof");
+      });
+      applyPreset("Audio Sparks", [&]() {
+        el.props.setString("particleShape", "Streaklet",
+                           "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+        el.props.getOrAdd("SpawnArea").value = std::string("Ring");
+        el.props.setInt("CountLimit", 1500, 1, 50000, "1_overall");
+        el.props.setFloat("particlesPerSec", 180.0f, 0.0f, 5000.0f, "1_overall");
+        el.props.setMVar("measureEmitRate",
+                         iota::model::MVariableFloat{{{"Constant", 0.25f, 0.0f}, {"Beat", 3.0f, 0.0f}}},
+                         "mvarf 0.0 5.0",
+                         "1_overall");
+        el.props.setFloat("trailLength", 1.6f, 0.0f, 5.0f, "appearance");
+        el.props.setFloat("Speed", 240.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("speedRandom", 120.0f, 0.0f, 500.0f, "behaviour");
+        el.props.setFloat("airResistance", 1.8f, 0.0f, 10.0f, "behaviour");
+        el.props.setVec2("gravity", {0.0f, 120.0f}, -500.0f, 500.0f, "behaviour");
+        el.props.setBool("bounceEnabled", true, "behaviour");
+        el.props.setFloat("bounceFloorY", 0.88f, 0.0f, 1.2f, "behaviour");
+        el.props.setFloat("turbulenceAffectPos", 75.0f, 0.0f, 500.0f, "4_turbulence");
+        el.props.setFloat("particleScale", 3.2f, 0.25f, 16.0f, "appearance");
+        el.props.setColorHsla("ColorFrom", {0.08f, 1.0f, 0.72f, 1.0f}, "appearance");
+        el.props.setColorHsla("ColorTo", {0.98f, 0.95f, 0.55f, 0.0f}, "appearance");
+        el.props.setBool("useMidColor", false, "appearance");
+      });
+      applyPreset("Curl Smoke", [&]() {
+        el.props.setString("particleShape", "Sphere",
+                           "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+        el.props.setFloat("feather", 0.92f, 0.0f, 1.0f, "appearance");
+        el.props.getOrAdd("SpawnArea").value = std::string("Sphere");
+        el.props.setInt("CountLimit", 1200, 1, 50000, "1_overall");
+        el.props.setFloat("particlesPerSec", 120.0f, 0.0f, 5000.0f, "1_overall");
+        el.props.setMVar("measureEmitRate", iota::model::MVariableFloat::constant(1.0f), "mvarf 0.0 5.0", "1_overall");
+        el.props.setFloat("emitterSizeZ", 180.0f, 0.0f, 1000.0f, "1_overall");
+        el.props.setFloat("preRunSec", 1.5f, 0.0f, 10.0f, "1_overall");
+        el.props.setFloat("lifetime", 3.5f, 0.05f, 20.0f, "behaviour");
+        el.props.setFloat("Speed", 35.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("airResistance", 1.1f, 0.0f, 10.0f, "behaviour");
+        el.props.setFloat("turbulenceAffectPos", 120.0f, 0.0f, 500.0f, "4_turbulence");
+        el.props.setFloat("turbulenceAffectSize", 0.35f, 0.0f, 2.0f, "4_turbulence");
+        el.props.setInt("turbulenceOctaves", 3, 1, 3, "4_turbulence");
+        el.props.setFloat("particleScale", 7.5f, 0.25f, 16.0f, "appearance");
+        el.props.setBool("useMidColor", true, "appearance");
+        el.props.setColorHsla("ColorFrom", {0.55f, 0.85f, 0.65f, 0.35f}, "appearance");
+        el.props.setColorHsla("ColorMid", {0.72f, 0.85f, 0.55f, 0.28f}, "appearance");
+        el.props.setColorHsla("ColorTo", {0.88f, 0.75f, 0.45f, 0.0f}, "appearance");
+      });
+      applyPreset("Aux Trails", [&]() {
+        el.props.setString("particleShape", "GlowSphere",
+                           "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+        el.props.setFloat("feather", 0.7f, 0.0f, 1.0f, "appearance");
+        el.props.getOrAdd("SpawnArea").value = std::string("Point");
+        el.props.setInt("CountLimit", 2500, 1, 50000, "1_overall");
+        el.props.setFloat("particlesPerSec", 24.0f, 0.0f, 5000.0f, "1_overall");
+        el.props.setMVar("measureEmitRate", iota::model::MVariableFloat::constant(1.0f), "mvarf 0.0 5.0", "1_overall");
+        el.props.setFloat("Speed", 220.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("directionSpread", 140.0f, 0.0f, 180.0f, "behaviour");
+        el.props.setVec2("gravity", {0.0f, 110.0f}, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("turbulenceAffectPos", 55.0f, 0.0f, 500.0f, "4_turbulence");
+        el.props.setFloat("trailLength", 0.0f, 0.0f, 5.0f, "appearance");
+        el.props.setString("auxEmitMode", "Continuously", "sel Off Continuously AtBounce AtDeath", "5_auxSystem");
+        el.props.setFloat("auxParticlesPerSec", 28.0f, 0.0f, 60.0f, "5_auxSystem");
+        el.props.setFloat("auxLifetime", 0.75f, 0.05f, 5.0f, "5_auxSystem");
+        el.props.setFloat("auxSizeScale", 0.55f, 0.1f, 3.0f, "5_auxSystem");
+      });
+      applyPreset("Layer Emit", [&]() {
+        el.props.setString("particleShape", "GlowSphere",
+                           "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+        el.props.getOrAdd("SpawnArea").value = std::string("LayerMask");
+        el.props.setString("emitterLayer", "", "img composition:0", "1_overall");
+        el.props.setInt("CountLimit", 2000, 1, 50000, "1_overall");
+        el.props.setFloat("particlesPerSec", 320.0f, 0.0f, 5000.0f, "1_overall");
+        el.props.setMVar("measureEmitRate", iota::model::MVariableFloat::constant(1.0f), "mvarf 0.0 5.0", "1_overall");
+        el.props.setFloat("Speed", 55.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("turbulenceAffectPos", 65.0f, 0.0f, 500.0f, "4_turbulence");
+        el.props.setFloat("airResistance", 1.4f, 0.0f, 10.0f, "behaviour");
+        el.props.setFloat("lifetime", 1.3f, 0.05f, 20.0f, "behaviour");
+        el.props.setFloat("particleScale", 2.8f, 0.25f, 16.0f, "appearance");
+      });
     } else if (el.type == iota::model::ElementType::BlurEffect) {
       if (!el.props.contains("measureBlurRadius") || !el.props.contains("blurType")) {
         if (ImGui::SmallButton("Enable Advanced Blur Controls")) {

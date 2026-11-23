@@ -1,6 +1,7 @@
 add_library(iota_engine STATIC
   src/layout.cpp
   src/font_atlas.cpp
+  src/particle_system.cpp
   src/scene_renderer.cpp
 )
 

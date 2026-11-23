@@ -368,4 +368,92 @@ void main() {
 }
 )glsl";
 
+// Particular-style 3D Particle vertex shader (stores DoF Circle-of-Confusion in a_pos.z).
+inline constexpr const char* kParticleVert = R"glsl(#version 450 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec4 a_color;
+layout(location = 2) in vec2 a_uv;
+
+uniform mat4 u_projView;
+
+out vec4 v_color;
+out vec2 v_uv;
+out float v_softness;
+
+void main() {
+  v_color = a_color;
+  v_uv = a_uv;
+  v_softness = clamp(a_pos.z, 0.0, 1.0);
+  gl_Position = u_projView * vec4(a_pos.xy, 0.0, 1.0);
+}
+)glsl";
+
+// Procedural + textured sprite particle fragment shader with continuous DoF bokeh feathering.
+inline constexpr const char* kParticleFrag = R"glsl(#version 450 core
+in vec4 v_color;
+in vec2 v_uv;
+in float v_softness;
+
+uniform sampler2D u_texture;
+uniform int u_particleShape;  // 0=Sprite, 1=Sphere, 2=GlowSphere, 3=Star, 4=BokehRing, 5=Streaklet
+uniform float u_feather;
+uniform float u_premulRgb;
+
+out vec4 fragColor;
+
+void main() {
+  vec2 p = v_uv * 2.0 - 1.0;
+  float r = length(p);
+  float f = clamp(u_feather + v_softness * (1.0 - u_feather), 0.02, 1.0);
+
+  if (u_particleShape == 0) {
+    vec4 tex = texture(u_texture, v_uv);
+    float softMask = (v_softness > 0.005)
+                         ? (1.0 - smoothstep(max(0.0, 1.0 - f), 1.0, r))
+                         : 1.0;
+    float a = clamp(v_color.a * tex.a * softMask, 0.0, 1.0);
+    vec3 rgb = v_color.rgb * tex.rgb;
+    if (u_premulRgb > 0.5) {
+      rgb *= a;
+    }
+    fragColor = vec4(rgb, a);
+    return;
+  }
+
+  float shapeA = 0.0;
+  if (u_particleShape == 1) {
+    // Soft shaded sphere
+    shapeA = 1.0 - smoothstep(max(0.0, 1.0 - f), 1.0, r);
+  } else if (u_particleShape == 2) {
+    // Glowing core + exponential halo
+    float core = 1.0 - smoothstep(0.0, mix(0.45, 0.85, f), r);
+    float halo = exp(-r * r * mix(8.0, 2.2, f));
+    float mask = 1.0 - smoothstep(0.82, 1.0, r);
+    shapeA = clamp((core * 0.55 + halo * 0.85) * mask, 0.0, 1.0);
+  } else if (u_particleShape == 3) {
+    // 4-point star glint + central core
+    float k = mix(14.0, 4.5, f);
+    float rays = exp(-abs(p.x) * k) * exp(-abs(p.y) * 2.8) +
+                 exp(-abs(p.y) * k) * exp(-abs(p.x) * 2.8);
+    float core = exp(-r * r * mix(10.0, 3.2, f));
+    float mask = 1.0 - smoothstep(0.82, 1.0, r);
+    shapeA = clamp((core * 0.85 + rays * 0.9) * mask, 0.0, 1.0);
+  } else if (u_particleShape == 4) {
+    // Optical lens BokehRing with bright rim
+    float disc = 1.0 - smoothstep(max(0.0, 1.0 - f * 0.45), 1.0, r);
+    float rim = smoothstep(0.48, 0.84, r) * (1.0 - smoothstep(0.88, 1.0, r));
+    shapeA = clamp(disc * 0.42 + rim * 0.85, 0.0, 1.0);
+  } else {
+    // Streaklet / elongated spark
+    float core = exp(-(p.y * p.y * 9.0 + p.x * p.x * 2.2));
+    float mask = (1.0 - smoothstep(0.85, 1.0, abs(p.x))) * (1.0 - smoothstep(0.80, 1.0, abs(p.y)));
+    shapeA = clamp(core * mask, 0.0, 1.0);
+  }
+
+  float a = clamp(v_color.a * shapeA, 0.0, 1.0);
+  vec3 rgb = (u_premulRgb > 0.5) ? (v_color.rgb * a) : v_color.rgb;
+  fragColor = vec4(rgb, a);
+}
+)glsl";
+
 }  // namespace iota::engine::shaders

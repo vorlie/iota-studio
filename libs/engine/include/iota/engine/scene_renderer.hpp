@@ -45,6 +45,8 @@ struct RenderFrameStats {
   std::vector<float> soundKeysBarFreqsHz;
   float soundKeysCeiling = 50.0f;
   float soundKeysPeak = 0.0f;
+  int activeParticles = 0;
+  int activeAuxParticles = 0;
   std::string lastError;
 };
 
