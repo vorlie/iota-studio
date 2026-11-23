@@ -1,5 +1,6 @@
 #include "doctest/doctest.h"
 
+#include "iota/audio/audio_engine.hpp"
 #include "iota/dsp/a_weighting.hpp"
 #include "iota/dsp/filters.hpp"
 #include "iota/dsp/mvar_evaluator.hpp"
@@ -710,5 +711,195 @@ TEST_CASE("AudioProvider smoothing polarity: higher smooth/temporalSmooth/preSmo
     evalBeatRiseAndDecay(0.90f, fastBeatRise, fastBeatDecay);
     CHECK(fastBeatRise > slowBeatRise * 1.3f);
     CHECK(fastBeatDecay < slowBeatDecay * 0.5f);
+  }
+}
+
+TEST_CASE("Forward audio window alignment and high smooth preserve stacked Spectrum2 lead order") {
+  using namespace iota::audio;
+  using namespace iota::dsp;
+
+  SUBCASE("AudioEngine::extractMonoWindow captures forward from queryTime + visOffsetMs") {
+    constexpr int kSr = 44100;
+    AudioTrackData track;
+    track.sampleRate = kSr;
+    track.channels = 2;
+    track.interleavedPcm.assign(static_cast<size_t>(kSr) * 2u, 0.0f);
+    // Zero for t < 0.30s, non-zero 80 Hz tone for t >= 0.30s
+    const int onsetSample = static_cast<int>(0.30 * kSr);
+    for (int i = onsetSample; i < kSr; ++i) {
+      const float s = 0.6f * static_cast<float>(std::sin(2.0 * kPi * 80.0 * static_cast<double>(i) / kSr));
+      track.interleavedPcm[static_cast<size_t>(i) * 2u] = s;
+      track.interleavedPcm[static_cast<size_t>(i) * 2u + 1u] = s;
+    }
+    rebuildMonoAndDuration(track);
+
+    AudioEngine engine;
+    REQUIRE(engine.loadTrack(std::move(track)));
+
+    std::vector<float> win195;
+    std::vector<float> win90;
+    engine.extractMonoWindow(0.20, (195 * kSr) / 1000, 0.0f, win195);
+    engine.extractMonoWindow(0.20, (90 * kSr) / 1000, 0.0f, win90);
+
+    float maxAbs90 = 0.0f;
+    for (float s : win90) {
+      maxAbs90 = std::max(maxAbs90, std::abs(s));
+    }
+    CHECK(maxAbs90 < 1e-6f);
+
+    float maxAbs195Head = 0.0f;
+    for (int i = 0; i < 4000; ++i) {
+      maxAbs195Head = std::max(maxAbs195Head, std::abs(win195[static_cast<size_t>(i)]));
+    }
+    float maxAbs195Tail = 0.0f;
+    for (size_t i = 5000; i < win195.size(); ++i) {
+      maxAbs195Tail = std::max(maxAbs195Tail, std::abs(win195[i]));
+    }
+    CHECK(maxAbs195Head < 1e-6f);
+    CHECK(maxAbs195Tail > 0.25f);
+
+    // Positive visOffsetMs advances window into active region; negative pads head safely
+    std::vector<float> winShifted;
+    engine.extractMonoWindow(0.20, (45 * kSr) / 1000, 150.0f, winShifted);
+    float maxAbsShifted = 0.0f;
+    for (float s : winShifted) {
+      maxAbsShifted = std::max(maxAbsShifted, std::abs(s));
+    }
+    CHECK(maxAbsShifted > 0.25f);
+
+    std::vector<float> winPreStart;
+    engine.extractMonoWindow(0.10, 4410, -150.0f, winPreStart);
+    REQUIRE(winPreStart.size() == 4410);
+    for (int i = 0; i < 2000; ++i) {
+      CHECK(winPreStart[static_cast<size_t>(i)] == doctest::Approx(0.0f));
+    }
+  }
+
+  SUBCASE("Stacked Spectrum2: longer duration + higher smooth leads rising and finishes first falling") {
+    constexpr int kSr = 44100;
+    AudioTrackData track;
+    track.sampleRate = kSr;
+    track.channels = 2;
+    track.interleavedPcm.assign(static_cast<size_t>(kSr) * 2u, 0.0f);
+    // 80 Hz bass burst spanning [0.35s, 0.60s) with 15 ms attack and 50 ms release
+    for (int i = 0; i < kSr; ++i) {
+      const double t = static_cast<double>(i) / kSr;
+      if (t >= 0.35 && t < 0.60) {
+        double env = 1.0;
+        if (t < 0.365) {
+          env = (t - 0.35) / 0.015;
+        } else if (t > 0.55) {
+          env = (0.60 - t) / 0.050;
+        }
+        const float s = static_cast<float>(0.8 * env * std::sin(2.0 * kPi * 80.0 * t));
+        track.interleavedPcm[static_cast<size_t>(i) * 2u] = s;
+        track.interleavedPcm[static_cast<size_t>(i) * 2u + 1u] = s;
+      }
+    }
+    rebuildMonoAndDuration(track);
+
+    AudioEngine engine;
+    REQUIRE(engine.loadTrack(std::move(track)));
+
+    auto makeStackedCfg = [](int durationMs, float smooth) {
+      SpectrumConfig cfg;
+      cfg.kind = SampleProviderKind::Spectrum2;
+      cfg.sampleOutCount = 250;
+      cfg.audioDurationMs = durationMs;
+      cfg.highQualityAudioCapture = true;
+      cfg.lowerHz = 0.1f;
+      cfg.higherHz = 460.0f;
+      cfg.hzLinearFactor = 0.45f;
+      cfg.freqShift = 0.9f;
+      cfg.filterRadius = 1.0f;
+      cfg.filterStrength = 0.0f;
+      cfg.lowerFreqMagnitude = 0.0f;
+      cfg.outputMultiplier = 4.5f;
+      cfg.useAttackRelease = false;
+      cfg.smooth = smooth;
+      return cfg;
+    };
+
+    AudioAnalyzer prov1;  // Bar 1 (front / white)
+    AudioAnalyzer prov5;  // Bar 5 (middle / magenta)
+    AudioAnalyzer prov9;  // Bar 9 (back / green)
+    prov1.setConfig(makeStackedCfg(195, 5.0f));
+    prov5.setConfig(makeStackedCfg(151, 4.0f));
+    prov9.setConfig(makeStackedCfg(107, 3.0f));
+
+    auto peakBar = [](const AudioAnalyzer& az) {
+      const auto& bars = az.lastResult().smoothedBars;
+      return bars.empty() ? 0.0f : *std::max_element(bars.begin(), bars.end());
+    };
+
+    constexpr float kDt = 1.0f / 60.0f;
+    std::vector<float> pcm;
+    auto stepAll = [&](int frame) {
+      const double t = static_cast<double>(frame) * kDt;
+      for (AudioAnalyzer* az : {&prov1, &prov5, &prov9}) {
+        const int req = (az->config().audioDurationMs * kSr) / 1000;
+        engine.extractMonoWindow(t, req, 0.0f, pcm);
+        az->process({pcm, kSr, kDt, t, t, 1.0, true, false});
+      }
+    };
+
+    // Frame 15 -> t = 0.25s: rising into [0.35, 0.60) burst
+    for (int f = 0; f <= 15; ++f) {
+      stepAll(f);
+    }
+    const float rise1 = peakBar(prov1);
+    const float rise5 = peakBar(prov5);
+    const float rise9 = peakBar(prov9);
+    CHECK(rise1 > rise5);
+    CHECK(rise5 > rise9);
+
+    // Frame 30 -> t = 0.50s: falling past peak toward silence
+    for (int f = 16; f <= 30; ++f) {
+      stepAll(f);
+    }
+    const float fall1 = peakBar(prov1);
+    const float fall5 = peakBar(prov5);
+    const float fall9 = peakBar(prov9);
+    CHECK(fall9 > fall5);
+    CHECK(fall5 > fall1);
+  }
+
+  SUBCASE("Legacy high smooth > 3.0 remains strictly monotonic and frame-rate independent") {
+    const auto tone = makeSine(220.0f, 44100, 4096, 0.6f);
+    constexpr float kDt60 = 1.0f / 60.0f;
+
+    auto runStep = [&](float smooth, float dt, int steps) {
+      SpectrumConfig cfg;
+      cfg.kind = SampleProviderKind::Spectrum2;
+      cfg.sampleOutCount = 64;
+      cfg.useAttackRelease = false;
+      cfg.smooth = smooth;
+
+      AudioAnalyzer az;
+      az.setConfig(cfg);
+      AudioAnalysisResult res;
+      for (int f = 0; f < steps; ++f) {
+        res = az.process({tone, 44100, dt, f * dt, f * dt, 5.0, true, false});
+      }
+      return res;
+    };
+
+    const auto r3 = runStep(3.0f, kDt60, 1);
+    const auto r4 = runStep(4.0f, kDt60, 1);
+    const auto r5 = runStep(5.0f, kDt60, 1);
+    const float peak3 = *std::max_element(r3.smoothedBars.begin(), r3.smoothedBars.end());
+    const float peak4 = *std::max_element(r4.smoothedBars.begin(), r4.smoothedBars.end());
+    const float peak5 = *std::max_element(r5.smoothedBars.begin(), r5.smoothedBars.end());
+    const float raw5 = *std::max_element(r5.rawBars.begin(), r5.rawBars.end());
+    CHECK(peak5 > peak4);
+    CHECK(peak4 > peak3);
+    CHECK(peak5 <= raw5 + 1e-4f);  // Never overshoots raw steady target
+
+    // 5 frames at 60 FPS == 12 frames at 144 FPS (exact 1/12 s)
+    const auto r60 = runStep(4.0f, 1.0f / 60.0f, 5);
+    const auto r144 = runStep(4.0f, 1.0f / 144.0f, 12);
+    const float p60 = *std::max_element(r60.smoothedBars.begin(), r60.smoothedBars.end());
+    const float p144 = *std::max_element(r144.smoothedBars.begin(), r144.smoothedBars.end());
+    CHECK(p144 == doctest::Approx(p60).epsilon(0.06));
   }
 }

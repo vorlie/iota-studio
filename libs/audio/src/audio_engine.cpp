@@ -242,8 +242,8 @@ void AudioEngine::extractMonoWindow(double timeSec,
   }
 
   const double queryTime = timeSec + static_cast<double>(visOffsetMs) * 0.001;
-  const int64_t endIdx = static_cast<int64_t>(std::llround(queryTime * static_cast<double>(impl_->track.sampleRate)));
-  const int64_t startIdx = endIdx - static_cast<int64_t>(count);
+  const int64_t startIdx = static_cast<int64_t>(std::llround(queryTime * static_cast<double>(impl_->track.sampleRate)));
+  const int64_t endIdx = startIdx + static_cast<int64_t>(count);
   const int64_t total = static_cast<int64_t>(impl_->track.monoPcm.size());
 
   const int64_t validStart = std::max<int64_t>(0, startIdx);

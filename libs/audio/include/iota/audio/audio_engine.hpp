@@ -44,7 +44,7 @@ class AudioEngine {
   [[nodiscard]] std::string currentAlbum() const;
   [[nodiscard]] std::string currentFilePath() const;
 
-  /// Extracts `numSamples` mono samples ending at `(timeSec + visOffsetMs * 0.001)`
+  /// Extracts `numSamples` mono samples starting at `(timeSec + visOffsetMs * 0.001)`
   /// for deterministic live or offline DSP analysis. Zero-pads out of track bounds.
   void extractMonoWindow(double timeSec,
                          int numSamples,

@@ -2674,8 +2674,8 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
         const auto cfg = iota::dsp::spectrumConfigFromElement(el);
         impl_->analyzers[static_cast<size_t>(providerSlot)].setConfig(cfg);
         const int reqSamples = (cfg.kind == iota::dsp::SampleProviderKind::Spectrum2)
-                                   ? std::clamp((cfg.audioDurationMs * audio.sampleRate()) / 1000 + 64, 512, 32768)
-                                   : std::clamp(1 << cfg.inputSizePow, 512, 32768);
+                                   ? std::clamp((cfg.audioDurationMs * audio.sampleRate()) / 1000, 64, 32768)
+                                   : std::clamp(1 << cfg.inputSizePow, 32, 32768);
         audio.extractMonoWindow(queryTime, reqSamples, timing.visOffsetMs, impl_->scratchPcm);
 
         iota::dsp::AudioFrameInput fi;

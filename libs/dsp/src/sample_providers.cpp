@@ -54,9 +54,11 @@ void applyTemporalSmoothing(const float* targetBars,
     return;
   }
 
-  // Legacy `smooth` factor is tuned for 60 Hz steps (`20 * (1/60) * smooth`)
-  const float alpha60 = std::clamp((20.0f / 60.0f) * cfg.smooth, 0.01f, 1.0f);
-  const float alpha = frameRateIndependentAlpha(alpha60, dt);
+  // Continuous exponential response matching `dy/dt = 20 * smooth * (target - y)` without clamping >= 3.0
+  const float safeSmooth = std::max(0.0f, cfg.smooth);
+  const float alpha = (dt > 0.0f && safeSmooth > 0.0f)
+                          ? std::clamp(1.0f - std::exp(-20.0f * safeSmooth * dt), 0.0f, 1.0f)
+                          : 0.0f;
   for (int i = 0; i < barCount; ++i) {
     const float target = (targetBars != nullptr) ? std::max(0.0f, targetBars[i]) : 0.0f;
     float& sm = smoothedBars[static_cast<size_t>(i)];
@@ -452,7 +454,7 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
     const int usedPcmCount = std::min(nSamples, availSamples / step);
 
     impl_->workBars.assign(static_cast<size_t>(barCount), 0.0f);
-    const int offset = std::max(0, availSamples - usedPcmCount * step);
+    const int offset = 0;
     const float ratio = static_cast<float>(std::max(1, usedPcmCount)) / static_cast<float>(barCount);
 
     for (int b = 0; b < barCount; ++b) {
@@ -493,8 +495,8 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
     std::fill(impl_->windowedPcm.begin(), impl_->windowedPcm.end(), 0.0f);
 
     const int copyCount = std::min(fftN, availSamples);
-    const int srcStart = availSamples - copyCount;
-    const int dstStart = fftN - copyCount;
+    const int srcStart = 0;
+    const int dstStart = 0;
     for (int i = 0; i < copyCount; ++i) {
       impl_->windowedPcm[static_cast<size_t>(dstStart + i)] =
           input.monoPcm[static_cast<size_t>(srcStart + i)] * preScale * hannWindow(i, copyCount);
@@ -577,10 +579,10 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
     const std::vector<float> barFreqs = computeBarFrequencies(cfg_);
     impl_->ensureDftLuts(cfg_, effectiveRate, barFreqs);
 
-    const int targetSamples = std::clamp((cfg_.audioDurationMs * effectiveRate) / 1000, 64, 16384);
+    const int targetSamples = std::clamp((cfg_.audioDurationMs * effectiveRate) / 1000, 64, 32768);
     const int availDecimated = availSamples / decimation;
     const int nSamples = std::min(targetSamples, std::max(1, availDecimated));
-    const int startSample = std::max(0, availSamples - nSamples * decimation);
+    const int startSample = 0;
 
     impl_->windowedPcm.resize(static_cast<size_t>(nSamples));
     for (int n = 0; n < nSamples; ++n) {
