@@ -77,6 +77,10 @@ iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
   switch (kind) {
     case ProjectTemplateKind::DualCompGlow: {
       Composition comp0 = createDefaultComposition(0);
+      comp0.props.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+      comp0.props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+      comp0.props.setFloat("bloomThreshold", 0.85f, 0.0f, 5.0f, "3_hdrPost");
+      comp0.props.setFloat("bloomIntensity", 0.50f, 0.0f, 4.0f, "3_hdrPost");
       Element bg = createDefaultElement(ElementType::Image);
       bg.displayName = "Background";
       bg.props.setColorHsla("Color", {0.58f, 0.45f, 0.10f, 1.0f}, "2_color");
@@ -107,9 +111,11 @@ iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
       comp1.elements.push_back(createDefaultElement(ElementType::SoundKeys));
       Element bars = createDefaultElement(ElementType::Bars);
       bars.displayName = "Source Spectrum";
+      bars.props.setFloat("hdrIntensity", 1.8f, 0.0f, 16.0f, "1_bars");
       comp1.elements.push_back(std::move(bars));
       Element particles = createDefaultElement(ElementType::Particles);
       particles.displayName = "Source Particles";
+      particles.props.setFloat("hdrIntensity", 1.8f, 0.0f, 16.0f, "appearance");
       comp1.elements.push_back(std::move(particles));
 
       proj.compositions.push_back(std::move(comp0));

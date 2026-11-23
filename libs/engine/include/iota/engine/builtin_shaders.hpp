@@ -24,11 +24,13 @@ in vec4 v_color;
 in vec2 v_uv;
 
 uniform sampler2D u_texture;
+uniform float u_hdrGain;
 
 out vec4 fragColor;
 
 void main() {
-  fragColor = v_color * texture(u_texture, v_uv);
+  vec4 c = v_color * texture(u_texture, v_uv);
+  fragColor = vec4(c.rgb * u_hdrGain, c.a);
 }
 )glsl";
 
@@ -47,6 +49,7 @@ uniform float tex2_y_add;
 uniform float tex2_y_mul;
 uniform vec4 Color2;
 uniform float saturation;
+uniform float u_hdrGain;
 
 out vec4 fragColor;
 
@@ -64,7 +67,7 @@ void main() {
   float mLight = clamp(mask_l_add + mLuma * mask_l_mul, 0.0, 1.0);
   float maskFactor = mAlpha * mLight;
 
-  fragColor = vec4(c.rgb * maskFactor, c.a * maskFactor);
+  fragColor = vec4(c.rgb * maskFactor * u_hdrGain, c.a * maskFactor);
 }
 )glsl";
 
@@ -217,6 +220,7 @@ uniform vec2 dirAmount;
 uniform vec3 splitColor0;
 uniform vec3 splitColor1;
 uniform vec3 splitColor2;
+uniform float u_hdrGain;
 
 out vec4 fragColor;
 
@@ -227,7 +231,8 @@ void main() {
 
   vec3 rgb = c0.rgb * splitColor0 + c1.rgb * splitColor1 + c2.rgb * splitColor2;
   float alpha = (c0.a + c1.a + c2.a) / 3.0;
-  fragColor = vec4(rgb, alpha) * v_color;
+  vec4 outCol = vec4(rgb, alpha) * v_color;
+  fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
 }
 )glsl";
 
@@ -244,6 +249,7 @@ uniform float u_shutterPhase;
 uniform vec2 u_center;
 uniform float u_aspect;
 uniform int u_samples;
+uniform float u_hdrGain;
 
 out vec4 fragColor;
 
@@ -254,7 +260,8 @@ float ign(vec2 p) {
 void main() {
   float motionMag = length(u_posAmount) + length(u_scaleAmount) + abs(u_rotAmount);
   if (motionMag < 1e-5) {
-    fragColor = texture(u_texture, v_uv) * v_color;
+    vec4 outCol = texture(u_texture, v_uv) * v_color;
+    fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
     return;
   }
 
@@ -284,7 +291,8 @@ void main() {
     acc += texture(u_texture, sampleUv);
   }
 
-  fragColor = (acc / float(count)) * v_color;
+  vec4 outCol = (acc / float(count)) * v_color;
+  fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
 }
 )glsl";
 
@@ -308,8 +316,11 @@ void main() {
   if (u_trailBlend == 1) {
     fragColor = max(curr, prev);
   } else if (u_trailBlend == 2) {
-    fragColor = vec4(1.0 - (1.0 - clamp(curr.rgb, 0.0, 1.0)) * (1.0 - clamp(prev.rgb, 0.0, 1.0)),
-                     max(curr.a, prev.a));
+    vec3 currSdr = clamp(curr.rgb, 0.0, 1.0);
+    vec3 prevSdr = clamp(prev.rgb, 0.0, 1.0);
+    vec3 screenSdr = 1.0 - (1.0 - currSdr) * (1.0 - prevSdr);
+    vec3 hdrExcess = max(curr.rgb - vec3(1.0), vec3(0.0)) + max(prev.rgb - vec3(1.0), vec3(0.0));
+    fragColor = vec4(screenSdr + hdrExcess, max(curr.a, prev.a));
   } else {
     vec4 rawPrev = texture(u_historyTex, v_uv);
     fragColor = mix(curr, rawPrev, clamp(u_keepFactor, 0.0, 0.99));
@@ -398,6 +409,7 @@ uniform sampler2D u_texture;
 uniform int u_particleShape;  // 0=Sprite, 1=Sphere, 2=GlowSphere, 3=Star, 4=BokehRing, 5=Streaklet
 uniform float u_feather;
 uniform float u_premulRgb;
+uniform float u_hdrGain;
 
 out vec4 fragColor;
 
@@ -416,7 +428,7 @@ void main() {
     if (u_premulRgb > 0.5) {
       rgb *= a;
     }
-    fragColor = vec4(rgb, a);
+    fragColor = vec4(rgb * u_hdrGain, a);
     return;
   }
 
@@ -452,7 +464,299 @@ void main() {
 
   float a = clamp(v_color.a * shapeA, 0.0, 1.0);
   vec3 rgb = (u_premulRgb > 0.5) ? (v_color.rgb * a) : v_color.rgb;
-  fragColor = vec4(rgb, a);
+  fragColor = vec4(rgb * u_hdrGain, a);
+}
+)glsl";
+
+// Physical Bloom prefilter with Karis anti-flicker luminance weight and soft-knee threshold.
+inline constexpr const char* kBloomPrefilterFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform vec2 u_texelSize;
+uniform float u_exposure;
+uniform float u_threshold;
+uniform float u_softKnee;
+uniform float u_anamorphic;
+
+out vec4 fragColor;
+
+vec3 sanitizeHdr(vec3 c) {
+  vec3 safe = vec3(
+      isnan(c.x) ? 0.0 : c.x,
+      isnan(c.y) ? 0.0 : c.y,
+      isnan(c.z) ? 0.0 : c.z);
+  return clamp(safe, vec3(0.0), vec3(64.0));
+}
+
+vec3 extendedSrgbToLinear(vec3 c) {
+  return vec3(
+      c.r > 0.0 ? pow(c.r, 2.2) : 0.0,
+      c.g > 0.0 ? pow(c.g, 2.2) : 0.0,
+      c.b > 0.0 ? pow(c.b, 2.2) : 0.0);
+}
+
+vec3 applySoftThreshold(vec3 col, float thr, float kneeFrac) {
+  float br = max(col.r, max(col.g, col.b));
+  float knee = max(thr * clamp(kneeFrac, 0.0, 1.0), 1e-5);
+  float soft = clamp(br - thr + knee, 0.0, 2.0 * knee);
+  soft = (soft * soft) / (4.0 * knee);
+  float contrib = max(soft, br - thr) / max(br, 1e-5);
+  return col * max(contrib, 0.0);
+}
+
+void main() {
+  vec2 off = u_texelSize * vec2(1.0 + clamp(u_anamorphic, 0.0, 1.0) * 1.5, 1.0);
+  vec3 s0 = applySoftThreshold(extendedSrgbToLinear(sanitizeHdr(texture(u_texture, clamp(v_uv + vec2(-off.x, -off.y), 0.0, 1.0)).rgb)) * u_exposure, u_threshold, u_softKnee);
+  vec3 s1 = applySoftThreshold(extendedSrgbToLinear(sanitizeHdr(texture(u_texture, clamp(v_uv + vec2( off.x, -off.y), 0.0, 1.0)).rgb)) * u_exposure, u_threshold, u_softKnee);
+  vec3 s2 = applySoftThreshold(extendedSrgbToLinear(sanitizeHdr(texture(u_texture, clamp(v_uv + vec2(-off.x,  off.y), 0.0, 1.0)).rgb)) * u_exposure, u_threshold, u_softKnee);
+  vec3 s3 = applySoftThreshold(extendedSrgbToLinear(sanitizeHdr(texture(u_texture, clamp(v_uv + vec2( off.x,  off.y), 0.0, 1.0)).rgb)) * u_exposure, u_threshold, u_softKnee);
+
+  float w0 = 1.0 / (1.0 + dot(s0, vec3(0.2126, 0.7152, 0.0722)));
+  float w1 = 1.0 / (1.0 + dot(s1, vec3(0.2126, 0.7152, 0.0722)));
+  float w2 = 1.0 / (1.0 + dot(s2, vec3(0.2126, 0.7152, 0.0722)));
+  float w3 = 1.0 / (1.0 + dot(s3, vec3(0.2126, 0.7152, 0.0722)));
+
+  vec3 result = (s0 * w0 + s1 * w1 + s2 * w2 + s3 * w3) / max(w0 + w1 + w2 + w3, 1e-5);
+  fragColor = vec4(max(result, vec3(0.0)), 1.0);
+}
+)glsl";
+
+// Jimenez (SIGGRAPH 2014) 13-tap energy-conserving bloom downsample pass.
+inline constexpr const char* kBloomDownFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform vec2 u_texelSize;
+uniform float u_anamorphic;
+
+out vec4 fragColor;
+
+void main() {
+  float aStretch = clamp(u_anamorphic, 0.0, 1.0);
+  vec2 s = u_texelSize * vec2(1.0 + aStretch * 2.5, max(0.25, 1.0 - aStretch * 0.35));
+
+  vec3 a = max(texture(u_texture, clamp(v_uv + vec2(-2.0 * s.x,  2.0 * s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 b = max(texture(u_texture, clamp(v_uv + vec2( 0.0,        2.0 * s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 c = max(texture(u_texture, clamp(v_uv + vec2( 2.0 * s.x,  2.0 * s.y), 0.0, 1.0)).rgb, vec3(0.0));
+
+  vec3 d = max(texture(u_texture, clamp(v_uv + vec2(-2.0 * s.x,  0.0),       0.0, 1.0)).rgb, vec3(0.0));
+  vec3 e = max(texture(u_texture, v_uv).rgb, vec3(0.0));
+  vec3 f = max(texture(u_texture, clamp(v_uv + vec2( 2.0 * s.x,  0.0),       0.0, 1.0)).rgb, vec3(0.0));
+
+  vec3 g = max(texture(u_texture, clamp(v_uv + vec2(-2.0 * s.x, -2.0 * s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 h = max(texture(u_texture, clamp(v_uv + vec2( 0.0,       -2.0 * s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 i = max(texture(u_texture, clamp(v_uv + vec2( 2.0 * s.x, -2.0 * s.y), 0.0, 1.0)).rgb, vec3(0.0));
+
+  vec3 j = max(texture(u_texture, clamp(v_uv + vec2(-s.x,  s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 k = max(texture(u_texture, clamp(v_uv + vec2( s.x,  s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 l = max(texture(u_texture, clamp(v_uv + vec2(-s.x, -s.y), 0.0, 1.0)).rgb, vec3(0.0));
+  vec3 m = max(texture(u_texture, clamp(v_uv + vec2( s.x, -s.y), 0.0, 1.0)).rgb, vec3(0.0));
+
+  vec3 sum = e * 0.125;
+  sum += (a + c + g + i) * 0.03125;
+  sum += (b + d + f + h) * 0.0625;
+  sum += (j + k + l + m) * 0.125;
+  fragColor = vec4(max(sum, vec3(0.0)), 1.0);
+}
+)glsl";
+
+// 9-tap tent filter bloom upsample pass with scatter blending.
+inline constexpr const char* kBloomUpFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_coarseTex;
+uniform sampler2D u_fineTex;
+uniform vec2 u_texelSize;
+uniform float u_scatter;
+uniform float u_anamorphic;
+
+out vec4 fragColor;
+
+void main() {
+  float aStretch = clamp(u_anamorphic, 0.0, 1.0);
+  vec2 s = u_texelSize * vec2(1.0 + aStretch * 2.5, max(0.25, 1.0 - aStretch * 0.35));
+
+  vec3 up = vec3(0.0);
+  up += texture(u_coarseTex, clamp(v_uv + vec2(-s.x,  s.y), 0.0, 1.0)).rgb * 1.0;
+  up += texture(u_coarseTex, clamp(v_uv + vec2( 0.0,  s.y), 0.0, 1.0)).rgb * 2.0;
+  up += texture(u_coarseTex, clamp(v_uv + vec2( s.x,  s.y), 0.0, 1.0)).rgb * 1.0;
+
+  up += texture(u_coarseTex, clamp(v_uv + vec2(-s.x,  0.0), 0.0, 1.0)).rgb * 2.0;
+  up += texture(u_coarseTex, v_uv).rgb * 4.0;
+  up += texture(u_coarseTex, clamp(v_uv + vec2( s.x,  0.0), 0.0, 1.0)).rgb * 2.0;
+
+  up += texture(u_coarseTex, clamp(v_uv + vec2(-s.x, -s.y), 0.0, 1.0)).rgb * 1.0;
+  up += texture(u_coarseTex, clamp(v_uv + vec2( 0.0, -s.y), 0.0, 1.0)).rgb * 2.0;
+  up += texture(u_coarseTex, clamp(v_uv + vec2( s.x, -s.y), 0.0, 1.0)).rgb * 1.0;
+  up *= (1.0 / 16.0);
+
+  vec3 fine = max(texture(u_fineTex, v_uv).rgb, vec3(0.0));
+  vec3 blended = mix(fine, max(up, vec3(0.0)), clamp(u_scatter, 0.05, 0.98));
+  fragColor = vec4(max(blended, vec3(0.0)), 1.0);
+}
+)glsl";
+
+// HDR composite + Filmic Tonemapping (ACES / AgX / PBR Neutral / Reinhard) + Color Grading + Dithering.
+inline constexpr const char* kTonemapFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_sceneTex;
+uniform sampler2D u_bloomTex;
+uniform int u_tonemapMode;  // 0=None, 1=ACES, 2=AgX, 3=PBRNeutral, 4=Reinhard
+uniform float u_exposure;
+uniform float u_bloomAmount;
+uniform vec3 u_bloomTint;
+uniform float u_contrast;
+uniform float u_saturation;
+uniform float u_gamma;
+uniform float u_vignette;
+uniform float u_dither;
+
+out vec4 fragColor;
+
+vec3 sanitizeHdr(vec3 c) {
+  vec3 safe = vec3(
+      isnan(c.x) ? 0.0 : c.x,
+      isnan(c.y) ? 0.0 : c.y,
+      isnan(c.z) ? 0.0 : c.z);
+  return clamp(safe, vec3(0.0), vec3(64.0));
+}
+
+vec3 srgbToLinear(vec3 c) {
+  return vec3(
+      c.r > 0.0 ? pow(c.r, 2.2) : 0.0,
+      c.g > 0.0 ? pow(c.g, 2.2) : 0.0,
+      c.b > 0.0 ? pow(c.b, 2.2) : 0.0);
+}
+
+vec3 linearToSrgb(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return vec3(
+      c.r > 0.0 ? pow(c.r, 1.0 / 2.2) : 0.0,
+      c.g > 0.0 ? pow(c.g, 1.0 / 2.2) : 0.0,
+      c.b > 0.0 ? pow(c.b, 1.0 / 2.2) : 0.0);
+}
+
+vec3 tonemapAces(vec3 color) {
+  const mat3 kAcesInput = mat3(
+      vec3(0.59719, 0.07600, 0.02840),
+      vec3(0.35458, 0.90834, 0.13383),
+      vec3(0.04823, 0.01566, 0.83777));
+  const mat3 kAcesOutput = mat3(
+      vec3( 1.60475, -0.10208, -0.00327),
+      vec3(-0.53108,  1.10813, -0.07276),
+      vec3(-0.07367, -0.00605,  1.07602));
+  vec3 v = kAcesInput * color;
+  vec3 a = v * (v + 0.0245786) - 0.000090537;
+  vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+  return clamp(kAcesOutput * (a / b), 0.0, 1.0);
+}
+
+vec3 agxDefaultContrastApprox(vec3 x) {
+  vec3 x2 = x * x;
+  vec3 x4 = x2 * x2;
+  return + 15.5 * x4 * x2
+         - 40.14 * x4 * x
+         + 31.96 * x4
+         - 6.868 * x2 * x
+         + 0.4298 * x2
+         + 0.1191 * x
+         - 0.00232;
+}
+
+vec3 tonemapAgx(vec3 val) {
+  const mat3 kAgxInset = mat3(
+      vec3(0.84247906, 0.04232824, 0.04237565),
+      vec3(0.07843360, 0.87846864, 0.07843360),
+      vec3(0.07922375, 0.07916613, 0.87914297));
+  const mat3 kAgxOutset = mat3(
+      vec3( 1.19687900, -0.05289685, -0.05297163),
+      vec3(-0.09802088,  1.15190313, -0.09804345),
+      vec3(-0.09902974, -0.09896118,  1.15107367));
+  const float minEv = -12.47393;
+  const float maxEv = 4.026069;
+
+  val = kAgxInset * max(val, vec3(1e-10));
+  val = clamp(log2(val), minEv, maxEv);
+  val = (val - minEv) / (maxEv - minEv);
+  val = agxDefaultContrastApprox(val);
+  val = clamp(kAgxOutset * val, 0.0, 1.0);
+  return vec3(
+      val.r > 0.0 ? pow(val.r, 2.2) : 0.0,
+      val.g > 0.0 ? pow(val.g, 2.2) : 0.0,
+      val.b > 0.0 ? pow(val.b, 2.2) : 0.0);
+}
+
+vec3 tonemapPbrNeutral(vec3 color) {
+  const float startCompression = 0.8 - 0.04;
+  const float desaturation = 0.15;
+  float x = min(color.r, min(color.g, color.b));
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  color -= offset;
+  float peak = max(color.r, max(color.g, color.b));
+  if (peak < startCompression) return max(color, vec3(0.0));
+  const float d = 1.0 - startCompression;
+  float newPeak = 1.0 - d * d / (peak + d - startCompression);
+  color *= newPeak / max(peak, 1e-6);
+  float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return clamp(mix(color, vec3(newPeak), g), 0.0, 1.0);
+}
+
+vec3 tonemapReinhard(vec3 color) {
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  if (luma <= 1e-6) return vec3(0.0);
+  float mappedLuma = luma / (1.0 + luma);
+  return clamp(color * (mappedLuma / luma), 0.0, 1.0);
+}
+
+void main() {
+  vec4 sceneSample = texture(u_sceneTex, v_uv);
+  vec3 lin = srgbToLinear(sanitizeHdr(sceneSample.rgb)) * max(u_exposure, 0.0);
+
+  if (u_bloomAmount > 1e-4) {
+    vec3 bloom = sanitizeHdr(texture(u_bloomTex, v_uv).rgb);
+    lin += bloom * u_bloomAmount * u_bloomTint;
+  }
+
+  vec3 mapped;
+  if (u_tonemapMode == 1) {
+    mapped = tonemapAces(lin);
+  } else if (u_tonemapMode == 2) {
+    mapped = tonemapAgx(lin);
+  } else if (u_tonemapMode == 3) {
+    mapped = tonemapPbrNeutral(lin);
+  } else if (u_tonemapMode == 4) {
+    mapped = tonemapReinhard(lin);
+  } else {
+    mapped = clamp(lin, 0.0, 1.0);
+  }
+
+  vec3 rgb = linearToSrgb(mapped);
+  rgb = clamp((rgb - 0.5) * u_contrast + 0.5, 0.0, 1.0);
+  float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+  rgb = clamp(mix(vec3(luma), rgb, u_saturation), 0.0, 1.0);
+
+  if (abs(u_gamma - 1.0) > 1e-4) {
+    float invGamma = 1.0 / max(u_gamma, 0.1);
+    rgb = vec3(
+        rgb.r > 0.0 ? pow(rgb.r, invGamma) : 0.0,
+        rgb.g > 0.0 ? pow(rgb.g, invGamma) : 0.0,
+        rgb.b > 0.0 ? pow(rgb.b, invGamma) : 0.0);
+  }
+
+  if (u_vignette > 1e-4) {
+    vec2 d = v_uv - vec2(0.5);
+    float vig = 1.0 - clamp(dot(d, d) * 2.2 * u_vignette, 0.0, 0.92);
+    rgb *= vig;
+  }
+
+  if (u_dither > 0.5) {
+    float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    rgb = clamp(rgb + (n - 0.5) / 255.0, 0.0, 1.0);
+  }
+
+  fragColor = vec4(rgb, clamp(sceneSample.a, 0.0, 1.0));
 }
 )glsl";
 

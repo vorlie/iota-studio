@@ -33,8 +33,13 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
   - Eight emitter geometries: `Rectangle`, `HorizontalLine`, `Point`, `Box3D`, `Sphere`, `Ring`, `Grid`, and `LayerMask` (GPU-sampled color/alpha emission from any composition or canvas-below layers).
   - Frame-rate-independent physics & air: exponential `airResistance`, gravity & wind XYZ, `Vortex`/`Attract`/`Repel`/`TurbulentVortex` force fields, 3-octave 3D divergence-free curl turbulence (`turbulenceAffectPos`/`Size`/`Opacity`), spin/velocity orientation, and floor bounce collision.
   - Procedural GPU particle shaders (`Sprite`, `Sphere`, `GlowSphere`, `Star`, `BokehRing`, `Streaklet`) with `feather`, velocity `trailLength`, over-life size/opacity curves, 3-stop `ColorFrom`/`ColorMid`/`ColorTo` gradients, **Aux System** sub-particles (`Continuously`, `AtBounce`, `AtDeath`), true **3D Orbit Camera** with depth sorting, and **Depth-of-Field (DoF) Bokeh**, plus 1-click Inspector presets (`3D Bokeh`, `Audio Sparks`, `Curl Smoke`, `Aux Trails`, `Layer Emit`).
+- **HDR (`RGBA16F`) Rendering, Physical Bloom & Filmic Tonemapping**
+  - Switchable 16-bit half-float (`RGBA16F`) composition and intermediate effect buffers with live `SDR8` compatibility fallback and GPU float readback (`readRenderTargetRgbaFloat`).
+  - Per-layer HDR emissive gain (`hdrIntensity` + audio-reactive `measureHdrIntensity` `MVar`) across `Image`, `Bars`, `Particles`, `Text`, `BlurEffect`, `RgbSplitEffect`, and `MotionBlurEffect`.
+  - 6-mip Jimenez 2014 energy-conserving **Physical Bloom** pyramid with Karis anti-flicker prefiltering, soft-knee threshold (`bloomThreshold`, `bloomSoftKnee`), `bloomRadius`, optional anamorphic stretch (`bloomAnamorphic`), `bloomTint`, and audio-reactive `measureBloomIntensity`.
+  - Filmic **Tonemapping** (`ACES` RRT+ODT, `AgX`, `PBRNeutral`, `Reinhard`, or `None`) with `exposureEv`, `contrast`, `saturation`, `gamma`, `vignette`, 8-bit IGN dithering, and 1-click Composition 0 HDR presets (`Clean SDR`, `ACES Cinema`, `AgX Neon`, `Anamorphic Flare`, `Audio Pulse Bloom`).
 - **Docking Studio Editor UI**
-  - Multi-panel Dear ImGui workspace featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
+  - Multi-panel Dear ImGui workspace featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA, HDR16F/Bloom/Tonemapping toggles), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
   - Inspector supports both slider/drag editing (`Ctrl+Click` for inline typing) and a **Precise Inputs** toggle (`Edit -> Precise Numeric Inputs` or the Inspector checkbox) for exact keyboard entry, plus full snapshot Undo/Redo (`CommandStack`).
 - **Asset Browser & Project Manager**
   - **Assets** panel (`Viewport -> Asset Browser`) with live thumbnail preview header, layer reference usage counts, Grid/List views, category filters (`All`, `Project`, `Audio`, `Comps`, `Built-in`), live search, custom virtual bins, multi-file image import, rename/replace/unused-asset cleanup, and drag-and-drop onto Hierarchy layers or Inspector image/mask fields.
@@ -59,10 +64,10 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 │   ├── dsp/          # Waveform/FFT/DFT analysis, SoundKeys bands, attack/release, frequency smoothing, curve splines
 │   ├── audio/        # Audio decoding (FFmpeg/miniaudio) and miniaudio real-time playback/PCM windows
 │   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (abstract render device/resources)
-│   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi
-│   ├── engine/       # GPU scene composer, 3D Particular ParticleSystem (curl turbulence, DoF bokeh, Aux), font atlas, Dual Kawase/Gaussian blur & motion blur
+│   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi (Rgba8 & Rgba16F render targets + float readback)
+│   ├── engine/       # GPU scene composer, HDR16F Bloom/Tonemapping, 3D Particular ParticleSystem, font atlas, Dual Kawase/Gaussian blur & motion blur
 │   └── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
-└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, Unicode/non-UTF-8 IO, and OpenGL 4.5 tests)
+└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, Unicode/non-UTF-8 IO, and OpenGL 4.5 HDR/Bloom/FX tests)
 ```
 
 ## Tech Stack

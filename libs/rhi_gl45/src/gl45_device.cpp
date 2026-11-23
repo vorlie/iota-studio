@@ -35,6 +35,7 @@ struct TextureRecord {
   int height = 0;
   TextureFilter filter = TextureFilter::Linear;
   TextureWrap wrap = TextureWrap::ClampToEdge;
+  PixelFormat format = PixelFormat::Rgba8;
 };
 
 struct RenderTargetRecord {
@@ -43,6 +44,7 @@ struct RenderTargetRecord {
   int width = 0;
   int height = 0;
   TextureFilter filter = TextureFilter::Linear;
+  PixelFormat format = PixelFormat::Rgba8;
 };
 
 struct ShaderRecord {
@@ -233,14 +235,18 @@ TextureHandle Gl45RenderDevice::createTexture2D(const TextureDesc& desc, std::st
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
+  const GLint internalFormat = (desc.format == PixelFormat::Rgba16F) ? GL_RGBA16F : GL_RGBA8;
+  const GLenum pixelType = (desc.format == PixelFormat::Rgba16F && desc.rgbaPixels == nullptr)
+                               ? GL_HALF_FLOAT
+                               : GL_UNSIGNED_BYTE;
   glTexImage2D(GL_TEXTURE_2D,
                0,
-               GL_RGBA8,
+               internalFormat,
                desc.width,
                desc.height,
                0,
                GL_RGBA,
-               GL_UNSIGNED_BYTE,
+               pixelType,
                desc.rgbaPixels);
 
   if (desc.generateMipmaps && desc.rgbaPixels != nullptr) {
@@ -249,7 +255,8 @@ TextureHandle Gl45RenderDevice::createTexture2D(const TextureDesc& desc, std::st
   glBindTexture(GL_TEXTURE_2D, 0);
 
   const uint32_t id = impl_->nextHandleId++;
-  impl_->textures.emplace(id, TextureRecord{glTex, desc.width, desc.height, desc.filter, desc.wrap});
+  impl_->textures.emplace(
+      id, TextureRecord{glTex, desc.width, desc.height, desc.filter, desc.wrap, desc.format});
   return TextureHandle{id};
 }
 
@@ -302,6 +309,7 @@ uint64_t Gl45RenderDevice::nativeTextureId(TextureHandle tex) const noexcept {
 RenderTargetHandle Gl45RenderDevice::createRenderTarget(int width,
                                                         int height,
                                                         TextureFilter filter,
+                                                        PixelFormat format,
                                                         std::string* outError) {
   if (!impl_->ready || width <= 0 || height <= 0) {
     if (outError) {
@@ -316,6 +324,7 @@ RenderTargetHandle Gl45RenderDevice::createRenderTarget(int width,
   td.rgbaPixels = nullptr;
   td.filter = filter;
   td.wrap = TextureWrap::ClampToEdge;
+  td.format = format;
   const TextureHandle colorTex = createTexture2D(td, outError);
   if (!colorTex) {
     return {};
@@ -339,7 +348,8 @@ RenderTargetHandle Gl45RenderDevice::createRenderTarget(int width,
   }
 
   const uint32_t id = impl_->nextHandleId++;
-  impl_->renderTargets.emplace(id, RenderTargetRecord{fbo, colorTex, width, height, filter});
+  impl_->renderTargets.emplace(
+      id, RenderTargetRecord{fbo, colorTex, width, height, filter, format});
   return RenderTargetHandle{id};
 }
 
@@ -355,8 +365,10 @@ void Gl45RenderDevice::resizeRenderTarget(RenderTargetHandle rt, int width, int 
   if (texIt == impl_->textures.end()) {
     return;
   }
+  const GLint internalFormat = (texIt->second.format == PixelFormat::Rgba16F) ? GL_RGBA16F : GL_RGBA8;
+  const GLenum pixelType = (texIt->second.format == PixelFormat::Rgba16F) ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
   glBindTexture(GL_TEXTURE_2D, texIt->second.glId);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, GL_RGBA, pixelType, nullptr);
   glBindTexture(GL_TEXTURE_2D, 0);
   texIt->second.width = width;
   texIt->second.height = height;
@@ -382,6 +394,14 @@ TextureHandle Gl45RenderDevice::renderTargetColorTexture(RenderTargetHandle rt) 
     return {};
   }
   return it->second.colorTex;
+}
+
+PixelFormat Gl45RenderDevice::renderTargetFormat(RenderTargetHandle rt) const noexcept {
+  auto it = impl_->renderTargets.find(rt.id);
+  if (it == impl_->renderTargets.end()) {
+    return PixelFormat::Rgba8;
+  }
+  return it->second.format;
 }
 
 bool Gl45RenderDevice::renderTargetSize(RenderTargetHandle rt, int& outW, int& outH) const {
@@ -641,6 +661,39 @@ bool Gl45RenderDevice::readRenderTargetRgba(RenderTargetHandle rt,
     for (int y = 0; y < outHeight / 2; ++y) {
       uint8_t* top = outRgba.data() + static_cast<size_t>(y) * rowBytes;
       uint8_t* bot = outRgba.data() + static_cast<size_t>(outHeight - 1 - y) * rowBytes;
+      std::memcpy(tempRow.data(), top, rowBytes);
+      std::memcpy(top, bot, rowBytes);
+      std::memcpy(bot, tempRow.data(), rowBytes);
+    }
+  }
+  return true;
+}
+
+bool Gl45RenderDevice::readRenderTargetRgbaFloat(RenderTargetHandle rt,
+                                                 int& outWidth,
+                                                 int& outHeight,
+                                                 std::vector<float>& outRgbaFloat,
+                                                 bool flipVertical) {
+  auto it = impl_->renderTargets.find(rt.id);
+  if (it == impl_->renderTargets.end() || it->second.width <= 0 || it->second.height <= 0) {
+    return false;
+  }
+  outWidth = it->second.width;
+  outHeight = it->second.height;
+  const size_t rowFloats = static_cast<size_t>(outWidth) * 4;
+  outRgbaFloat.resize(rowFloats * static_cast<size_t>(outHeight));
+
+  impl_->gl.BindFramebuffer(GL_FRAMEBUFFER, it->second.fbo);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, outWidth, outHeight, GL_RGBA, GL_FLOAT, outRgbaFloat.data());
+  impl_->gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  if (flipVertical && outHeight > 1) {
+    std::vector<float> tempRow(rowFloats);
+    const size_t rowBytes = rowFloats * sizeof(float);
+    for (int y = 0; y < outHeight / 2; ++y) {
+      float* top = outRgbaFloat.data() + static_cast<size_t>(y) * rowFloats;
+      float* bot = outRgbaFloat.data() + static_cast<size_t>(outHeight - 1 - y) * rowFloats;
       std::memcpy(tempRow.data(), top, rowBytes);
       std::memcpy(top, bot, rowBytes);
       std::memcpy(bot, tempRow.data(), rowBytes);

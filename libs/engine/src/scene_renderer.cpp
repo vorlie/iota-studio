@@ -487,6 +487,10 @@ struct SceneRenderer::Impl {
   iota::rhi::ShaderHandle shMotionBlur{};
   iota::rhi::ShaderHandle shTemporalBlur{};
   iota::rhi::ShaderHandle shParticle{};
+  iota::rhi::ShaderHandle shBloomPrefilter{};
+  iota::rhi::ShaderHandle shBloomDown{};
+  iota::rhi::ShaderHandle shBloomUp{};
+  iota::rhi::ShaderHandle shTonemap{};
   iota::rhi::ShaderHandle shFxaa{};
   std::unordered_map<std::string, iota::rhi::ShaderHandle> customShaders;
 
@@ -520,6 +524,7 @@ struct SceneRenderer::Impl {
   // Render targets
   std::vector<iota::rhi::RenderTargetHandle> compTargets;  // Index matches Composition index [0..N-1]
   iota::rhi::RenderTargetHandle finalRt{};
+  iota::rhi::RenderTargetHandle tonemapRt{};
   std::array<iota::rhi::RenderTargetHandle, 6> blurDownRts{};
   std::array<iota::rhi::RenderTargetHandle, 5> blurUpRts{};
   iota::rhi::RenderTargetHandle blurFullA{};
@@ -527,6 +532,7 @@ struct SceneRenderer::Impl {
   iota::rhi::RenderTargetHandle canvasSnapshotRt{};
   iota::rhi::RenderTargetHandle emitterSampleRt{};
   iota::rhi::RenderTargetHandle activeFinalRt{};
+  iota::rhi::PixelFormat workingFormat = iota::rhi::PixelFormat::Rgba8;
 
   // Reusable CPU geometry / PCM scratch buffers
   std::vector<iota::rhi::VertexPosColUv> scratchVerts;
@@ -561,8 +567,21 @@ struct SceneRenderer::Impl {
     if (!shTemporalBlur) return false;
     shParticle = device->createShader(shaders::kParticleVert, shaders::kParticleFrag, outError);
     if (!shParticle) return false;
+    shBloomPrefilter = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomPrefilterFrag, outError);
+    if (!shBloomPrefilter) return false;
+    shBloomDown = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomDownFrag, outError);
+    if (!shBloomDown) return false;
+    shBloomUp = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomUpFrag, outError);
+    if (!shBloomUp) return false;
+    shTonemap = device->createShader(shaders::kBlurFullscreenVert, shaders::kTonemapFrag, outError);
+    if (!shTonemap) return false;
     shFxaa = device->createShader(shaders::kBlurFullscreenVert, shaders::kFxaaFrag, outError);
-    return static_cast<bool>(shFxaa);
+    if (!shFxaa) return false;
+
+    for (auto sh : {shBuffer, shFxLight, shRgbSplit, shMotionBlur, shParticle}) {
+      device->setUniformFloat(sh, "u_hdrGain", 1.0f);
+    }
+    return true;
   }
 
   iota::rhi::TextureHandle getInternalTexture(std::string_view uri) {
@@ -722,15 +741,49 @@ struct SceneRenderer::Impl {
     return out;
   }
 
-  void ensureRenderTargets(int compCount, int w, int h) {
+  void ensureRenderTargets(int compCount, int w, int h, iota::rhi::PixelFormat desiredFormat) {
     const int newW = std::max(16, w);
     const int newH = std::max(16, h);
+    const bool formatChanged = (desiredFormat != workingFormat);
+    if (formatChanged) {
+      for (auto rt : compTargets) device->destroyRenderTarget(rt);
+      compTargets.clear();
+      for (auto* rt : {&blurFullA, &blurFullB, &canvasSnapshotRt}) {
+        if (*rt) {
+          device->destroyRenderTarget(*rt);
+          *rt = {};
+        }
+      }
+      for (auto& rt : blurDownRts) {
+        if (rt) {
+          device->destroyRenderTarget(rt);
+          rt = {};
+        }
+      }
+      for (auto& rt : blurUpRts) {
+        if (rt) {
+          device->destroyRenderTarget(rt);
+          rt = {};
+        }
+      }
+      for (auto& [id, hist] : temporalBlurHistories) {
+        for (int k = 0; k < 2; ++k) {
+          if (hist.rt[k]) {
+            device->destroyRenderTarget(hist.rt[k]);
+            hist.rt[k] = {};
+          }
+        }
+        hist.initialized = false;
+      }
+      workingFormat = desiredFormat;
+    }
+
     const bool sizeChanged = (newW != width || newH != height);
     width = newW;
     height = newH;
 
     while (static_cast<int>(compTargets.size()) < compCount) {
-      compTargets.push_back(device->createRenderTarget(width, height));
+      compTargets.push_back(device->createRenderTarget(width, height, iota::rhi::TextureFilter::Linear, workingFormat));
     }
     while (static_cast<int>(compTargets.size()) > compCount) {
       device->destroyRenderTarget(compTargets.back());
@@ -740,20 +793,21 @@ struct SceneRenderer::Impl {
       device->resizeRenderTarget(rt, width, height);
     }
 
-    auto ensureRt = [&](iota::rhi::RenderTargetHandle& rt, int rw, int rh) {
+    auto ensureRt = [&](iota::rhi::RenderTargetHandle& rt, int rw, int rh, iota::rhi::PixelFormat fmt) {
       if (!rt) {
-        rt = device->createRenderTarget(rw, rh);
+        rt = device->createRenderTarget(rw, rh, iota::rhi::TextureFilter::Linear, fmt);
       } else {
         device->resizeRenderTarget(rt, rw, rh);
       }
     };
 
-    ensureRt(finalRt, width, height);
-    ensureRt(blurFullA, width, height);
-    ensureRt(blurFullB, width, height);
-    ensureRt(canvasSnapshotRt, width, height);
+    ensureRt(finalRt, width, height, iota::rhi::PixelFormat::Rgba8);
+    ensureRt(tonemapRt, width, height, iota::rhi::PixelFormat::Rgba8);
+    ensureRt(blurFullA, width, height, workingFormat);
+    ensureRt(blurFullB, width, height, workingFormat);
+    ensureRt(canvasSnapshotRt, width, height, workingFormat);
     if (!emitterSampleRt) {
-      emitterSampleRt = device->createRenderTarget(64, 64);
+      emitterSampleRt = device->createRenderTarget(64, 64, iota::rhi::TextureFilter::Linear, iota::rhi::PixelFormat::Rgba8);
     }
 
     int pw = width;
@@ -761,13 +815,13 @@ struct SceneRenderer::Impl {
     for (size_t i = 0; i < blurDownRts.size(); ++i) {
       pw = std::max(2, pw / 2);
       ph = std::max(2, ph / 2);
-      ensureRt(blurDownRts[i], pw, ph);
+      ensureRt(blurDownRts[i], pw, ph, workingFormat);
       if (i < blurUpRts.size()) {
-        ensureRt(blurUpRts[i], pw, ph);
+        ensureRt(blurUpRts[i], pw, ph, workingFormat);
       }
     }
 
-    if (sizeChanged) {
+    if (sizeChanged && !formatChanged) {
       for (auto& [id, hist] : temporalBlurHistories) {
         for (int k = 0; k < 2; ++k) {
           if (hist.rt[k]) {
@@ -825,13 +879,27 @@ struct SceneRenderer::Impl {
     return order;
   }
 
+  float evalElementHdrGain(const iota::model::Element& el,
+                           const iota::dsp::MVarEvalContext& mctx) {
+    const float baseGain = std::max(0.0f, getFloatCI(el.props, "hdrIntensity", 1.0f));
+    float reactiveGain = 0.0f;
+    if (el.props.contains("measureHdrIntensity")) {
+      reactiveGain = std::max(0.0f, mvarEval.evaluateScalar(
+          iota::dsp::MVarEvaluator::makeKey(el.runtimeId(), "measureHdrIntensity"),
+          el.props.getMVar("measureHdrIntensity"),
+          mctx));
+    }
+    return std::clamp(baseGain + reactiveGain, 0.0f, 32.0f);
+  }
+
   void drawQuadWithBufferShader(iota::rhi::TextureHandle tex,
                                 const glm::mat4& projView,
                                 iota::core::RectF rect,
                                 uint32_t abgr,
                                 iota::core::BlendMode blend,
                                 bool flipY,
-                                RenderFrameStats* stats) {
+                                RenderFrameStats* stats,
+                                float hdrGain = 1.0f) {
     scratchVerts.clear();
     scratchIndices.clear();
     appendQuadVertices(rect, abgr, flipY, scratchVerts, scratchIndices);
@@ -841,8 +909,88 @@ struct SceneRenderer::Impl {
     device->setUniformMat4(shBuffer, "u_projView", projView);
     device->bindTexture(0, tex);
     device->setUniformInt(shBuffer, "u_texture", 0);
+    device->setUniformFloat(shBuffer, "u_hdrGain", hdrGain);
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
+  }
+
+  iota::rhi::TextureHandle runBloomPipeline(iota::rhi::TextureHandle comp0Tex,
+                                            float exposure,
+                                            float threshold,
+                                            float softKnee,
+                                            float scatter,
+                                            float anamorphic,
+                                            RenderFrameStats* stats) {
+    const auto& clipQuad = fullClipQuad();
+    const auto& clipIdx = fullClipIdx();
+
+    // Pass 0: Prefilter from full-res comp0Tex -> blurDownRts[0] (1/2 res)
+    {
+      int dstW = 2, dstH = 2;
+      device->renderTargetSize(blurDownRts[0], dstW, dstH);
+      device->bindRenderTarget(blurDownRts[0], dstW, dstH);
+      device->setBlendMode(iota::core::BlendMode::Opaque);
+      device->useShader(shBloomPrefilter);
+      device->bindTexture(0, comp0Tex);
+      device->setUniformInt(shBloomPrefilter, "u_texture", 0);
+      device->setUniformVec2(shBloomPrefilter,
+                             "u_texelSize",
+                             1.0f / static_cast<float>(std::max(1, width)),
+                             1.0f / static_cast<float>(std::max(1, height)));
+      device->setUniformFloat(shBloomPrefilter, "u_exposure", exposure);
+      device->setUniformFloat(shBloomPrefilter, "u_threshold", threshold);
+      device->setUniformFloat(shBloomPrefilter, "u_softKnee", softKnee);
+      device->setUniformFloat(shBloomPrefilter, "u_anamorphic", anamorphic);
+      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      if (stats) stats->drawCalls += 1;
+    }
+
+    // Passes 1..5: Progressive Jimenez 13-tap downsample blurDownRts[i-1] -> blurDownRts[i]
+    for (size_t i = 1; i < blurDownRts.size(); ++i) {
+      int srcW = 2, srcH = 2;
+      int dstW = 2, dstH = 2;
+      device->renderTargetSize(blurDownRts[i - 1], srcW, srcH);
+      device->renderTargetSize(blurDownRts[i], dstW, dstH);
+      device->bindRenderTarget(blurDownRts[i], dstW, dstH);
+      device->setBlendMode(iota::core::BlendMode::Opaque);
+      device->useShader(shBloomDown);
+      device->bindTexture(0, device->renderTargetColorTexture(blurDownRts[i - 1]));
+      device->setUniformInt(shBloomDown, "u_texture", 0);
+      device->setUniformVec2(shBloomDown,
+                             "u_texelSize",
+                             1.0f / static_cast<float>(std::max(1, srcW)),
+                             1.0f / static_cast<float>(std::max(1, srcH)));
+      device->setUniformFloat(shBloomDown, "u_anamorphic", anamorphic);
+      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      if (stats) stats->drawCalls += 1;
+    }
+
+    // Upsample pyramid: i = 4 down to 0
+    for (int i = static_cast<int>(blurUpRts.size()) - 1; i >= 0; --i) {
+      const auto coarseRt =
+          (i == static_cast<int>(blurUpRts.size()) - 1) ? blurDownRts[5] : blurUpRts[static_cast<size_t>(i + 1)];
+      int coarseW = 2, coarseH = 2;
+      int dstW = 2, dstH = 2;
+      device->renderTargetSize(coarseRt, coarseW, coarseH);
+      device->renderTargetSize(blurUpRts[static_cast<size_t>(i)], dstW, dstH);
+      device->bindRenderTarget(blurUpRts[static_cast<size_t>(i)], dstW, dstH);
+      device->setBlendMode(iota::core::BlendMode::Opaque);
+      device->useShader(shBloomUp);
+      device->bindTexture(0, device->renderTargetColorTexture(coarseRt));
+      device->setUniformInt(shBloomUp, "u_coarseTex", 0);
+      device->bindTexture(1, device->renderTargetColorTexture(blurDownRts[static_cast<size_t>(i)]));
+      device->setUniformInt(shBloomUp, "u_fineTex", 1);
+      device->setUniformVec2(shBloomUp,
+                             "u_texelSize",
+                             1.0f / static_cast<float>(std::max(1, coarseW)),
+                             1.0f / static_cast<float>(std::max(1, coarseH)));
+      device->setUniformFloat(shBloomUp, "u_scatter", scatter);
+      device->setUniformFloat(shBloomUp, "u_anamorphic", anamorphic);
+      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      if (stats) stats->drawCalls += 1;
+    }
+
+    return device->renderTargetColorTexture(blurUpRts[0]);
   }
 
   static const std::array<iota::rhi::VertexPosColUv, 4>& fullClipQuad() noexcept {
@@ -1169,6 +1317,7 @@ struct SceneRenderer::Impl {
     device->setUniformFloat(shFxLight, "tex2_y_mul", flipMaskY ? -1.0f : 1.0f);
     device->setUniformVec4(shFxLight, "Color2", 0.0f, 0.0f, 0.0f, 0.0f);
     device->setUniformFloat(shFxLight, "saturation", sat);
+    device->setUniformFloat(shFxLight, "u_hdrGain", evalElementHdrGain(el, mctx));
 
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
@@ -1402,6 +1551,7 @@ struct SceneRenderer::Impl {
     device->setUniformMat4(shBuffer, "u_projView", projView);
     device->bindTexture(0, texWhite);
     device->setUniformInt(shBuffer, "u_texture", 0);
+    device->setUniformFloat(shBuffer, "u_hdrGain", evalElementHdrGain(el, mctx));
 
     for (const char* segName : {"Segment1", "Segment2"}) {
       if (const auto* seg = findPropCI(p, segName)) {
@@ -1642,6 +1792,7 @@ struct SceneRenderer::Impl {
       device->setUniformInt(shParticle, "u_particleShape", static_cast<int>(cfg.shapeType));
       device->setUniformFloat(shParticle, "u_feather", cfg.feather);
       device->setUniformFloat(shParticle, "u_premulRgb", premulRgb);
+      device->setUniformFloat(shParticle, "u_hdrGain", evalElementHdrGain(el, mctx));
       device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
       if (stats) stats->drawCalls += 1;
     }
@@ -1693,6 +1844,7 @@ struct SceneRenderer::Impl {
       device->setUniformMat4(shBuffer, "u_projView", projView);
       device->bindTexture(0, tex);
       device->setUniformInt(shBuffer, "u_texture", 0);
+      device->setUniformFloat(shBuffer, "u_hdrGain", evalElementHdrGain(el, mctx));
       device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
       if (stats) stats->drawCalls += 1;
     }
@@ -1754,7 +1906,8 @@ struct SceneRenderer::Impl {
                          iota::core::ColorRgba tint,
                          iota::core::ColorRgba color2Add,
                          iota::core::BlendMode blend,
-                         bool invertMask) {
+                         bool invertMask,
+                         float layerHdrGain) {
       if (layerScale.x <= 0.001f || layerScale.y <= 0.001f) {
         return;
       }
@@ -1786,14 +1939,16 @@ struct SceneRenderer::Impl {
                              color2Add.b / 255.0f,
                              color2Add.a / 255.0f);
       device->setUniformFloat(shFxLight, "saturation", 1.0f);
+      device->setUniformFloat(shFxLight, "u_hdrGain", layerHdrGain);
       device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
       if (stats) stats->drawCalls += 1;
     };
 
+    const float hdrGain = evalElementHdrGain(el, mctx);
     const auto mainCol = getColorArgbCI(p, "color", {0, 0, 0, 255});
     const iota::core::ColorRgba zeroColor2{0, 0, 0, 0};
     if (getBoolCI(p, "showUnblurredContentUnder", false)) {
-      drawLayer(srcTex, true, {1.0f, 1.0f}, {255, 255, 255, 255}, zeroColor2, contentBlend, true);
+      drawLayer(srcTex, true, {1.0f, 1.0f}, {255, 255, 255, 255}, zeroColor2, contentBlend, true, 1.0f);
     }
 
     const std::array<std::pair<const char*, const char*>, 3> blurLayers = {{
@@ -1804,11 +1959,11 @@ struct SceneRenderer::Impl {
     for (const auto& [sKey, cKey] : blurLayers) {
       const auto ls = p.getVec2(sKey, {0.0f, 0.0f});
       const auto lc = getColorArgbCI(p, cKey, {255, 255, 255, 255});
-      drawLayer(blurredTex, blurredIsFbo, ls, lc, mainCol, elemBlend, false);
+      drawLayer(blurredTex, blurredIsFbo, ls, lc, mainCol, elemBlend, false, hdrGain);
     }
 
     if (getBoolCI(p, "showUnblurredContent", true)) {
-      drawLayer(srcTex, true, {1.0f, 1.0f}, {255, 255, 255, 255}, zeroColor2, contentBlend, false);
+      drawLayer(srcTex, true, {1.0f, 1.0f}, {255, 255, 255, 255}, zeroColor2, contentBlend, false, 1.0f);
     }
   }
 
@@ -1861,6 +2016,7 @@ struct SceneRenderer::Impl {
     device->setUniformVec3(shRgbSplit, "splitColor0", c0.r / 255.0f, c0.g / 255.0f, c0.b / 255.0f);
     device->setUniformVec3(shRgbSplit, "splitColor1", c1.r / 255.0f, c1.g / 255.0f, c1.b / 255.0f);
     device->setUniformVec3(shRgbSplit, "splitColor2", c2.r / 255.0f, c2.g / 255.0f, c2.b / 255.0f);
+    device->setUniformFloat(shRgbSplit, "u_hdrGain", evalElementHdrGain(el, mctx));
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
 
@@ -1999,7 +2155,7 @@ struct SceneRenderer::Impl {
       auto& hist = temporalBlurHistories[rid];
       for (int k = 0; k < 2; ++k) {
         if (!hist.rt[k]) {
-          hist.rt[k] = device->createRenderTarget(width, height);
+          hist.rt[k] = device->createRenderTarget(width, height, iota::rhi::TextureFilter::Linear, workingFormat);
         }
       }
       const float trailDecayMs = std::clamp(getFloatCI(p, "trailDecayMs", 120.0f), 0.0f, 2500.0f);
@@ -2053,6 +2209,7 @@ struct SceneRenderer::Impl {
     device->setUniformVec2(shMotionBlur, "u_center", std::clamp(blurCenter.x, 0.0f, 1.0f), centerV);
     device->setUniformFloat(shMotionBlur, "u_aspect", aspect);
     device->setUniformInt(shMotionBlur, "u_samples", blurSamples);
+    device->setUniformFloat(shMotionBlur, "u_hdrGain", evalElementHdrGain(el, mctx));
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
 
@@ -2123,6 +2280,7 @@ struct SceneRenderer::Impl {
     device->setUniformMat4(shBuffer, "u_projView", projView);
     device->bindTexture(0, target.tex);
     device->setUniformInt(shBuffer, "u_texture", 0);
+    device->setUniformFloat(shBuffer, "u_hdrGain", 1.0f);
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
   }
@@ -2176,6 +2334,7 @@ struct SceneRenderer::Impl {
     device->setUniformVec2(sh, "u_resolution", static_cast<float>(width), static_cast<float>(height));
     device->setUniformFloat(sh, "u_beat", mctx.beat);
     device->setUniformVec4(sh, "u_soundKeys", mctx.soundKeys[0], mctx.soundKeys[1], mctx.soundKeys[2], mctx.beat);
+    device->setUniformFloat(sh, "u_hdrGain", 1.0f);
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
   }
@@ -2216,13 +2375,14 @@ void SceneRenderer::shutdown() {
 
   for (auto rt : impl_->compTargets) impl_->device->destroyRenderTarget(rt);
   impl_->compTargets.clear();
-  for (auto* rt : {&impl_->finalRt, &impl_->blurFullA, &impl_->blurFullB,
+  for (auto* rt : {&impl_->finalRt, &impl_->tonemapRt, &impl_->blurFullA, &impl_->blurFullB,
                    &impl_->canvasSnapshotRt, &impl_->emitterSampleRt}) {
     if (*rt) {
       impl_->device->destroyRenderTarget(*rt);
       *rt = {};
     }
   }
+  impl_->workingFormat = iota::rhi::PixelFormat::Rgba8;
   for (auto& rt : impl_->blurDownRts) {
     if (rt) {
       impl_->device->destroyRenderTarget(rt);
@@ -2265,7 +2425,9 @@ void SceneRenderer::shutdown() {
 
   for (auto* sh : {&impl_->shBuffer, &impl_->shFxLight, &impl_->shKawaseDown, &impl_->shKawaseUp,
                    &impl_->shGaussianSep, &impl_->shRadialBlur, &impl_->shRgbSplit,
-                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle, &impl_->shFxaa}) {
+                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle,
+                   &impl_->shBloomPrefilter, &impl_->shBloomDown, &impl_->shBloomUp,
+                   &impl_->shTonemap, &impl_->shFxaa}) {
     if (*sh) {
       impl_->device->destroyShader(*sh);
       *sh = {};
@@ -2320,7 +2482,12 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
   }
 
   const int compCount = static_cast<int>(project.compositions.size());
-  impl_->ensureRenderTargets(compCount, width, height);
+  const bool hdrEnabled = getBoolCI(project.compositions[0].props, "hdrPipeline", true);
+  impl_->ensureRenderTargets(
+      compCount,
+      width,
+      height,
+      hdrEnabled ? iota::rhi::PixelFormat::Rgba16F : iota::rhi::PixelFormat::Rgba8);
 
   // Count and run all AudioProviders across the project (unlimited count)
   int providerCount = 0;
@@ -2519,41 +2686,133 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
 
   const auto comp0Rt = impl_->compTargets[0];
   const auto dstRt = outputTarget ? outputTarget : impl_->finalRt;
-  if (timing.fxaaEnabled) {
-    static const std::array<iota::rhi::VertexPosColUv, 4> kClipQuad = {{
-        {-1.0f, -1.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 0.0f},
-        {+1.0f, -1.0f, 0.0f, 0xFFFFFFFFu, 1.0f, 0.0f},
-        {+1.0f, +1.0f, 0.0f, 0xFFFFFFFFu, 1.0f, 1.0f},
-        {-1.0f, +1.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 1.0f},
-    }};
-    static const std::array<uint32_t, 6> kClipIdx = {0, 1, 2, 0, 2, 3};
+  const auto& comp0Props = project.compositions[0].props;
 
-    impl_->device->bindRenderTarget(dstRt, impl_->width, impl_->height);
+  const float exposureEv = std::clamp(getFloatCI(comp0Props, "exposureEv", 0.0f), -6.0f, 6.0f);
+  const float exposure = std::pow(2.0f, exposureEv);
+  const bool bloomEnabled = getBoolCI(comp0Props, "bloomEnabled", false);
+  const float bloomThreshold = std::max(0.0f, getFloatCI(comp0Props, "bloomThreshold", 0.90f));
+  const float bloomSoftKnee = std::clamp(getFloatCI(comp0Props, "bloomSoftKnee", 0.50f), 0.0f, 1.0f);
+  const float baseBloomIntensity = std::max(0.0f, getFloatCI(comp0Props, "bloomIntensity", 0.50f));
+  float bloomAudioBoost = 0.0f;
+  if (comp0Props.contains("measureBloomIntensity")) {
+    bloomAudioBoost = std::max(0.0f, impl_->mvarEval.evaluateScalar(
+        iota::dsp::MVarEvaluator::makeKey(-100, "comp0_measureBloomIntensity"),
+        comp0Props.getMVar("measureBloomIntensity"),
+        mctx));
+  }
+  const float effectiveBloom = bloomEnabled ? (baseBloomIntensity + bloomAudioBoost) : 0.0f;
+  const float bloomRadius = std::clamp(getFloatCI(comp0Props, "bloomRadius", 0.72f), 0.05f, 0.98f);
+  const float bloomAnamorphic = std::clamp(getFloatCI(comp0Props, "bloomAnamorphic", 0.0f), 0.0f, 1.0f);
+  const auto bloomTint = getColorArgbCI(comp0Props, "bloomTint", {255, 255, 255, 255});
+
+  const std::string tonemapStr = getStringCI(comp0Props, "tonemapMode", "None");
+  int tonemapInt = 0;
+  if (asciiEqualsIgnoreCase(tonemapStr, "ACES")) tonemapInt = 1;
+  else if (asciiEqualsIgnoreCase(tonemapStr, "AgX")) tonemapInt = 2;
+  else if (asciiEqualsIgnoreCase(tonemapStr, "PBRNeutral")) tonemapInt = 3;
+  else if (asciiEqualsIgnoreCase(tonemapStr, "Reinhard")) tonemapInt = 4;
+
+  const float contrast = std::clamp(getFloatCI(comp0Props, "contrast", 1.0f), 0.1f, 4.0f);
+  const float saturation = std::clamp(getFloatCI(comp0Props, "saturation", 1.0f), 0.0f, 4.0f);
+  const float gamma = std::clamp(getFloatCI(comp0Props, "gamma", 1.0f), 0.1f, 4.0f);
+  const float vignette = std::clamp(getFloatCI(comp0Props, "vignette", 0.0f), 0.0f, 1.0f);
+
+  const bool hdrPostActive =
+      (effectiveBloom > 1e-4f) || (tonemapInt != 0) ||
+      (std::abs(exposureEv) > 1e-4f) || (std::abs(contrast - 1.0f) > 1e-4f) ||
+      (std::abs(saturation - 1.0f) > 1e-4f) || (std::abs(gamma - 1.0f) > 1e-4f) ||
+      (vignette > 1e-4f);
+
+  if (outStats) {
+    outStats->hdrPipelineActive = (impl_->workingFormat == iota::rhi::PixelFormat::Rgba16F);
+    outStats->bloomActive = (effectiveBloom > 1e-4f);
+  }
+
+  auto runFxaaPass = [&](iota::rhi::RenderTargetHandle srcRt, iota::rhi::RenderTargetHandle outRt) {
+    impl_->device->bindRenderTarget(outRt, impl_->width, impl_->height);
     impl_->device->setBlendMode(iota::core::BlendMode::Opaque);
     impl_->device->useShader(impl_->shFxaa);
-    impl_->device->bindTexture(0, impl_->device->renderTargetColorTexture(comp0Rt));
+    impl_->device->bindTexture(0, impl_->device->renderTargetColorTexture(srcRt));
     impl_->device->setUniformInt(impl_->shFxaa, "u_texture", 0);
     impl_->device->setUniformFloat(impl_->shFxaa, "resolutionW", static_cast<float>(impl_->width));
     impl_->device->setUniformFloat(impl_->shFxaa, "resolutionH", static_cast<float>(impl_->height));
-    impl_->device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, kClipQuad, kClipIdx);
+    impl_->device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles,
+                               Impl::fullClipQuad(),
+                               Impl::fullClipIdx());
     if (outStats) outStats->drawCalls += 1;
+  };
+
+  if (hdrPostActive) {
+    const iota::rhi::TextureHandle comp0Tex = impl_->device->renderTargetColorTexture(comp0Rt);
+    const iota::rhi::TextureHandle bloomTex = (effectiveBloom > 1e-4f)
+        ? impl_->runBloomPipeline(comp0Tex,
+                                  exposure,
+                                  bloomThreshold,
+                                  bloomSoftKnee,
+                                  bloomRadius,
+                                  bloomAnamorphic,
+                                  outStats)
+        : impl_->texBlack;
+
+    const auto postTarget = timing.fxaaEnabled ? impl_->tonemapRt : dstRt;
+    impl_->device->bindRenderTarget(postTarget, impl_->width, impl_->height);
+    impl_->device->setBlendMode(iota::core::BlendMode::Opaque);
+    impl_->device->useShader(impl_->shTonemap);
+    impl_->device->bindTexture(0, comp0Tex);
+    impl_->device->setUniformInt(impl_->shTonemap, "u_sceneTex", 0);
+    impl_->device->bindTexture(1, bloomTex);
+    impl_->device->setUniformInt(impl_->shTonemap, "u_bloomTex", 1);
+    impl_->device->setUniformInt(impl_->shTonemap, "u_tonemapMode", tonemapInt);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_exposure", exposure);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_bloomAmount", effectiveBloom);
+    impl_->device->setUniformVec3(impl_->shTonemap,
+                                  "u_bloomTint",
+                                  static_cast<float>(bloomTint.r) / 255.0f,
+                                  static_cast<float>(bloomTint.g) / 255.0f,
+                                  static_cast<float>(bloomTint.b) / 255.0f);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_contrast", contrast);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_saturation", saturation);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_gamma", gamma);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_vignette", vignette);
+    impl_->device->setUniformFloat(impl_->shTonemap, "u_dither", timing.fxaaEnabled ? 0.0f : 1.0f);
+    impl_->device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles,
+                               Impl::fullClipQuad(),
+                               Impl::fullClipIdx());
+    if (outStats) outStats->drawCalls += 1;
+
+    if (timing.fxaaEnabled) {
+      runFxaaPass(impl_->tonemapRt, dstRt);
+    }
     impl_->activeFinalRt = dstRt;
-  } else if (outputTarget && outputTarget != comp0Rt) {
-    impl_->device->bindRenderTarget(outputTarget, impl_->width, impl_->height);
+  } else if (timing.fxaaEnabled) {
+    runFxaaPass(comp0Rt, dstRt);
+    impl_->activeFinalRt = dstRt;
+  } else if ((outputTarget && outputTarget != comp0Rt) ||
+             impl_->workingFormat != iota::rhi::PixelFormat::Rgba8) {
+    impl_->device->bindRenderTarget(dstRt, impl_->width, impl_->height);
     impl_->drawQuadWithBufferShader(impl_->device->renderTargetColorTexture(comp0Rt),
                                     makeOrthoProjView(impl_->width, impl_->height),
                                     {0.0f, 0.0f, static_cast<float>(impl_->width), static_cast<float>(impl_->height)},
                                     0xFFFFFFFFu,
                                     iota::core::BlendMode::Opaque,
                                     true,
-                                    outStats);
-    impl_->activeFinalRt = outputTarget;
+                                    outStats,
+                                    1.0f);
+    impl_->activeFinalRt = dstRt;
   } else {
     impl_->activeFinalRt = comp0Rt;
   }
 
   impl_->device->bindRenderTarget({}, 0, 0);
   return impl_->activeFinalRt;
+}
+
+iota::rhi::RenderTargetHandle SceneRenderer::hdrSceneRenderTarget() const noexcept {
+  if (!impl_ || impl_->compTargets.empty()) {
+    return {};
+  }
+  return impl_->compTargets[0];
 }
 
 iota::rhi::RenderTargetHandle SceneRenderer::finalRenderTarget() const noexcept {

@@ -751,6 +751,188 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     }
   }
 
+  SUBCASE("HDR RGBA16F pipeline, emissive gain, physical Bloom pyramid, and Filmic Tonemapping") {
+    constexpr int kW = 320;
+    constexpr int kH = 240;
+    const iota::engine::FrameTiming tm{1.0f / 60.0f, 0.1, 0.1, true, 0.0f, false, 60.0f};
+
+    auto makeHdrBoxProject = [&](float hdrGain, iota::core::ColorHslaNorm col) {
+      iota::model::Project p;
+      p.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto sq = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      sq.props.setString("customImage", "internalres:white", "img", "1_image");
+      sq.props.setBool("scaleIsUniform", true, "0_general");
+      sq.props.setVec2("scale", {0.25f, 0.25f}, 0.0f, 2.0f, "0_general");  // 60x60 centered at (160,120)
+      sq.props.setVec2("position", {0.5f, 0.5f}, -1.0f, 1.0f, "0_general");
+      sq.props.setColorHsla("Color", col, "2_color");
+      sq.props.setColorHsla("ColorTo", col, "2_color");
+      sq.props.setFloat("hdrIntensity", hdrGain, 0.0f, 16.0f, "2_color");
+      comp0.elements.push_back(std::move(sq));
+      p.compositions.push_back(std::move(comp0));
+      return p;
+    };
+
+    auto readFinal = [&](int expectedW, int expectedH) {
+      std::vector<uint8_t> rgba;
+      int rw = 0, rh = 0;
+      REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, rgba, true));
+      REQUIRE(rw == expectedW);
+      REQUIRE(rh == expectedH);
+      return rgba;
+    };
+
+    auto luma8At = [](const std::vector<uint8_t>& buf, int w, int x, int y) {
+      const size_t idx = static_cast<size_t>((y * w + x) * 4);
+      return (static_cast<float>(buf[idx + 0]) + buf[idx + 1] + buf[idx + 2]) / 3.0f;
+    };
+
+    // 1. True RGBA16F Float Precision, Live SDR/HDR Toggle, and Resize Preservation
+    {
+      auto p = makeHdrBoxProject(4.0f, {0.0f, 0.0f, 1.0f, 1.0f});
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      CHECK(st.hdrPipelineActive);
+      CHECK(device.renderTargetFormat(renderer.hdrSceneRenderTarget()) == iota::rhi::PixelFormat::Rgba16F);
+      CHECK(device.renderTargetFormat(renderer.finalRenderTarget()) == iota::rhi::PixelFormat::Rgba8);
+
+      std::vector<float> hdrFloats;
+      int fw = 0, fh = 0;
+      REQUIRE(device.readRenderTargetRgbaFloat(renderer.hdrSceneRenderTarget(), fw, fh, hdrFloats, true));
+      REQUIRE(fw == kW);
+      REQUIRE(fh == kH);
+      const size_t cIdx = static_cast<size_t>((120 * kW + 160) * 4);
+      CHECK(hdrFloats[cIdx + 0] > 3.5f);
+      CHECK(hdrFloats[cIdx + 1] > 3.5f);
+      CHECK(hdrFloats[cIdx + 2] > 3.5f);
+
+      // Live toggle to SDR8
+      p.compositions[0].props.setBool("hdrPipeline", false, "3_hdrPost", "b");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      CHECK_FALSE(st.hdrPipelineActive);
+      CHECK(device.renderTargetFormat(renderer.hdrSceneRenderTarget()) == iota::rhi::PixelFormat::Rgba8);
+      REQUIRE(device.readRenderTargetRgbaFloat(renderer.hdrSceneRenderTarget(), fw, fh, hdrFloats, true));
+      CHECK(hdrFloats[cIdx + 0] <= 1.01f);
+      CHECK(hdrFloats[cIdx + 1] <= 1.01f);
+      CHECK(hdrFloats[cIdx + 2] <= 1.01f);
+
+      // Flip back to HDR16F and resize down then back up
+      p.compositions[0].props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+      REQUIRE(renderer.renderFrame(p, audio, tm, 256, 192, {}, &st));
+      CHECK(device.renderTargetFormat(renderer.hdrSceneRenderTarget()) == iota::rhi::PixelFormat::Rgba16F);
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      CHECK(device.renderTargetFormat(renderer.hdrSceneRenderTarget()) == iota::rhi::PixelFormat::Rgba16F);
+      REQUIRE(device.readRenderTargetRgbaFloat(renderer.hdrSceneRenderTarget(), fw, fh, hdrFloats, true));
+      CHECK(hdrFloats[cIdx + 0] > 3.5f);
+    }
+
+    // 2. Physical Bloom Threshold, Halo Spread & Anamorphic Stretch
+    {
+      auto p = makeHdrBoxProject(3.0f, {0.0f, 0.0f, 1.0f, 1.0f});
+      auto& cp = p.compositions[0].props;
+      cp.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+      cp.setBool("bloomEnabled", false, "3_hdrPost", "b");
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      CHECK_FALSE(st.bloomActive);
+      const auto noBloomPx = readFinal(kW, kH);
+      CHECK(luma8At(noBloomPx, kW, 160 + 55, 120) < 20.0f);
+
+      cp.setBool("bloomEnabled", true, "3_hdrPost", "b");
+      cp.setFloat("bloomThreshold", 1.0f, 0.0f, 5.0f, "3_hdrPost");
+      cp.setFloat("bloomIntensity", 1.2f, 0.0f, 4.0f, "3_hdrPost");
+      cp.setFloat("bloomRadius", 0.78f, 0.10f, 0.98f, "3_hdrPost");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      CHECK(st.bloomActive);
+      const auto bloomPx = readFinal(kW, kH);
+      CHECK(luma8At(bloomPx, kW, 160 + 55, 120) > 25.0f);
+
+      // Anamorphic horizontal stretch
+      cp.setFloat("bloomAnamorphic", 0.95f, 0.0f, 1.0f, "3_hdrPost");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      const auto anamPx = readFinal(kW, kH);
+      CHECK(luma8At(anamPx, kW, 160 + 75, 120) > luma8At(anamPx, kW, 160, 120 + 75) + 4.0f);
+
+      // Dim element below threshold emits negligible halo
+      p.compositions[0].elements[0].props.setFloat("hdrIntensity", 0.25f, 0.0f, 16.0f, "2_color");
+      cp.setFloat("bloomAnamorphic", 0.0f, 0.0f, 1.0f, "3_hdrPost");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, &st));
+      const auto dimPx = readFinal(kW, kH);
+      CHECK(luma8At(dimPx, kW, 160 + 55, 120) < 12.0f);
+    }
+
+    // 3. Filmic Tonemappers, Highlight Desaturation, Exposure EV & Audio-Reactive Bloom
+    {
+      auto p = makeHdrBoxProject(4.0f, {0.0f, 1.0f, 0.5f, 1.0f});  // Pure red HDR 4.0
+      auto& cp = p.compositions[0].props;
+      cp.setBool("bloomEnabled", false, "3_hdrPost", "b");
+      const size_t cIdx = static_cast<size_t>((120 * kW + 160) * 4);
+
+      renderer.resetSimulation();
+      cp.setString("tonemapMode", "None", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+      const auto nonePx = readFinal(kW, kH);
+      CHECK(nonePx[cIdx + 0] > 240);
+      CHECK(nonePx[cIdx + 1] < 5);
+      CHECK(nonePx[cIdx + 2] < 5);
+
+      for (const std::string tmMode : {"ACES", "AgX", "PBRNeutral"}) {
+        cp.setString("tonemapMode", tmMode, "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+        REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+        const auto px = readFinal(kW, kH);
+        CHECK_MESSAGE(px[cIdx + 0] > 200, "Mode: " << tmMode);
+        CHECK_MESSAGE(px[cIdx + 1] > 20, "Highlight desaturation missing in " << tmMode);
+      }
+
+      cp.setString("tonemapMode", "Reinhard", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+      const auto reinPx = readFinal(kW, kH);
+      CHECK(reinPx[cIdx + 0] > 180);
+
+      // Exposure EV test on mid-grey ACES scene
+      auto pExp = makeHdrBoxProject(1.0f, {0.0f, 0.0f, 0.5f, 1.0f});
+      auto& cpExp = pExp.compositions[0].props;
+      cpExp.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+      cpExp.setFloat("exposureEv", -1.5f, -4.0f, 4.0f, "3_hdrPost");
+      REQUIRE(renderer.renderFrame(pExp, audio, tm, kW, kH));
+      const float lowEvLuma = luma8At(readFinal(kW, kH), kW, 160, 120);
+
+      cpExp.setFloat("exposureEv", +1.5f, -4.0f, 4.0f, "3_hdrPost");
+      REQUIRE(renderer.renderFrame(pExp, audio, tm, kW, kH));
+      const float highEvLuma = luma8At(readFinal(kW, kH), kW, 160, 120);
+      CHECK(highEvLuma > lowEvLuma + 45.0f);
+
+      // Audio-reactive Bloom + Particles + FXAA combined stress check
+      auto starter = iota::model::createStarterProject();
+      auto& scp = starter.compositions[0].props;
+      scp.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+      scp.setBool("bloomEnabled", true, "3_hdrPost", "b");
+      scp.setFloat("bloomIntensity", 0.25f, 0.0f, 4.0f, "3_hdrPost");
+      scp.setMVar("measureBloomIntensity",
+                  iota::model::MVariableFloat{{{"SoundKeys1", 1.2f, 0.0f}}},
+                  "mvarf 0.0 3.0",
+                  "3_hdrPost");
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      for (int f = 0; f < 10; ++f) {
+        const iota::engine::FrameTiming fxaaTm{1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f};
+        REQUIRE(renderer.renderFrame(starter, audio, fxaaTm, kW, kH, {}, &st));
+      }
+      CHECK(st.hdrPipelineActive);
+      CHECK(st.bloomActive);
+      const auto finalFxaa = readFinal(kW, kH);
+      uint64_t totalLuma = 0;
+      for (size_t i = 0; i + 3 < finalFxaa.size(); i += 4) {
+        totalLuma += finalFxaa[i] + finalFxaa[i + 1] + finalFxaa[i + 2];
+      }
+      CHECK(totalLuma > 30000);
+    }
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

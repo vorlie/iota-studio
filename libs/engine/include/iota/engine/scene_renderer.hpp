@@ -47,6 +47,8 @@ struct RenderFrameStats {
   float soundKeysPeak = 0.0f;
   int activeParticles = 0;
   int activeAuxParticles = 0;
+  bool hdrPipelineActive = false;
+  bool bloomActive = false;
   std::string lastError;
 };
 
@@ -77,6 +79,7 @@ class SceneRenderer {
                                             iota::rhi::RenderTargetHandle outputTarget = {},
                                             RenderFrameStats* outStats = nullptr);
 
+  [[nodiscard]] iota::rhi::RenderTargetHandle hdrSceneRenderTarget() const noexcept;
   [[nodiscard]] iota::rhi::RenderTargetHandle finalRenderTarget() const noexcept;
   [[nodiscard]] iota::rhi::TextureHandle finalOutputTexture() const noexcept;
 

@@ -533,16 +533,63 @@ void EditorApp::drawMenuBar() {
     }
     ImGui::Separator();
     ImGui::MenuItem("FXAA Anti-Aliasing", nullptr, &fxaaEnabled_);
+    if (!project_.compositions.empty()) {
+      auto ensureComp0HdrProps = [&]() {
+        const auto defComp = iota::model::createDefaultComposition(0);
+        auto& comp0 = project_.compositions[0];
+        for (const auto& defItem : defComp.props.items()) {
+          if (defItem.entry.groupTag == "3_hdrPost" && !comp0.props.contains(defItem.key)) {
+            comp0.props.items().push_back(defItem);
+          }
+        }
+      };
+      auto& comp0Props = project_.compositions[0].props;
+      ImGui::Separator();
+      bool hdrOn = comp0Props.getBool("hdrPipeline", true);
+      if (ImGui::MenuItem("HDR 16-bit Float Pipeline", nullptr, &hdrOn)) {
+        ensureComp0HdrProps();
+        comp0Props.setBool("hdrPipeline", hdrOn, "3_hdrPost", "b");
+        pushUndoState(hdrOn ? "Enable HDR Pipeline" : "Disable HDR Pipeline");
+      }
+      bool bloomOn = comp0Props.getBool("bloomEnabled", false);
+      if (ImGui::MenuItem("HDR Bloom Glow", nullptr, &bloomOn)) {
+        ensureComp0HdrProps();
+        comp0Props.setBool("bloomEnabled", bloomOn, "3_hdrPost", "b");
+        pushUndoState(bloomOn ? "Enable HDR Bloom" : "Disable HDR Bloom");
+      }
+      if (ImGui::BeginMenu("Tonemapping")) {
+        const std::string curTm = comp0Props.getString("tonemapMode", "None");
+        for (const char* tm : {"None", "ACES", "AgX", "PBRNeutral", "Reinhard"}) {
+          const bool selected = (curTm == tm);
+          if (ImGui::MenuItem(tm, nullptr, selected)) {
+            ensureComp0HdrProps();
+            comp0Props.setString("tonemapMode", tm, "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+            pushUndoState(std::string("Set Tonemap: ") + tm);
+          }
+        }
+        ImGui::EndMenu();
+      }
+      if (ImGui::MenuItem("Edit HDR & Bloom Settings...")) {
+        ensureComp0HdrProps();
+        selectedCompIdx_ = 0;
+        selectedElemIdx_ = -1;
+      }
+    }
+    ImGui::Separator();
     ImGui::MenuItem("Asset Browser", nullptr, &showAssetBrowserPanel_);
     ImGui::MenuItem("Sound Keys Panel", nullptr, &showSoundKeysPanel_);
     ImGui::EndMenu();
   }
 
   ImGui::Separator();
-  ImGui::TextDisabled("%s | %dx%d | %.1f FPS | Draws: %d | Beat: %.2f",
+  const char* pipeLabel = frameStats_.hdrPipelineActive
+                              ? (frameStats_.bloomActive ? "HDR16F+Bloom" : "HDR16F")
+                              : (frameStats_.bloomActive ? "SDR8+Bloom" : "SDR8");
+  ImGui::TextDisabled("%s | %dx%d | %s | %.1f FPS | Draws: %d | Beat: %.2f",
                       statusBanner_.c_str(),
                       previewWidth_,
                       previewHeight_,
+                      pipeLabel,
                       ImGui::GetIO().Framerate,
                       frameStats_.drawCalls,
                       frameStats_.beat);
@@ -813,17 +860,27 @@ void EditorApp::drawInspectorPanel() {
         }
       }
     } else if (el.type == iota::model::ElementType::Bars) {
-      if (!el.props.contains("curveInterpolation") || !el.props.contains("curveSubdivisions")) {
-        if (ImGui::SmallButton("Enable Curve Interpolation")) {
+      if (!el.props.contains("curveInterpolation") || !el.props.contains("curveSubdivisions") ||
+          !el.props.contains("hdrIntensity") || !el.props.contains("measureHdrIntensity")) {
+        if (ImGui::SmallButton("Enable Curve & HDR Controls")) {
           if (!el.props.contains("curveInterpolation")) {
             el.props.setString("curveInterpolation", "None", "sel None Linear CatmullRom CubicBSpline", "1_bars");
           }
           if (!el.props.contains("curveSubdivisions")) {
             el.props.setInt("curveSubdivisions", 4, 1, 8, "1_bars");
           }
+          if (!el.props.contains("hdrIntensity")) {
+            el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_bars");
+          }
+          if (!el.props.contains("measureHdrIntensity")) {
+            el.props.setMVar("measureHdrIntensity",
+                             iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}},
+                             "mvarf 0.0 8.0",
+                             "1_bars");
+          }
           actions.modified = true;
           actions.undoSnapshotNeeded = true;
-          actions.editLabel = "Enable Curve Interpolation";
+          actions.editLabel = "Enable Bars Curve & HDR Controls";
         }
       }
     } else if (el.type == iota::model::ElementType::SoundKeys) {
@@ -897,6 +954,7 @@ void EditorApp::drawInspectorPanel() {
         el.props.setBool("dofEnabled", true, "6_cameraDof");
         el.props.setFloat("dofFocusDist", 420.0f, 40.0f, 2000.0f, "6_cameraDof");
         el.props.setFloat("dofAperture", 0.75f, 0.0f, 2.0f, "6_cameraDof");
+        el.props.setFloat("hdrIntensity", 2.4f, 0.0f, 16.0f, "appearance");
       });
       applyPreset("Audio Sparks", [&]() {
         el.props.setString("particleShape", "Streaklet",
@@ -920,6 +978,7 @@ void EditorApp::drawInspectorPanel() {
         el.props.setColorHsla("ColorFrom", {0.08f, 1.0f, 0.72f, 1.0f}, "appearance");
         el.props.setColorHsla("ColorTo", {0.98f, 0.95f, 0.55f, 0.0f}, "appearance");
         el.props.setBool("useMidColor", false, "appearance");
+        el.props.setFloat("hdrIntensity", 2.8f, 0.0f, 16.0f, "appearance");
       });
       applyPreset("Curl Smoke", [&]() {
         el.props.setString("particleShape", "Sphere",
@@ -960,6 +1019,7 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("auxParticlesPerSec", 28.0f, 0.0f, 60.0f, "5_auxSystem");
         el.props.setFloat("auxLifetime", 0.75f, 0.05f, 5.0f, "5_auxSystem");
         el.props.setFloat("auxSizeScale", 0.55f, 0.1f, 3.0f, "5_auxSystem");
+        el.props.setFloat("hdrIntensity", 2.2f, 0.0f, 16.0f, "appearance");
       });
       applyPreset("Layer Emit", [&]() {
         el.props.setString("particleShape", "GlowSphere",
@@ -974,6 +1034,7 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("airResistance", 1.4f, 0.0f, 10.0f, "behaviour");
         el.props.setFloat("lifetime", 1.3f, 0.05f, 20.0f, "behaviour");
         el.props.setFloat("particleScale", 2.8f, 0.25f, 16.0f, "appearance");
+        el.props.setFloat("hdrIntensity", 2.0f, 0.0f, 16.0f, "appearance");
       });
     } else if (el.type == iota::model::ElementType::BlurEffect) {
       if (!el.props.contains("measureBlurRadius") || !el.props.contains("blurType")) {
@@ -1070,6 +1131,98 @@ void EditorApp::drawInspectorPanel() {
     }
   } else {
     ImGui::TextWrapped("Composition %d: %s", selectedCompIdx_, comp.displayName.c_str());
+    if (selectedCompIdx_ == 0) {
+      ImGui::TextDisabled("Pipeline: %s | Bloom: %s",
+                          frameStats_.hdrPipelineActive ? "HDR16F Float" : "SDR8",
+                          frameStats_.bloomActive ? "ON" : "OFF");
+      auto ensureHdrProps = [&]() {
+        const auto defComp = iota::model::createDefaultComposition(0);
+        for (const auto& defItem : defComp.props.items()) {
+          if (defItem.entry.groupTag == "3_hdrPost" && !comp.props.contains(defItem.key)) {
+            comp.props.items().push_back(defItem);
+          }
+        }
+      };
+      if (!comp.props.contains("hdrPipeline")) {
+        if (ImGui::SmallButton("Enable HDR & Bloom Controls")) {
+          ensureHdrProps();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = "Enable HDR & Bloom Controls";
+        }
+      }
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("HDR Presets:");
+      const float maxWrapX = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+      auto applyHdrPreset = [&](const char* label, const auto& fn) {
+        const float btnW = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + btnW <= maxWrapX) {
+          ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(label)) {
+          ensureHdrProps();
+          fn();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = std::string("Apply HDR Preset: ") + label;
+        }
+      };
+      applyHdrPreset("Clean SDR", [&]() {
+        comp.props.setBool("hdrPipeline", false, "3_hdrPost", "b");
+        comp.props.setString("tonemapMode", "None", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+        comp.props.setBool("bloomEnabled", false, "3_hdrPost", "b");
+        comp.props.setFloat("exposureEv", 0.0f, -4.0f, 4.0f, "3_hdrPost");
+        comp.props.setFloat("contrast", 1.0f, 0.5f, 2.0f, "3_hdrPost");
+        comp.props.setFloat("saturation", 1.0f, 0.0f, 2.0f, "3_hdrPost");
+        comp.props.setFloat("gamma", 1.0f, 0.4f, 2.5f, "3_hdrPost");
+        comp.props.setFloat("vignette", 0.0f, 0.0f, 1.0f, "3_hdrPost");
+      });
+      applyHdrPreset("ACES Cinema", [&]() {
+        comp.props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+        comp.props.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+        comp.props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+        comp.props.setFloat("bloomThreshold", 0.85f, 0.0f, 5.0f, "3_hdrPost");
+        comp.props.setFloat("bloomSoftKnee", 0.55f, 0.0f, 1.0f, "3_hdrPost");
+        comp.props.setFloat("bloomIntensity", 0.55f, 0.0f, 4.0f, "3_hdrPost");
+        comp.props.setFloat("bloomRadius", 0.72f, 0.10f, 0.98f, "3_hdrPost");
+        comp.props.setFloat("bloomAnamorphic", 0.0f, 0.0f, 1.0f, "3_hdrPost");
+        comp.props.setFloat("contrast", 1.04f, 0.5f, 2.0f, "3_hdrPost");
+        comp.props.setFloat("vignette", 0.18f, 0.0f, 1.0f, "3_hdrPost");
+      });
+      applyHdrPreset("AgX Neon", [&]() {
+        comp.props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+        comp.props.setString("tonemapMode", "AgX", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+        comp.props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+        comp.props.setFloat("bloomThreshold", 0.65f, 0.0f, 5.0f, "3_hdrPost");
+        comp.props.setFloat("bloomSoftKnee", 0.65f, 0.0f, 1.0f, "3_hdrPost");
+        comp.props.setFloat("bloomIntensity", 0.80f, 0.0f, 4.0f, "3_hdrPost");
+        comp.props.setFloat("bloomRadius", 0.78f, 0.10f, 0.98f, "3_hdrPost");
+        comp.props.setFloat("bloomAnamorphic", 0.0f, 0.0f, 1.0f, "3_hdrPost");
+        comp.props.setFloat("saturation", 1.12f, 0.0f, 2.0f, "3_hdrPost");
+      });
+      applyHdrPreset("Anamorphic Flare", [&]() {
+        comp.props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+        comp.props.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+        comp.props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+        comp.props.setFloat("bloomThreshold", 0.95f, 0.0f, 5.0f, "3_hdrPost");
+        comp.props.setFloat("bloomIntensity", 0.70f, 0.0f, 4.0f, "3_hdrPost");
+        comp.props.setFloat("bloomRadius", 0.85f, 0.10f, 0.98f, "3_hdrPost");
+        comp.props.setFloat("bloomAnamorphic", 0.90f, 0.0f, 1.0f, "3_hdrPost");
+        comp.props.setColorArgb("bloomTint", {160, 210, 255, 255}, "crgb", "3_hdrPost");
+      });
+      applyHdrPreset("Audio Pulse Bloom", [&]() {
+        comp.props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+        comp.props.setString("tonemapMode", "PBRNeutral", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+        comp.props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+        comp.props.setFloat("bloomThreshold", 0.75f, 0.0f, 5.0f, "3_hdrPost");
+        comp.props.setFloat("bloomIntensity", 0.35f, 0.0f, 4.0f, "3_hdrPost");
+        comp.props.setMVar("measureBloomIntensity",
+                           iota::model::MVariableFloat{{{"SoundKeys1", 1.25f, 0.0f}}},
+                           "mvarf 0.0 3.0",
+                           "3_hdrPost");
+        comp.props.setFloat("bloomRadius", 0.76f, 0.10f, 0.98f, "3_hdrPost");
+      });
+    }
     ImGui::Separator();
     renderPropertyBagInspector(comp.props, actions);
   }

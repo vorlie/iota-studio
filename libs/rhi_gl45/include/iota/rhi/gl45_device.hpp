@@ -31,10 +31,12 @@ class Gl45RenderDevice final : public IRenderDevice {
   RenderTargetHandle createRenderTarget(int width,
                                         int height,
                                         TextureFilter filter = TextureFilter::Linear,
+                                        PixelFormat format = PixelFormat::Rgba8,
                                         std::string* outError = nullptr) override;
   void resizeRenderTarget(RenderTargetHandle rt, int width, int height) override;
   void destroyRenderTarget(RenderTargetHandle rt) override;
   [[nodiscard]] TextureHandle renderTargetColorTexture(RenderTargetHandle rt) const noexcept override;
+  [[nodiscard]] PixelFormat renderTargetFormat(RenderTargetHandle rt) const noexcept override;
   bool renderTargetSize(RenderTargetHandle rt, int& outW, int& outH) const override;
 
   ShaderHandle createShader(std::string_view vertexGlsl,
@@ -68,6 +70,11 @@ class Gl45RenderDevice final : public IRenderDevice {
                             int& outHeight,
                             std::vector<uint8_t>& outRgba,
                             bool flipVertical = true) override;
+  bool readRenderTargetRgbaFloat(RenderTargetHandle rt,
+                                 int& outWidth,
+                                 int& outHeight,
+                                 std::vector<float>& outRgbaFloat,
+                                 bool flipVertical = true) override;
 
  private:
   struct Impl;

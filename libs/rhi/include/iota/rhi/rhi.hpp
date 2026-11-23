@@ -44,6 +44,11 @@ enum class TextureFilter {
   Nearest = 1,
 };
 
+enum class PixelFormat {
+  Rgba8 = 0,
+  Rgba16F = 1,
+};
+
 enum class TextureWrap {
   ClampToEdge = 0,
   Repeat = 1,
@@ -63,6 +68,7 @@ struct TextureDesc {
   TextureFilter filter = TextureFilter::Linear;
   TextureWrap wrap = TextureWrap::ClampToEdge;
   bool generateMipmaps = false;
+  PixelFormat format = PixelFormat::Rgba8;
 };
 
 /// Abstract Rendering Hardware Interface (OpenGL 4.5 implementation now, Vulkan-ready).
@@ -81,10 +87,12 @@ class IRenderDevice {
   virtual RenderTargetHandle createRenderTarget(int width,
                                                 int height,
                                                 TextureFilter filter = TextureFilter::Linear,
+                                                PixelFormat format = PixelFormat::Rgba8,
                                                 std::string* outError = nullptr) = 0;
   virtual void resizeRenderTarget(RenderTargetHandle rt, int width, int height) = 0;
   virtual void destroyRenderTarget(RenderTargetHandle rt) = 0;
   [[nodiscard]] virtual TextureHandle renderTargetColorTexture(RenderTargetHandle rt) const noexcept = 0;
+  [[nodiscard]] virtual PixelFormat renderTargetFormat(RenderTargetHandle rt) const noexcept = 0;
   virtual bool renderTargetSize(RenderTargetHandle rt, int& outW, int& outH) const = 0;
 
   virtual ShaderHandle createShader(std::string_view vertexGlsl,
@@ -118,6 +126,11 @@ class IRenderDevice {
                                     int& outHeight,
                                     std::vector<uint8_t>& outRgba,
                                     bool flipVertical = true) = 0;
+  virtual bool readRenderTargetRgbaFloat(RenderTargetHandle rt,
+                                         int& outWidth,
+                                         int& outHeight,
+                                         std::vector<float>& outRgbaFloat,
+                                         bool flipVertical = true) = 0;
 };
 
 }  // namespace iota::rhi

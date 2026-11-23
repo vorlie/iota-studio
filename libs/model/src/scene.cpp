@@ -235,6 +235,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setColorHsla("ColorTo", {0.0f, 0.0f, 1.0f, 1.0f}, "2_color");
       setLegacyChildMVar(el.props, "MeasureColorBlend", "Nothing", 0.5f, 0.5f, kAllMeasureChoices, "2_color");
       el.props.setMVar("saturation", MVariableFloat::constant2(1.0f, 1.0f), "mvarf 0.0 1.0", "2_color");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "2_color");
       el.props.setBool("blurEnabled", false, "blur");
       el.props.setInt("blurDivider", 5, 0, 10, "blur");
       el.props.setInt("blurRadius", 7, 1, 25, "blur");
@@ -269,6 +270,8 @@ Element createDefaultElement(ElementType type) {
       gap.value = 0.0;
 
       el.props.setMVar("colorBlendOffset", MVariableFloat{{{"TotalTime", 0.35f, 0.0f}}}, "mvarf 0.0 1.0", "1_bars");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_bars");
+      el.props.setMVar("measureHdrIntensity", MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 8.0", "1_bars");
       el.props.setString("curveInterpolation", "None", "sel None Linear CatmullRom CubicBSpline", "1_bars");
       el.props.setInt("curveSubdivisions", 4, 1, 8, "1_bars");
       el.props.setInt("softness", 2, 0, 20, "2_Behavior");
@@ -293,6 +296,8 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("particleShape", "Sprite",
                          "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
       el.props.setFloat("feather", 0.5f, 0.0f, 1.0f, "appearance");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "appearance");
+      el.props.setMVar("measureHdrIntensity", MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 8.0", "appearance");
       el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_overall");
       el.props.setInt("CountLimit", 400, 1, 50000, "1_overall");
       el.props.setFloat("particleScale", 2.5f, 0.25f, 16.0f, "appearance");
@@ -404,6 +409,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("text", "{ArtistAndTitle}", "ptxt", "appearance");
       el.props.setColorArgb("color", {240, 244, 255, 255}, "crgba", "appearance");
       el.props.setInt("fontSize", 32, 8, 100, "appearance");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "appearance");
       el.props.setString("typeFace", "internal_2",
                          "passet internal_0:2131230884 internal_1:2131230885 internal_2:2131230886 internal_3:2131230887",
                          "appearance");
@@ -430,6 +436,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setColorArgb("1layerColor", {255, 255, 255, 255}, "crgba", "2_blur");
       el.props.setColorArgb("2layerColor", {100, 180, 255, 180}, "crgba", "2_blur");
       el.props.setColorArgb("3layerColor", {255, 255, 255, 255}, "crgba", "2_blur");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
       break;
     }
 
@@ -440,6 +447,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("targetImage", "composition:1", "img composition:0", "1_appearance");
       el.props.setBool("showUnblurredContent", true, "1_appearance");
       el.props.setBool("showUnblurredContentUnder", false, "1_appearance");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
       el.props.setMVar("splitMultiplier", MVariableFloat::constant(1.5f), "mvarf 0.0 6.0", "2_splitEffect");
       el.props.setMVar("splitAmount", MVariableFloat{{{"BeatRandomShake", 0.5f, 0.5f}}}, "mvarf2 -0.5 0.5", "2_splitEffect");
       el.props.setColorArgb("splitColor0", {255, 0, 0, 255}, "crgb", "2_splitEffect");
@@ -468,6 +476,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setFloat("manualSpin", 0.0f, -45.0f, 45.0f, "2_motionBlur");
       el.props.setFloat("trailDecayMs", 120.0f, 10.0f, 1000.0f, "2_motionBlur");
       el.props.setString("trailBlend", "Mix", "sel Mix Lighten Screen", "2_motionBlur");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
       break;
     }
 
@@ -548,6 +557,26 @@ Composition createDefaultComposition(int index) {
   comp.props.setFloat("outroFadeDuration", 0.0f, 0.0f, 10.0f, "2_introOutro");
   comp.props.setColorArgb("introFadeColor", {0, 0, 0, 223}, "crgba", "2_introOutro");
   comp.props.setBool("allowRecursion", false, "0_general");
+  if (index == 0) {
+    comp.props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+    comp.props.setString("tonemapMode", "None", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+    comp.props.setFloat("exposureEv", 0.0f, -4.0f, 4.0f, "3_hdrPost");
+    comp.props.setBool("bloomEnabled", false, "3_hdrPost", "b");
+    comp.props.setFloat("bloomThreshold", 0.90f, 0.0f, 5.0f, "3_hdrPost");
+    comp.props.setFloat("bloomSoftKnee", 0.50f, 0.0f, 1.0f, "3_hdrPost");
+    comp.props.setFloat("bloomIntensity", 0.50f, 0.0f, 4.0f, "3_hdrPost");
+    comp.props.setMVar("measureBloomIntensity",
+                       MVariableFloat{{{"Nothing", 0.5f, 0.0f}}},
+                       "mvarf 0.0 3.0",
+                       "3_hdrPost");
+    comp.props.setFloat("bloomRadius", 0.72f, 0.10f, 0.98f, "3_hdrPost");
+    comp.props.setFloat("bloomAnamorphic", 0.0f, 0.0f, 1.0f, "3_hdrPost");
+    comp.props.setColorArgb("bloomTint", {255, 255, 255, 255}, "crgb", "3_hdrPost");
+    comp.props.setFloat("contrast", 1.0f, 0.5f, 2.0f, "3_hdrPost");
+    comp.props.setFloat("saturation", 1.0f, 0.0f, 2.0f, "3_hdrPost");
+    comp.props.setFloat("gamma", 1.0f, 0.4f, 2.5f, "3_hdrPost");
+    comp.props.setFloat("vignette", 0.0f, 0.0f, 1.0f, "3_hdrPost");
+  }
   return comp;
 }
 
@@ -558,6 +587,12 @@ Project createStarterProject() {
 
   // Composition 0: Final output (AudioProvider + SoundKeys + Background Image + Particles + Bars + Text)
   Composition finalComp = createDefaultComposition(0);
+  finalComp.props.setString("tonemapMode", "ACES", "sel None ACES AgX PBRNeutral Reinhard", "3_hdrPost");
+  finalComp.props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+  finalComp.props.setFloat("bloomThreshold", 0.85f, 0.0f, 5.0f, "3_hdrPost");
+  finalComp.props.setFloat("bloomIntensity", 0.45f, 0.0f, 4.0f, "3_hdrPost");
+  finalComp.props.setFloat("bloomRadius", 0.72f, 0.10f, 0.98f, "3_hdrPost");
+
   finalComp.elements.push_back(createDefaultElement(ElementType::AudioProvider));
   finalComp.elements.push_back(createDefaultElement(ElementType::SoundKeys));
 
@@ -570,10 +605,12 @@ Project createStarterProject() {
 
   Element particles = createDefaultElement(ElementType::Particles);
   particles.displayName = "Reactive Particles";
+  particles.props.setFloat("hdrIntensity", 1.8f, 0.0f, 16.0f, "appearance");
   finalComp.elements.push_back(std::move(particles));
 
   Element bars = createDefaultElement(ElementType::Bars);
   bars.displayName = "Circular Spectrum";
+  bars.props.setFloat("hdrIntensity", 1.65f, 0.0f, 16.0f, "1_bars");
   finalComp.elements.push_back(std::move(bars));
 
   Element titleText = createDefaultElement(ElementType::Text);
