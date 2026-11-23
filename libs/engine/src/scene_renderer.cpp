@@ -2270,6 +2270,7 @@ struct SceneRenderer::Impl {
     const auto elemBlend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Opaque"));
 
     ShakeConfig cfg;
+    cfg.style = shakeStyleFromString(getStringCI(p, "style", "Normal"));
     const float baseAmp = std::max(0.0f, getFloatCI(p, "amplitude", 0.35f));
     const float reactiveAmp = std::max(0.0f, mvarEval.evaluateScalar(
         iota::dsp::MVarEvaluator::makeKey(rid, "measureAmplitude"),
@@ -2277,6 +2278,10 @@ struct SceneRenderer::Impl {
         mctx));
     cfg.amplitude = baseAmp + reactiveAmp;
     cfg.frequency = std::max(0.0f, getFloatCI(p, "frequency", 6.0f));
+    cfg.stillness = std::clamp(getFloatCI(p, "stillness", 0.70f), 0.0f, 1.0f);
+    cfg.twitchFreq = std::max(0.0f, getFloatCI(p, "twitchFreq", 2.0f));
+    cfg.drift = std::clamp(getFloatCI(p, "drift", 0.30f), 0.0f, 1.0f);
+    cfg.centerBias = std::max(0.0f, getFloatCI(p, "centerBias", 0.0f));
     cfg.zDist = std::clamp(getFloatCI(p, "zDist", 1.0f), 0.1f, 8.0f);
     cfg.phase = getFloatCI(p, "phase", 0.0f);
     cfg.seed = getFloatCI(p, "seed", 0.0f);
@@ -2287,34 +2292,53 @@ struct SceneRenderer::Impl {
     cfg.xRandFreq = getFloatCI(p, "xRandFreq", 1.0f);
     cfg.xWaveAmp = getFloatCI(p, "xWaveAmp", 0.0f);
     cfg.xWaveFreq = getFloatCI(p, "xWaveFreq", 0.5f);
+    cfg.xPhase = getFloatCI(p, "xPhase", 0.0f);
     cfg.yRandAmp = getFloatCI(p, "yRandAmp", 0.14f);
     cfg.yRandFreq = getFloatCI(p, "yRandFreq", 1.0f);
     cfg.yWaveAmp = getFloatCI(p, "yWaveAmp", 0.0f);
     cfg.yWaveFreq = getFloatCI(p, "yWaveFreq", 0.5f);
+    cfg.yPhase = getFloatCI(p, "yPhase", 0.0f);
     cfg.zRandAmp = getFloatCI(p, "zRandAmp", 0.08f);
     cfg.zRandFreq = getFloatCI(p, "zRandFreq", 1.0f);
     cfg.zWaveAmp = getFloatCI(p, "zWaveAmp", 0.0f);
     cfg.zWaveFreq = getFloatCI(p, "zWaveFreq", 0.5f);
+    cfg.zPhase = getFloatCI(p, "zPhase", 0.0f);
     cfg.tiltRandAmp = getFloatCI(p, "tiltRandAmp", 3.5f);
     cfg.tiltRandFreq = getFloatCI(p, "tiltRandFreq", 1.0f);
     cfg.tiltWaveAmp = getFloatCI(p, "tiltWaveAmp", 0.0f);
     cfg.tiltWaveFreq = getFloatCI(p, "tiltWaveFreq", 0.5f);
+    cfg.tiltPhase = getFloatCI(p, "tiltPhase", 0.0f);
     cfg.twitchAmp = getFloatCI(p, "twitchAmp", 0.0f);
-    cfg.twitchFreq = getFloatCI(p, "twitchFreq", 1.5f);
+
+    cfg.redAmp = std::max(0.0f, getFloatCI(p, "redAmp", 1.0f));
+    cfg.greenAmp = std::max(0.0f, getFloatCI(p, "greenAmp", 1.0f));
+    cfg.blueAmp = std::max(0.0f, getFloatCI(p, "blueAmp", 1.0f));
+    cfg.redPhase = getFloatCI(p, "redPhase", 0.0f);
+    cfg.greenPhase = getFloatCI(p, "greenPhase", 0.0f);
+    cfg.bluePhase = getFloatCI(p, "bluePhase", 0.0f);
+    cfg.rgbRandomness = std::max(0.0f, getFloatCI(p, "rgbRandomness", 0.0f));
+    cfg.rgbFrequency = std::max(0.0f, getFloatCI(p, "rgbFrequency", 2.0f));
 
     const bool moBlurOn = getBoolCI(p, "motionBlur", true);
     const float moBlurLen = std::clamp(getFloatCI(p, "moBlurLength", 0.65f), 0.0f, 4.0f);
     const float rgbPhase = std::clamp(getFloatCI(p, "rgbPhase", 0.0f), 0.0f, 1.0f);
+    const float cropL = std::clamp(getFloatCI(p, "cropLeft", 0.0f), 0.0f, 0.45f);
+    const float cropR = std::clamp(getFloatCI(p, "cropRight", 0.0f), 0.0f, 0.45f);
+    const float cropT = std::clamp(getFloatCI(p, "cropTop", 0.0f), 0.0f, 0.45f);
+    const float cropB = std::clamp(getFloatCI(p, "cropBottom", 0.0f), 0.0f, 0.45f);
+
     const double halfShutterSec = (moBlurOn && moBlurLen > 1e-4f)
                                       ? (0.5 * static_cast<double>(moBlurLen) / 60.0)
-                                      : ((rgbPhase > 1e-4f) ? 0.015 : 0.0);
+                                      : 0.0;
     const int samples = (moBlurOn && moBlurLen > 1e-4f && !cfg.still && cfg.amplitude > 1e-4f)
                             ? std::clamp(getIntCI(p, "blurSamples", 16), 4, 48)
                             : 1;
 
-    const ShakePose pose1 = evaluateCameraShake(cfg, mctx.totalTimeSec);
-    const ShakePose pose0 = (halfShutterSec > 1e-6) ? evaluateCameraShake(cfg, mctx.totalTimeSec - halfShutterSec) : pose1;
-    const ShakePose pose2 = (halfShutterSec > 1e-6) ? evaluateCameraShake(cfg, mctx.totalTimeSec + halfShutterSec) : pose1;
+    const ShakeRgbPoses poses1 = evaluateCameraShakeRgb(cfg, mctx.totalTimeSec, rgbPhase);
+    const ShakeRgbPoses poses0 =
+        (halfShutterSec > 1e-6) ? evaluateCameraShakeRgb(cfg, mctx.totalTimeSec - halfShutterSec, rgbPhase) : poses1;
+    const ShakeRgbPoses poses2 =
+        (halfShutterSec > 1e-6) ? evaluateCameraShakeRgb(cfg, mctx.totalTimeSec + halfShutterSec, rgbPhase) : poses1;
 
     const int wrapX = static_cast<int>(shakeWrapModeFromString(getStringCI(p, "wrapX", "Reflect")));
     const int wrapY = static_cast<int>(shakeWrapModeFromString(getStringCI(p, "wrapY", "Reflect")));
@@ -2330,14 +2354,27 @@ struct SceneRenderer::Impl {
     device->setUniformMat4(shShake, "u_projView", projView);
     device->bindTexture(0, target.tex);
     device->setUniformInt(shShake, "u_texture", 0);
-    device->setUniformVec4(shShake, "u_pose0", pose0.offsetX, pose0.offsetY * ySign, pose0.zDist, pose0.tiltRad);
-    device->setUniformVec4(shShake, "u_pose1", pose1.offsetX, pose1.offsetY * ySign, pose1.zDist, pose1.tiltRad);
-    device->setUniformVec4(shShake, "u_pose2", pose2.offsetX, pose2.offsetY * ySign, pose2.zDist, pose2.tiltRad);
+    device->setUniformVec4(shShake, "u_pose0", poses0.g.offsetX, poses0.g.offsetY * ySign, poses0.g.zDist, poses0.g.tiltRad);
+    device->setUniformVec4(shShake, "u_pose1", poses1.g.offsetX, poses1.g.offsetY * ySign, poses1.g.zDist, poses1.g.tiltRad);
+    device->setUniformVec4(shShake, "u_pose2", poses2.g.offsetX, poses2.g.offsetY * ySign, poses2.g.zDist, poses2.g.tiltRad);
+    device->setUniformInt(shShake, "u_splitChannels", poses1.splitChannels ? 1 : 0);
+    if (poses1.splitChannels) {
+      device->setUniformVec4(shShake, "u_poseR0", poses0.r.offsetX, poses0.r.offsetY * ySign, poses0.r.zDist, poses0.r.tiltRad);
+      device->setUniformVec4(shShake, "u_poseR1", poses1.r.offsetX, poses1.r.offsetY * ySign, poses1.r.zDist, poses1.r.tiltRad);
+      device->setUniformVec4(shShake, "u_poseR2", poses2.r.offsetX, poses2.r.offsetY * ySign, poses2.r.zDist, poses2.r.tiltRad);
+      device->setUniformVec4(shShake, "u_poseB0", poses0.b.offsetX, poses0.b.offsetY * ySign, poses0.b.zDist, poses0.b.tiltRad);
+      device->setUniformVec4(shShake, "u_poseB1", poses1.b.offsetX, poses1.b.offsetY * ySign, poses1.b.zDist, poses1.b.tiltRad);
+      device->setUniformVec4(shShake, "u_poseB2", poses2.b.offsetX, poses2.b.offsetY * ySign, poses2.b.zDist, poses2.b.tiltRad);
+    }
+    if (target.isFbo) {
+      device->setUniformVec4(shShake, "u_crop", cropL, cropR, cropB, cropT);
+    } else {
+      device->setUniformVec4(shShake, "u_crop", cropL, cropR, cropT, cropB);
+    }
     device->setUniformFloat(shShake, "u_aspect", aspect);
     device->setUniformInt(shShake, "u_wrapX", wrapX);
     device->setUniformInt(shShake, "u_wrapY", wrapY);
     device->setUniformInt(shShake, "u_samples", samples);
-    device->setUniformFloat(shShake, "u_rgbPhase", rgbPhase);
     device->setUniformFloat(shShake, "u_hdrGain", evalElementHdrGain(el, mctx));
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;

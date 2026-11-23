@@ -761,20 +761,27 @@ void main() {
 )glsl";
 
 // Sapphire-style multi-axis camera shake with Reflect/Tile/Clamp/No edge wrapping,
-// curved shutter motion blur (Lagrange quadratic), and optical RGB phase chromatic split.
+// curved shutter motion blur (Lagrange quadratic), crop input, and independent RGB channel split.
 inline constexpr const char* kShakeFrag = R"glsl(#version 450 core
 in vec4 v_color;
 in vec2 v_uv;
 
 uniform sampler2D u_texture;
-uniform vec4 u_pose0;     // (offsetX, offsetY, zDist, tiltRad) at t - halfDt
-uniform vec4 u_pose1;     // at t
-uniform vec4 u_pose2;     // at t + halfDt
+uniform vec4 u_pose0;        // (offsetX, offsetY, zDist, tiltRad) at t - halfDt (unified / Green)
+uniform vec4 u_pose1;        // at t
+uniform vec4 u_pose2;        // at t + halfDt
+uniform int u_splitChannels; // 0 = single unified trajectory, 1 = independent R/G/B trajectories
+uniform vec4 u_poseR0;
+uniform vec4 u_poseR1;
+uniform vec4 u_poseR2;
+uniform vec4 u_poseB0;
+uniform vec4 u_poseB1;
+uniform vec4 u_poseB2;
+uniform vec4 u_crop;         // (cropLeft, cropRight, cropVMin, cropVMax)
 uniform float u_aspect;
-uniform int u_wrapX;      // 0=No, 1=Tile, 2=Reflect, 3=Clamp
+uniform int u_wrapX;         // 0=No, 1=Tile, 2=Reflect, 3=Clamp
 uniform int u_wrapY;
-uniform int u_samples;    // 1..48
-uniform float u_rgbPhase; // 0..1
+uniform int u_samples;       // 1..48
 uniform float u_hdrGain;
 
 out vec4 fragColor;
@@ -810,30 +817,40 @@ vec4 sampleShakePose(vec4 pose) {
   p *= max(pose.z, 0.05);
   vec2 uv = p + vec2(0.5) - pose.xy;
 
-  if ((u_wrapX == 0 && (uv.x < 0.0 || uv.x > 1.0)) ||
-      (u_wrapY == 0 && (uv.y < 0.0 || uv.y > 1.0))) {
+  float xMin = clamp(u_crop.x, 0.0, 0.48);
+  float xMax = max(xMin + 1e-4, 1.0 - clamp(u_crop.y, 0.0, 0.48));
+  float yMin = clamp(u_crop.z, 0.0, 0.48);
+  float yMax = max(yMin + 1e-4, 1.0 - clamp(u_crop.w, 0.0, 0.48));
+
+  if ((u_wrapX == 0 && (uv.x < xMin || uv.x > xMax)) ||
+      (u_wrapY == 0 && (uv.y < yMin || uv.y > yMax))) {
     return vec4(0.0);
   }
-  uv.x = wrapCoord(uv.x, u_wrapX);
-  uv.y = wrapCoord(uv.y, u_wrapY);
+  if (u_wrapX != 0) {
+    float spanX = xMax - xMin;
+    uv.x = xMin + wrapCoord((uv.x - xMin) / spanX, u_wrapX) * spanX;
+  }
+  if (u_wrapY != 0) {
+    float spanY = yMax - yMin;
+    uv.y = yMin + wrapCoord((uv.y - yMin) / spanY, u_wrapY) * spanY;
+  }
   return texture(u_texture, uv);
 }
 
-vec4 evalCurvedPose(float s) {
+vec4 evalCurve(vec4 p0, vec4 p1, vec4 p2, float s) {
   float w0 = 2.0 * (s - 0.5) * (s - 1.0);
   float w1 = -4.0 * s * (s - 1.0);
   float w2 = 2.0 * s * (s - 0.5);
-  return u_pose0 * w0 + u_pose1 * w1 + u_pose2 * w2;
+  return p0 * w0 + p1 * w1 + p2 * w2;
 }
 
 vec4 sampleAtS(float s) {
-  if (u_rgbPhase <= 1e-4) {
-    return sampleShakePose(evalCurvedPose(s));
+  if (u_splitChannels == 0) {
+    return sampleShakePose(evalCurve(u_pose0, u_pose1, u_pose2, s));
   }
-  float d = u_rgbPhase * 0.45;
-  vec4 cR = sampleShakePose(evalCurvedPose(s + d));
-  vec4 cG = sampleShakePose(evalCurvedPose(s));
-  vec4 cB = sampleShakePose(evalCurvedPose(s - d));
+  vec4 cR = sampleShakePose(evalCurve(u_poseR0, u_poseR1, u_poseR2, s));
+  vec4 cG = sampleShakePose(evalCurve(u_pose0, u_pose1, u_pose2, s));
+  vec4 cB = sampleShakePose(evalCurve(u_poseB0, u_poseB1, u_poseB2, s));
   return vec4(cR.r, cG.g, cB.b, (cR.a + cG.a + cB.a) / 3.0);
 }
 

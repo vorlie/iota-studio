@@ -1210,9 +1210,49 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
       REQUIRE(renderer.renderFrame(p, audio, velTm, kW, kH));
       const auto rgbPx = readRgba();
       CHECK(measureChromaticRB(rgbPx) > 5000);
+
+      // True per-channel Red/Blue Amplitude splits R & B at stationary wave peak
+      sp.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_channels");
+      sp.setFloat("redAmp", 1.8f, 0.0f, 3.0f, "4_channels");
+      sp.setFloat("blueAmp", 0.2f, 0.0f, 3.0f, "4_channels");
+      REQUIRE(renderer.renderFrame(p, audio, {1.0f / 60.0f, tPeak, tPeak, true, 0.0f, false, 60.0f}, kW, kH));
+      CHECK(measureChromaticRB(readRgba()) > 5000);
+
+      // Independent RGB Randomness splits channels cleanly even with equal channel amplitudes
+      sp.setFloat("redAmp", 1.0f, 0.0f, 3.0f, "4_channels");
+      sp.setFloat("blueAmp", 1.0f, 0.0f, 3.0f, "4_channels");
+      sp.setFloat("rgbRandomness", 0.7f, 0.0f, 2.0f, "4_channels");
+      sp.setFloat("rgbFrequency", 4.0f, 0.05f, 30.0f, "4_channels");
+      REQUIRE(renderer.renderFrame(p, audio, {1.0f / 60.0f, 0.37, 0.37, true, 0.0f, false, 60.0f}, kW, kH));
+      CHECK(measureChromaticRB(readRgba()) > 3000);
     }
 
-    // 3. Audio-reactive Composition 0 ShakeEffect + HDR16F + Bloom + FXAA
+    // 3. Crop Input borders with Wrap No vs Wrap Reflect
+    {
+      auto p = makeCanvasShakeProj(true);
+      auto& sp = p.compositions[0].elements[1].props;
+      sp.setFloat("amplitude", 0.0f, 0.0f, 5.0f, "2_shakeMaster");
+      sp.setFloat("zDist", 1.0f, 0.15f, 3.0f, "2_shakeMaster");
+      sp.setBool("motionBlur", false, "5_motionAndCrop", "b");
+      sp.setFloat("cropLeft", 0.20f, 0.0f, 0.45f, "5_motionAndCrop");
+      sp.setFloat("cropRight", 0.20f, 0.0f, 0.45f, "5_motionAndCrop");
+      const iota::engine::FrameTiming tm{1.0f / 60.0f, 0.0, 0.0, true, 0.0f, false, 60.0f};
+
+      sp.setString("wrapX", "No", "sel No Tile Reflect Clamp", "1_appearance");
+      sp.setString("wrapY", "No", "sel No Tile Reflect Clamp", "1_appearance");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+      const auto cropNoPx = readRgba();
+      CHECK(lumaAt(cropNoPx, 10, 120) < 20.0f);
+      CHECK(lumaAt(cropNoPx, 160, 120) > 220.0f);
+
+      sp.setString("wrapX", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
+      sp.setString("wrapY", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+      const auto cropReflectPx = readRgba();
+      CHECK(lumaAt(cropReflectPx, 10, 120) > 180.0f);
+    }
+
+    // 4. Audio-reactive Composition 0 ShakeEffect + HDR16F + Bloom + FXAA
     {
       auto starter = iota::model::createStarterProject();
       auto shake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);

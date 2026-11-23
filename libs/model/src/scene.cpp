@@ -503,9 +503,14 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("wrapY", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
       el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
 
+      el.props.setString("style", "Normal", "sel Normal Twitchy Jumpy", "2_shakeMaster");
       el.props.setFloat("amplitude", 0.35f, 0.0f, 5.0f, "2_shakeMaster");
       el.props.setMVar("measureAmplitude", MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
       el.props.setFloat("frequency", 6.0f, 0.05f, 30.0f, "2_shakeMaster");
+      el.props.setFloat("stillness", 0.70f, 0.0f, 1.0f, "2_shakeMaster");
+      el.props.setFloat("twitchFreq", 2.0f, 0.05f, 20.0f, "2_shakeMaster");
+      el.props.setFloat("drift", 0.30f, 0.0f, 1.0f, "2_shakeMaster");
+      el.props.setFloat("centerBias", 0.0f, 0.0f, 10.0f, "2_shakeMaster");
       el.props.setFloat("zDist", 1.0f, 0.15f, 3.0f, "2_shakeMaster");
       el.props.setInt("octaves", 3, 1, 10, "2_shakeMaster");
       el.props.setFloat("phase", 0.0f, -100.0f, 100.0f, "2_shakeMaster");
@@ -516,25 +521,41 @@ Element createDefaultElement(ElementType type) {
       el.props.setFloat("xRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
       el.props.setFloat("xWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
       el.props.setFloat("xWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("xPhase", 0.0f, -20.0f, 20.0f, "3_axes");
       el.props.setFloat("yRandAmp", 0.14f, 0.0f, 1.0f, "3_axes");
       el.props.setFloat("yRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
       el.props.setFloat("yWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
       el.props.setFloat("yWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("yPhase", 0.0f, -20.0f, 20.0f, "3_axes");
       el.props.setFloat("zRandAmp", 0.08f, 0.0f, 1.0f, "3_axes");
       el.props.setFloat("zRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
       el.props.setFloat("zWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
       el.props.setFloat("zWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("zPhase", 0.0f, -20.0f, 20.0f, "3_axes");
       el.props.setFloat("tiltRandAmp", 3.5f, 0.0f, 45.0f, "3_axes");
       el.props.setFloat("tiltRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
       el.props.setFloat("tiltWaveAmp", 0.0f, 0.0f, 45.0f, "3_axes");
       el.props.setFloat("tiltWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("tiltPhase", 0.0f, -20.0f, 20.0f, "3_axes");
       el.props.setFloat("twitchAmp", 0.0f, 0.0f, 1.0f, "3_axes");
-      el.props.setFloat("twitchFreq", 1.5f, 0.1f, 5.0f, "3_axes");
 
-      el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
-      el.props.setFloat("moBlurLength", 0.65f, 0.0f, 4.0f, "4_motionAndRgb");
-      el.props.setInt("blurSamples", 16, 4, 48, "4_motionAndRgb");
-      el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+      el.props.setFloat("redAmp", 1.0f, 0.0f, 3.0f, "4_channels");
+      el.props.setFloat("greenAmp", 1.0f, 0.0f, 3.0f, "4_channels");
+      el.props.setFloat("blueAmp", 1.0f, 0.0f, 3.0f, "4_channels");
+      el.props.setFloat("redPhase", 0.0f, -10.0f, 10.0f, "4_channels");
+      el.props.setFloat("greenPhase", 0.0f, -10.0f, 10.0f, "4_channels");
+      el.props.setFloat("bluePhase", 0.0f, -10.0f, 10.0f, "4_channels");
+      el.props.setFloat("rgbRandomness", 0.0f, 0.0f, 2.0f, "4_channels");
+      el.props.setFloat("rgbFrequency", 2.0f, 0.05f, 30.0f, "4_channels");
+      el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_channels");
+
+      el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+      el.props.setFloat("moBlurLength", 0.65f, 0.0f, 4.0f, "5_motionAndCrop");
+      el.props.setInt("blurSamples", 16, 4, 48, "5_motionAndCrop");
+      el.props.setFloat("cropLeft", 0.0f, 0.0f, 0.45f, "5_motionAndCrop");
+      el.props.setFloat("cropRight", 0.0f, 0.0f, 0.45f, "5_motionAndCrop");
+      el.props.setFloat("cropTop", 0.0f, 0.0f, 0.45f, "5_motionAndCrop");
+      el.props.setFloat("cropBottom", 0.0f, 0.0f, 0.45f, "5_motionAndCrop");
       break;
     }
 

@@ -1183,12 +1183,26 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("hdrIntensity", 1.2f, 0.0f, 16.0f, "appearance");
       });
     } else if (el.type == iota::model::ElementType::ShakeEffect) {
-      ImGui::TextDisabled("Sapphire-Style Camera Shake (Target: composition:0 shakes full canvas below)");
-      auto ensureShakeProps = [&]() {
-        const auto defShake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);
+      ImGui::TextDisabled("Sapphire S_Shake Parity (Target: composition:0 shakes full canvas below)");
+      const auto defShake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);
+      auto resetShakeToNeutral = [&]() {
+        auto& items = el.props.items();
+        auto isMotionOrChannelGroup = [](const std::string& g) {
+          return g.rfind("2_", 0) == 0 || g.rfind("3_", 0) == 0 ||
+                 g.rfind("4_", 0) == 0 || g.rfind("5_", 0) == 0;
+        };
+        items.erase(std::remove_if(items.begin(), items.end(),
+                                   [&](const auto& it) {
+                                     return isMotionOrChannelGroup(it.entry.groupTag);
+                                   }),
+                    items.end());
         for (const auto& defItem : defShake.props.items()) {
-          if (!el.props.contains(defItem.key)) {
-            el.props.items().push_back(defItem);
+          if (isMotionOrChannelGroup(defItem.entry.groupTag)) {
+            if (!el.props.contains(defItem.key)) {
+              items.push_back(defItem);
+            }
+          } else if (!el.props.contains(defItem.key)) {
+            items.push_back(defItem);
           }
         }
       };
@@ -1201,13 +1215,34 @@ void EditorApp::drawInspectorPanel() {
           ImGui::SameLine();
         }
         if (ImGui::SmallButton(label)) {
-          ensureShakeProps();
+          resetShakeToNeutral();
           fn();
           actions.modified = true;
           actions.undoSnapshotNeeded = true;
           actions.editLabel = std::string("Apply Shake Preset: ") + label;
         }
       };
+      applyShakePreset("Cinematic Ambient", [&]() {
+        el.props.setString("style", "Normal", "sel Normal Twitchy Jumpy", "2_shakeMaster");
+        el.props.setFloat("amplitude", 0.24f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 0.8f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setFloat("phase", 1.0f, -100.0f, 100.0f, "2_shakeMaster");
+        el.props.setFloat("zDist", 1.0f, 0.15f, 3.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 3, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.075f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("xRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.083f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 3.2f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("tiltRandFreq", 0.65f, 0.1f, 5.0f, "3_axes");
+        el.props.setFloat("tiltWaveAmp", 2.2f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("tiltWaveFreq", 0.38f, 0.1f, 5.0f, "3_axes");
+        el.props.setFloat("tiltPhase", 2.6f, -20.0f, 20.0f, "3_axes");
+        el.props.setBool("motionBlur", false, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 1.0f, 0.0f, 4.0f, "5_motionAndCrop");
+      });
       applyShakePreset("Handheld Drift", [&]() {
         el.props.setFloat("amplitude", 0.25f, 0.0f, 5.0f, "2_shakeMaster");
         el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
@@ -1216,13 +1251,9 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("xRandAmp", 0.12f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("yRandAmp", 0.10f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("zRandAmp", 0.04f, 0.0f, 1.0f, "3_axes");
-        el.props.setFloat("zWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("tiltRandAmp", 2.0f, 0.0f, 45.0f, "3_axes");
-        el.props.setFloat("tiltWaveAmp", 0.0f, 0.0f, 45.0f, "3_axes");
-        el.props.setFloat("twitchAmp", 0.0f, 0.0f, 1.0f, "3_axes");
-        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
-        el.props.setFloat("moBlurLength", 0.50f, 0.0f, 4.0f, "4_motionAndRgb");
-        el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+        el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 0.50f, 0.0f, 4.0f, "5_motionAndCrop");
       });
       applyShakePreset("Bass Impact", [&]() {
         el.props.setFloat("amplitude", 0.05f, 0.0f, 5.0f, "2_shakeMaster");
@@ -1232,26 +1263,46 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("xRandAmp", 0.20f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("yRandAmp", 0.18f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("zRandAmp", 0.12f, 0.0f, 1.0f, "3_axes");
-        el.props.setFloat("zWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("tiltRandAmp", 5.0f, 0.0f, 45.0f, "3_axes");
         el.props.setFloat("twitchAmp", 0.35f, 0.0f, 1.0f, "3_axes");
-        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
-        el.props.setFloat("moBlurLength", 1.2f, 0.0f, 4.0f, "4_motionAndRgb");
-        el.props.setFloat("rgbPhase", 0.15f, 0.0f, 1.0f, "4_motionAndRgb");
+        el.props.setFloat("redAmp", 1.12f, 0.0f, 3.0f, "4_channels");
+        el.props.setFloat("blueAmp", 0.88f, 0.0f, 3.0f, "4_channels");
+        el.props.setFloat("redPhase", 0.015f, -10.0f, 10.0f, "4_channels");
+        el.props.setFloat("bluePhase", -0.015f, -10.0f, 10.0f, "4_channels");
+        el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 1.2f, 0.0f, 4.0f, "5_motionAndCrop");
       });
-      applyShakePreset("Earthquake", [&]() {
-        el.props.setFloat("amplitude", 0.90f, 0.0f, 5.0f, "2_shakeMaster");
+      applyShakePreset("Twitchy Burst", [&]() {
+        el.props.setString("style", "Twitchy", "sel Normal Twitchy Jumpy", "2_shakeMaster");
+        el.props.setFloat("stillness", 0.70f, 0.0f, 1.0f, "2_shakeMaster");
+        el.props.setFloat("twitchFreq", 2.0f, 0.05f, 20.0f, "2_shakeMaster");
+        el.props.setFloat("amplitude", 0.55f, 0.0f, 5.0f, "2_shakeMaster");
         el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
-        el.props.setFloat("frequency", 14.0f, 0.05f, 30.0f, "2_shakeMaster");
-        el.props.setInt("octaves", 7, 1, 10, "2_shakeMaster");
-        el.props.setFloat("xRandAmp", 0.24f, 0.0f, 1.0f, "3_axes");
-        el.props.setFloat("yRandAmp", 0.22f, 0.0f, 1.0f, "3_axes");
-        el.props.setFloat("zRandAmp", 0.08f, 0.0f, 1.0f, "3_axes");
-        el.props.setFloat("tiltRandAmp", 6.5f, 0.0f, 45.0f, "3_axes");
-        el.props.setFloat("twitchAmp", 0.20f, 0.0f, 1.0f, "3_axes");
-        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
-        el.props.setFloat("moBlurLength", 1.6f, 0.0f, 4.0f, "4_motionAndRgb");
-        el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+        el.props.setFloat("frequency", 12.0f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 4, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.22f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.18f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.10f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 5.5f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("twitchAmp", 0.45f, 0.0f, 1.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 1.1f, 0.0f, 4.0f, "5_motionAndCrop");
+        el.props.setInt("blurSamples", 20, 4, 48, "5_motionAndCrop");
+      });
+      applyShakePreset("Jumpy Strobe", [&]() {
+        el.props.setString("style", "Jumpy", "sel Normal Twitchy Jumpy", "2_shakeMaster");
+        el.props.setFloat("drift", 0.25f, 0.0f, 1.0f, "2_shakeMaster");
+        el.props.setFloat("centerBias", 1.5f, 0.0f, 10.0f, "2_shakeMaster");
+        el.props.setFloat("amplitude", 0.50f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 5.0f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 2, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.20f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.15f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.12f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 4.0f, 0.0f, 45.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 0.85f, 0.0f, 4.0f, "5_motionAndCrop");
       });
       applyShakePreset("Z-Pump Bounce", [&]() {
         el.props.setFloat("amplitude", 0.85f, 0.0f, 5.0f, "2_shakeMaster");
@@ -1263,13 +1314,16 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("zRandAmp", 0.15f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("zWaveAmp", 0.28f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("zWaveFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 0.0f, 0.0f, 45.0f, "3_axes");
         el.props.setFloat("tiltWaveAmp", 2.5f, 0.0f, 45.0f, "3_axes");
         el.props.setFloat("tiltWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
-        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
-        el.props.setFloat("moBlurLength", 1.0f, 0.0f, 4.0f, "4_motionAndRgb");
-        el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+        el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 1.0f, 0.0f, 4.0f, "5_motionAndCrop");
       });
       applyShakePreset("RGB Glitch Twitch", [&]() {
+        el.props.setString("style", "Twitchy", "sel Normal Twitchy Jumpy", "2_shakeMaster");
+        el.props.setFloat("stillness", 0.55f, 0.0f, 1.0f, "2_shakeMaster");
+        el.props.setFloat("twitchFreq", 3.0f, 0.05f, 20.0f, "2_shakeMaster");
         el.props.setFloat("amplitude", 0.55f, 0.0f, 5.0f, "2_shakeMaster");
         el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Beat", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
         el.props.setFloat("frequency", 16.0f, 0.05f, 30.0f, "2_shakeMaster");
@@ -1279,10 +1333,15 @@ void EditorApp::drawInspectorPanel() {
         el.props.setFloat("zRandAmp", 0.10f, 0.0f, 1.0f, "3_axes");
         el.props.setFloat("tiltRandAmp", 4.5f, 0.0f, 45.0f, "3_axes");
         el.props.setFloat("twitchAmp", 0.85f, 0.0f, 1.0f, "3_axes");
-        el.props.setFloat("twitchFreq", 2.0f, 0.1f, 5.0f, "3_axes");
-        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
-        el.props.setFloat("moBlurLength", 0.80f, 0.0f, 4.0f, "4_motionAndRgb");
-        el.props.setFloat("rgbPhase", 0.75f, 0.0f, 1.0f, "4_motionAndRgb");
+        el.props.setFloat("redAmp", 1.35f, 0.0f, 3.0f, "4_channels");
+        el.props.setFloat("greenAmp", 1.0f, 0.0f, 3.0f, "4_channels");
+        el.props.setFloat("blueAmp", 0.70f, 0.0f, 3.0f, "4_channels");
+        el.props.setFloat("redPhase", 0.05f, -10.0f, 10.0f, "4_channels");
+        el.props.setFloat("bluePhase", -0.05f, -10.0f, 10.0f, "4_channels");
+        el.props.setFloat("rgbRandomness", 0.55f, 0.0f, 2.0f, "4_channels");
+        el.props.setFloat("rgbFrequency", 8.0f, 0.05f, 30.0f, "4_channels");
+        el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
+        el.props.setFloat("moBlurLength", 0.80f, 0.0f, 4.0f, "5_motionAndCrop");
       });
     }
 
