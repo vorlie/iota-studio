@@ -574,3 +574,141 @@ TEST_CASE("SoundKeys auto-ceiling prevents spectrum cap-out on high-magnitude si
   };
   CHECK(runDecayAtFps(144) == doctest::Approx(runDecayAtFps(60)).epsilon(0.01));
 }
+
+TEST_CASE("AudioProvider smoothing polarity: higher smooth/temporalSmooth/preSmooth/beatSmooth responds faster") {
+  using namespace iota::dsp;
+
+  const auto tone = makeSine(220.0f, 44100, 4096, 0.7f);
+  constexpr float kDt = 1.0f / 60.0f;
+
+  auto measureAttackAndReleaseRatio = [&](SpectrumConfig cfg, float& outAttackPeak, float& outReleaseRatio) {
+    AudioAnalyzer az;
+    az.setConfig(cfg);
+    AudioAnalysisResult res;
+    for (int f = 0; f < 2; ++f) {
+      res = az.process({tone, 44100, kDt, f * kDt, f * kDt, 10.0, true, false});
+    }
+    outAttackPeak = *std::max_element(res.smoothedBars.begin(), res.smoothedBars.end());
+
+    // Settle before measuring release decay ratio
+    for (int f = 2; f < 120; ++f) {
+      res = az.process({tone, 44100, kDt, f * kDt, f * kDt, 10.0, true, false});
+    }
+    const float steadyPeak = *std::max_element(res.smoothedBars.begin(), res.smoothedBars.end());
+    for (int f = 0; f < 12; ++f) {
+      res = az.process({{}, 44100, kDt, (120 + f) * kDt, (120 + f) * kDt, 10.0, true, false});
+    }
+    const float afterRelease = *std::max_element(res.smoothedBars.begin(), res.smoothedBars.end());
+    outReleaseRatio = (steadyPeak > 1e-4f) ? (afterRelease / steadyPeak) : 0.0f;
+  };
+
+  SUBCASE("Legacy mode (useAttackRelease=false): higher smooth rises faster and falls faster") {
+    SpectrumConfig slow;
+    slow.kind = SampleProviderKind::Spectrum2;
+    slow.sampleOutCount = 64;
+    slow.useAttackRelease = false;
+    slow.smooth = 0.15f;
+
+    SpectrumConfig fast = slow;
+    fast.smooth = 0.90f;
+
+    float slowAtk = 0.0f, slowRelRatio = 0.0f;
+    float fastAtk = 0.0f, fastRelRatio = 0.0f;
+    measureAttackAndReleaseRatio(slow, slowAtk, slowRelRatio);
+    measureAttackAndReleaseRatio(fast, fastAtk, fastRelRatio);
+    CHECK(fastAtk > slowAtk * 1.5f);
+    CHECK(fastRelRatio < slowRelRatio * 0.7f);
+  }
+
+  SUBCASE("Attack/Release mode (useAttackRelease=true): higher temporalSmooth and higher smooth both respond faster") {
+    SpectrumConfig slowTs;
+    slowTs.kind = SampleProviderKind::Spectrum2;
+    slowTs.sampleOutCount = 64;
+    slowTs.useAttackRelease = true;
+    slowTs.smooth = 1.0f;
+    slowTs.temporalSmooth = 0.10f;
+    slowTs.attackMs = 45.0f;
+    slowTs.releaseMs = 200.0f;
+
+    SpectrumConfig fastTs = slowTs;
+    fastTs.temporalSmooth = 0.90f;
+
+    float slowAtk = 0.0f, slowRelRatio = 0.0f;
+    float fastAtk = 0.0f, fastRelRatio = 0.0f;
+    measureAttackAndReleaseRatio(slowTs, slowAtk, slowRelRatio);
+    measureAttackAndReleaseRatio(fastTs, fastAtk, fastRelRatio);
+    CHECK(fastAtk > slowAtk * 1.3f);
+    CHECK(fastRelRatio < slowRelRatio * 0.6f);
+
+    SpectrumConfig slowSm = slowTs;
+    slowSm.temporalSmooth = 0.50f;
+    slowSm.smooth = 0.20f;
+
+    SpectrumConfig fastSm = slowSm;
+    fastSm.smooth = 0.95f;
+
+    float slowSmAtk = 0.0f, slowSmRelRatio = 0.0f;
+    float fastSmAtk = 0.0f, fastSmRelRatio = 0.0f;
+    measureAttackAndReleaseRatio(slowSm, slowSmAtk, slowSmRelRatio);
+    measureAttackAndReleaseRatio(fastSm, fastSmAtk, fastSmRelRatio);
+    CHECK(fastSmAtk > slowSmAtk * 1.3f);
+    CHECK(fastSmRelRatio < slowSmRelRatio * 0.6f);
+  }
+
+  SUBCASE("Spectrum preSmooth: higher preSmooth rises faster") {
+    SpectrumConfig slowPre;
+    slowPre.kind = SampleProviderKind::Spectrum;
+    slowPre.sampleOutCount = 64;
+    slowPre.useAttackRelease = false;
+    slowPre.smooth = 1.0f;
+    slowPre.preSmooth = 0.15f;
+
+    SpectrumConfig fastPre = slowPre;
+    fastPre.preSmooth = 0.95f;
+
+    float slowAtk = 0.0f, slowRelRatio = 0.0f;
+    float fastAtk = 0.0f, fastRelRatio = 0.0f;
+    measureAttackAndReleaseRatio(slowPre, slowAtk, slowRelRatio);
+    measureAttackAndReleaseRatio(fastPre, fastAtk, fastRelRatio);
+    CHECK(fastAtk > slowAtk * 1.5f);
+  }
+
+  SUBCASE("beatSmooth: higher beatSmooth responds faster on rise and decay") {
+    auto evalBeatRiseAndDecay = [&](float beatSm, float& outRise, float& outDecayRatio) {
+      SpectrumConfig cfg;
+      cfg.kind = SampleProviderKind::Spectrum2;
+      cfg.sampleOutCount = 64;
+      cfg.useAttackRelease = false;
+      cfg.smooth = 3.0f;  // Immediate bar response so test isolates beatSmooth envelope
+      cfg.outputMultiplier = 2.0f;
+      cfg.beatRangeBarFirst = 0.0f;
+      cfg.beatRangeBarLast = 1.0f;
+      cfg.beatRangeValueLower = 0.0f;
+      cfg.beatRangeValueHigher = 20.0f;
+      cfg.beatSmooth = beatSm;
+
+      AudioAnalyzer az;
+      az.setConfig(cfg);
+      AudioAnalysisResult res;
+      for (int f = 0; f < 2; ++f) {
+        res = az.process({tone, 44100, kDt, f * kDt, f * kDt, 10.0, true, false});
+      }
+      outRise = res.beat;
+      for (int f = 2; f < 90; ++f) {
+        res = az.process({tone, 44100, kDt, f * kDt, f * kDt, 10.0, true, false});
+      }
+      const float steadyBeat = res.beat;
+      for (int f = 0; f < 4; ++f) {
+        res = az.process({{}, 44100, kDt, (90 + f) * kDt, (90 + f) * kDt, 10.0, true, false});
+      }
+      outDecayRatio = (steadyBeat > 1e-4f) ? (res.beat / steadyBeat) : 0.0f;
+    };
+
+    float slowBeatRise = 0.0f, slowBeatDecay = 0.0f;
+    float fastBeatRise = 0.0f, fastBeatDecay = 0.0f;
+    evalBeatRiseAndDecay(0.15f, slowBeatRise, slowBeatDecay);
+    evalBeatRiseAndDecay(0.90f, fastBeatRise, fastBeatDecay);
+    CHECK(fastBeatRise > slowBeatRise * 1.3f);
+    CHECK(fastBeatDecay < slowBeatDecay * 0.5f);
+  }
+}

@@ -36,7 +36,8 @@ struct SpectrumConfig {
   float filterStrength = 0.6f;
   float aWeight = 0.0f;
   float lowerFreqMagnitude = 0.25f;
-  float smooth = 0.8f;
+  float smooth = 1.0f;
+  float preSmooth = 1.0f;
 
   // Frame-rate-independent asymmetric temporal smoothing (opt-in via temporalSmooth/attackMs/releaseMs)
   bool useAttackRelease = false;

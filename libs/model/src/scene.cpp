@@ -192,7 +192,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setBool("mirrorSamples", false, "2_spectrum");
       el.props.setInt("repeatSamples", 1, 1, 6, "2_spectrum");
       el.props.setInt("starAndEndGap", 0, 0, 30, "2_spectrum");
-      el.props.setFloat("smooth", 0.85f, 0.1f, 1.0f, "2_spectrum");
+      el.props.setFloat("smooth", 1.0f, 0.1f, 1.0f, "2_spectrum");
       el.props.setFloat("preSmooth", 1.0f, 0.1f, 1.0f, "2_spectrum");
       el.props.setInt("filterRadius", 4, 0, 20, "2_spectrum");
       el.props.setFloat("filterStrength", 1.0f, 0.1f, 2.0f, "2_spectrum");
@@ -204,6 +204,7 @@ Element createDefaultElement(ElementType type) {
       el.props.setFloat("lowerFreqMagnitude", 0.25f, 0.0f, 1.0f, "2_spectrum");
       el.props.setFloat("aWeight", 0.2f, 0.0f, 1.0f, "2_spectrum");
       el.props.setFloat("outputMultiplier", 1.2f, 0.1f, 3.0f, "2_spectrum");
+      el.props.setBool("useAttackRelease", true, "2_temporal", "b");
       el.props.setFloat("temporalSmooth", 0.5f, 0.0f, 1.0f, "2_temporal");
       el.props.setFloat("attackMs", 25.0f, 0.0f, 250.0f, "2_temporal");
       el.props.setFloat("releaseMs", 150.0f, 0.0f, 1000.0f, "2_temporal");

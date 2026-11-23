@@ -936,10 +936,12 @@ void EditorApp::drawInspectorPanel() {
 
     if (el.type == iota::model::ElementType::AudioProvider) {
       const bool missingTemporal =
-          !el.props.contains("temporalSmooth") || !el.props.contains("attackMs") || !el.props.contains("releaseMs");
+          !el.props.contains("useAttackRelease") || !el.props.contains("temporalSmooth") ||
+          !el.props.contains("attackMs") || !el.props.contains("releaseMs");
       const bool missingFreqSmooth = !el.props.contains("freqSmoothMode");
       if (missingTemporal) {
         if (ImGui::SmallButton("Enable Attack/Release Smoothing")) {
+          if (!el.props.contains("useAttackRelease")) el.props.setBool("useAttackRelease", true, "2_temporal", "b");
           if (!el.props.contains("temporalSmooth")) el.props.setFloat("temporalSmooth", 0.5f, 0.0f, 1.0f, "2_temporal");
           if (!el.props.contains("attackMs")) el.props.setFloat("attackMs", 25.0f, 0.0f, 250.0f, "2_temporal");
           if (!el.props.contains("releaseMs")) el.props.setFloat("releaseMs", 150.0f, 0.0f, 1000.0f, "2_temporal");

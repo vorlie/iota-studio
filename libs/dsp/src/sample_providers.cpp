@@ -38,9 +38,13 @@ void applyTemporalSmoothing(const float* targetBars,
                             const SpectrumConfig& cfg,
                             float dt) noexcept {
   if (cfg.useAttackRelease) {
-    const float scale = std::max(0.0f, cfg.temporalSmooth) * 2.0f;
-    const float atkAlpha = expSmoothingAlphaMs(dt, cfg.attackMs * scale);
-    const float relAlpha = expSmoothingAlphaMs(dt, cfg.releaseMs * scale);
+    // Higher temporalSmooth and higher smooth both produce faster, less-damped response.
+    const float responsiveness = std::clamp(cfg.temporalSmooth, 0.0f, 1.0f);
+    const float temporalScale = (1.0f - responsiveness) * 2.0f;
+    const float smoothScale = 1.0f / std::clamp(cfg.smooth, 0.05f, 20.0f);
+    const float totalScale = temporalScale * smoothScale;
+    const float atkAlpha = expSmoothingAlphaMs(dt, cfg.attackMs * totalScale);
+    const float relAlpha = expSmoothingAlphaMs(dt, cfg.releaseMs * totalScale);
     for (int i = 0; i < barCount; ++i) {
       const float target = (targetBars != nullptr) ? std::max(0.0f, targetBars[i]) : 0.0f;
       float& sm = smoothedBars[static_cast<size_t>(i)];
@@ -84,6 +88,7 @@ struct AudioAnalyzer::Impl {
   std::vector<float> windowedPcm;
   std::vector<kiss_fft_cpx> fftOut;
   std::vector<float> fftMagnitudes;
+  std::vector<float> preSmoothedFftMags;
 
   // Cached Spectrum2 DFT LUTs
   int lutSampleRate = 0;
@@ -216,7 +221,9 @@ SpectrumConfig spectrumConfigFromElement(const iota::model::Element& audioProvid
   cfg.filterStrength = std::clamp(p.getFloat("filterStrength", 0.6f), 0.0f, 5.0f);
   cfg.aWeight = std::clamp(p.getFloat("aWeight", 0.0f), 0.0f, 1.0f);
   cfg.lowerFreqMagnitude = std::clamp(p.getFloat("lowerFreqMagnitude", 0.25f), 0.0f, 1.0f);
-  cfg.smooth = std::clamp(p.getFloat("smooth", 0.8f), 0.01f, 20.0f);
+  const float defaultSmooth = (cfg.kind == SampleProviderKind::Spectrum2) ? 1.0f : 0.8f;
+  cfg.smooth = std::clamp(p.getFloat("smooth", defaultSmooth), 0.01f, 20.0f);
+  cfg.preSmooth = std::clamp(p.getFloat("preSmooth", 1.0f), 0.01f, 1.0f);
 
   const bool hasTemporalProps =
       p.contains("temporalSmooth") || p.contains("attackMs") || p.contains("releaseMs");
@@ -380,6 +387,7 @@ void AudioAnalyzer::reset() {
   impl_->agc.reset();
   impl_->beatState.reset();
   impl_->history.clear();
+  impl_->preSmoothedFftMags.clear();
   result_.rawBars.clear();
   result_.smoothedBars.clear();
   result_.beat = 0.0f;
@@ -416,6 +424,16 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
 
   if (input.monoPcm.empty() || maxAbsShort < 1e-4f) {
     // Decay smoothly toward zero on silence using frame-rate-independent temporal release
+    if (!impl_->preSmoothedFftMags.empty()) {
+      if (cfg_.preSmooth < 0.999f) {
+        const float preAlpha = frameRateIndependentAlpha(std::clamp(cfg_.preSmooth, 0.01f, 1.0f), dt);
+        for (float& prev : impl_->preSmoothedFftMags) {
+          prev = lerpf(prev, 0.0f, preAlpha);
+        }
+      } else {
+        std::fill(impl_->preSmoothedFftMags.begin(), impl_->preSmoothedFftMags.end(), 0.0f);
+      }
+    }
     applyTemporalSmoothing(nullptr, barCount, result_.smoothedBars, cfg_, dt);
     impl_->beatState.update(result_.smoothedBars, cfg_, dt);
     impl_->history.pushFrame(result_.smoothedBars, dt);
@@ -491,6 +509,20 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
       const float re = impl_->fftOut[static_cast<size_t>(k)].r;
       const float im = impl_->fftOut[static_cast<size_t>(k)].i;
       impl_->fftMagnitudes[static_cast<size_t>(k)] = std::hypot(re, im) * invNorm;
+    }
+
+    if (impl_->preSmoothedFftMags.size() != static_cast<size_t>(binCount)) {
+      impl_->preSmoothedFftMags.assign(static_cast<size_t>(binCount), 0.0f);
+    }
+    if (cfg_.preSmooth < 0.999f) {
+      const float preAlpha = frameRateIndependentAlpha(std::clamp(cfg_.preSmooth, 0.01f, 1.0f), dt);
+      for (int k = 0; k < binCount; ++k) {
+        float& prev = impl_->preSmoothedFftMags[static_cast<size_t>(k)];
+        prev = lerpf(prev, impl_->fftMagnitudes[static_cast<size_t>(k)], preAlpha);
+        impl_->fftMagnitudes[static_cast<size_t>(k)] = prev;
+      }
+    } else {
+      impl_->preSmoothedFftMags = impl_->fftMagnitudes;
     }
 
     const std::vector<float> barFreqs = computeBarFrequencies(cfg_);
