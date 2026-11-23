@@ -2,6 +2,9 @@
 
 **Iota Studio** is a native Windows desktop application and modular C++20 engine for designing, previewing, and exporting audio-reactive music visualizers.
 
+> [!WARNING]
+> **Template Compatibility Disclaimer:** Any Avee Player template (`.viz`) saved or overwritten in Iota Studio will no longer be valid or loadable in Avee Player. Always keep a backup of your original Avee Player `.viz` files or save edits to a new `.iota` / `.viz` file instead of overwriting them.
+
 ## Purpose
 
 Iota Studio provides a responsive, standalone desktop environment for creating layered audio-reactive graphics and rendering them directly to video—without relying on mobile runtimes, outdated store wrappers, or cloud pipelines. Its architecture separates the pure project/scene model from the Dear ImGui editor UI and graphics backend, delivering frame-rate-independent audio analysis so visualizers behave consistently at 60 FPS, 144 FPS, and during fixed-timestep offline video export.
