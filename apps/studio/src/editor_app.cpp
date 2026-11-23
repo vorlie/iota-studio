@@ -1182,6 +1182,108 @@ void EditorApp::drawInspectorPanel() {
         el.props.setColorArgb("shadowColor", {0, 0, 0, 160}, "crgba", "2_typography");
         el.props.setFloat("hdrIntensity", 1.2f, 0.0f, 16.0f, "appearance");
       });
+    } else if (el.type == iota::model::ElementType::ShakeEffect) {
+      ImGui::TextDisabled("Sapphire-Style Camera Shake (Target: composition:0 shakes full canvas below)");
+      auto ensureShakeProps = [&]() {
+        const auto defShake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);
+        for (const auto& defItem : defShake.props.items()) {
+          if (!el.props.contains(defItem.key)) {
+            el.props.items().push_back(defItem);
+          }
+        }
+      };
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Presets:");
+      const float maxWrapX = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+      auto applyShakePreset = [&](const char* label, const auto& fn) {
+        const float btnW = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + btnW <= maxWrapX) {
+          ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(label)) {
+          ensureShakeProps();
+          fn();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = std::string("Apply Shake Preset: ") + label;
+        }
+      };
+      applyShakePreset("Handheld Drift", [&]() {
+        el.props.setFloat("amplitude", 0.25f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 1.8f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 2, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.12f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.10f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.04f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 2.0f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("tiltWaveAmp", 0.0f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("twitchAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
+        el.props.setFloat("moBlurLength", 0.50f, 0.0f, 4.0f, "4_motionAndRgb");
+        el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+      });
+      applyShakePreset("Bass Impact", [&]() {
+        el.props.setFloat("amplitude", 0.05f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"SoundKeys1", 1.6f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 9.0f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 4, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.20f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.18f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.12f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 5.0f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("twitchAmp", 0.35f, 0.0f, 1.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
+        el.props.setFloat("moBlurLength", 1.2f, 0.0f, 4.0f, "4_motionAndRgb");
+        el.props.setFloat("rgbPhase", 0.15f, 0.0f, 1.0f, "4_motionAndRgb");
+      });
+      applyShakePreset("Earthquake", [&]() {
+        el.props.setFloat("amplitude", 0.90f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 14.0f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 7, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.24f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.22f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.08f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 6.5f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("twitchAmp", 0.20f, 0.0f, 1.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
+        el.props.setFloat("moBlurLength", 1.6f, 0.0f, 4.0f, "4_motionAndRgb");
+        el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+      });
+      applyShakePreset("Z-Pump Bounce", [&]() {
+        el.props.setFloat("amplitude", 0.85f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"SoundKeys1", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 4.0f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 2, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.06f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.06f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.15f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zWaveAmp", 0.28f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zWaveFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+        el.props.setFloat("tiltWaveAmp", 2.5f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("tiltWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
+        el.props.setFloat("moBlurLength", 1.0f, 0.0f, 4.0f, "4_motionAndRgb");
+        el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+      });
+      applyShakePreset("RGB Glitch Twitch", [&]() {
+        el.props.setFloat("amplitude", 0.55f, 0.0f, 5.0f, "2_shakeMaster");
+        el.props.setMVar("measureAmplitude", iota::model::MVariableFloat{{{"Beat", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+        el.props.setFloat("frequency", 16.0f, 0.05f, 30.0f, "2_shakeMaster");
+        el.props.setInt("octaves", 5, 1, 10, "2_shakeMaster");
+        el.props.setFloat("xRandAmp", 0.22f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("yRandAmp", 0.16f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("zRandAmp", 0.10f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("tiltRandAmp", 4.5f, 0.0f, 45.0f, "3_axes");
+        el.props.setFloat("twitchAmp", 0.85f, 0.0f, 1.0f, "3_axes");
+        el.props.setFloat("twitchFreq", 2.0f, 0.1f, 5.0f, "3_axes");
+        el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
+        el.props.setFloat("moBlurLength", 0.80f, 0.0f, 4.0f, "4_motionAndRgb");
+        el.props.setFloat("rgbPhase", 0.75f, 0.0f, 1.0f, "4_motionAndRgb");
+      });
     }
 
     ImGui::Separator();

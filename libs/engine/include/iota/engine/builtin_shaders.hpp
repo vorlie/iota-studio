@@ -760,4 +760,100 @@ void main() {
 }
 )glsl";
 
+// Sapphire-style multi-axis camera shake with Reflect/Tile/Clamp/No edge wrapping,
+// curved shutter motion blur (Lagrange quadratic), and optical RGB phase chromatic split.
+inline constexpr const char* kShakeFrag = R"glsl(#version 450 core
+in vec4 v_color;
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform vec4 u_pose0;     // (offsetX, offsetY, zDist, tiltRad) at t - halfDt
+uniform vec4 u_pose1;     // at t
+uniform vec4 u_pose2;     // at t + halfDt
+uniform float u_aspect;
+uniform int u_wrapX;      // 0=No, 1=Tile, 2=Reflect, 3=Clamp
+uniform int u_wrapY;
+uniform int u_samples;    // 1..48
+uniform float u_rgbPhase; // 0..1
+uniform float u_hdrGain;
+
+out vec4 fragColor;
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+float wrapCoord(float c, int mode) {
+  if (mode == 1) {
+    return fract(c);
+  } else if (mode == 2) {
+    float m = mod(c, 2.0);
+    return (m < 1.0) ? m : (2.0 - m);
+  } else if (mode == 3) {
+    return clamp(c, 0.0, 1.0);
+  }
+  return c;
+}
+
+vec4 sampleShakePose(vec4 pose) {
+  float aspect = max(u_aspect, 0.01);
+  vec2 p = v_uv - vec2(0.5);
+
+  if (abs(pose.w) > 1e-5) {
+    float cs = cos(pose.w);
+    float sn = sin(pose.w);
+    vec2 q = vec2(p.x * aspect, p.y);
+    vec2 rq = vec2(q.x * cs - q.y * sn, q.x * sn + q.y * cs);
+    p = vec2(rq.x / aspect, rq.y);
+  }
+
+  p *= max(pose.z, 0.05);
+  vec2 uv = p + vec2(0.5) - pose.xy;
+
+  if ((u_wrapX == 0 && (uv.x < 0.0 || uv.x > 1.0)) ||
+      (u_wrapY == 0 && (uv.y < 0.0 || uv.y > 1.0))) {
+    return vec4(0.0);
+  }
+  uv.x = wrapCoord(uv.x, u_wrapX);
+  uv.y = wrapCoord(uv.y, u_wrapY);
+  return texture(u_texture, uv);
+}
+
+vec4 evalCurvedPose(float s) {
+  float w0 = 2.0 * (s - 0.5) * (s - 1.0);
+  float w1 = -4.0 * s * (s - 1.0);
+  float w2 = 2.0 * s * (s - 0.5);
+  return u_pose0 * w0 + u_pose1 * w1 + u_pose2 * w2;
+}
+
+vec4 sampleAtS(float s) {
+  if (u_rgbPhase <= 1e-4) {
+    return sampleShakePose(evalCurvedPose(s));
+  }
+  float d = u_rgbPhase * 0.45;
+  vec4 cR = sampleShakePose(evalCurvedPose(s + d));
+  vec4 cG = sampleShakePose(evalCurvedPose(s));
+  vec4 cB = sampleShakePose(evalCurvedPose(s - d));
+  return vec4(cR.r, cG.g, cB.b, (cR.a + cG.a + cB.a) / 3.0);
+}
+
+void main() {
+  vec4 acc;
+  if (u_samples <= 1) {
+    acc = sampleAtS(0.5);
+  } else {
+    int count = clamp(u_samples, 2, 48);
+    float jitter = ign(gl_FragCoord.xy) - 0.5;
+    acc = vec4(0.0);
+    for (int i = 0; i < count; ++i) {
+      float s = clamp((float(i) + 0.5 + jitter) / float(count), 0.0, 1.0);
+      acc += sampleAtS(s);
+    }
+    acc /= float(count);
+  }
+  vec4 outCol = acc * v_color;
+  fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
+}
+)glsl";
+
 }  // namespace iota::engine::shaders

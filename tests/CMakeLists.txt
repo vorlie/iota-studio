@@ -3,6 +3,7 @@ add_executable(iota_tests
   test_model_preset_io.cpp
   test_dsp.cpp
   test_particles.cpp
+  test_shake.cpp
   test_engine_gl.cpp
 )
 

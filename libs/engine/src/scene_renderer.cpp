@@ -7,6 +7,7 @@
 #include "iota/engine/builtin_shaders.hpp"
 #include "iota/engine/layout.hpp"
 #include "iota/engine/particle_system.hpp"
+#include "iota/engine/shake_eval.hpp"
 
 #ifdef _MSC_VER
 #pragma warning(push, 0)
@@ -487,6 +488,7 @@ struct SceneRenderer::Impl {
   iota::rhi::ShaderHandle shMotionBlur{};
   iota::rhi::ShaderHandle shTemporalBlur{};
   iota::rhi::ShaderHandle shParticle{};
+  iota::rhi::ShaderHandle shShake{};
   iota::rhi::ShaderHandle shBloomPrefilter{};
   iota::rhi::ShaderHandle shBloomDown{};
   iota::rhi::ShaderHandle shBloomUp{};
@@ -567,6 +569,8 @@ struct SceneRenderer::Impl {
     if (!shTemporalBlur) return false;
     shParticle = device->createShader(shaders::kParticleVert, shaders::kParticleFrag, outError);
     if (!shParticle) return false;
+    shShake = device->createShader(shaders::kBufferVert, shaders::kShakeFrag, outError);
+    if (!shShake) return false;
     shBloomPrefilter = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomPrefilterFrag, outError);
     if (!shBloomPrefilter) return false;
     shBloomDown = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomDownFrag, outError);
@@ -578,7 +582,7 @@ struct SceneRenderer::Impl {
     shFxaa = device->createShader(shaders::kBlurFullscreenVert, shaders::kFxaaFrag, outError);
     if (!shFxaa) return false;
 
-    for (auto sh : {shBuffer, shFxLight, shRgbSplit, shMotionBlur, shParticle}) {
+    for (auto sh : {shBuffer, shFxLight, shRgbSplit, shMotionBlur, shParticle, shShake}) {
       device->setUniformFloat(sh, "u_hdrGain", 1.0f);
     }
     return true;
@@ -2233,6 +2237,112 @@ struct SceneRenderer::Impl {
     }
   }
 
+  void renderShakeEffect(const iota::model::Project& project,
+                         int compIdx,
+                         int elemIdx,
+                         const iota::model::Element& el,
+                         iota::rhi::RenderTargetHandle currentTargetRt,
+                         const iota::dsp::MVarEvalContext& mctx,
+                         RenderFrameStats* stats) {
+    const auto& p = el.props;
+    const int rid = el.runtimeId();
+    const std::string targetUri = getStringCI(p, "TargetImage", "composition:0");
+    const auto compRef = parseCompositionRef(targetUri);
+    const bool useCanvasBelow = targetUri.empty() ||
+        (compRef && (*compRef <= 0 || *compRef >= static_cast<int>(compTargets.size()) || *compRef == compIdx));
+
+    ResolvedTexture target{};
+    if (useCanvasBelow) {
+      target.tex = captureCanvasSnapshot(currentTargetRt, stats);
+      target.texW = width;
+      target.texH = height;
+      target.isFbo = true;
+      device->bindRenderTarget(currentTargetRt, width, height);
+    } else {
+      target = resolveTextureUri(project, targetUri);
+    }
+
+    const LayoutSpec layout = extractLayoutSpec(project, compIdx, elemIdx, el, mvarEval, mctx);
+    const iota::core::RectF rect = computeElementRect(layout, width, height);
+    const glm::mat4 projView = makeRotatedOrthoProjView(
+        width, height, rect.centerX(), rect.centerY(), computeTotalRotationRadians(layout));
+    const auto mainCol = getColorArgbCI(p, "color", {255, 255, 255, 255});
+    const auto elemBlend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Opaque"));
+
+    ShakeConfig cfg;
+    const float baseAmp = std::max(0.0f, getFloatCI(p, "amplitude", 0.35f));
+    const float reactiveAmp = std::max(0.0f, mvarEval.evaluateScalar(
+        iota::dsp::MVarEvaluator::makeKey(rid, "measureAmplitude"),
+        p.getMVar("measureAmplitude"),
+        mctx));
+    cfg.amplitude = baseAmp + reactiveAmp;
+    cfg.frequency = std::max(0.0f, getFloatCI(p, "frequency", 6.0f));
+    cfg.zDist = std::clamp(getFloatCI(p, "zDist", 1.0f), 0.1f, 8.0f);
+    cfg.phase = getFloatCI(p, "phase", 0.0f);
+    cfg.seed = getFloatCI(p, "seed", 0.0f);
+    cfg.still = getBoolCI(p, "still", false);
+    cfg.octaves = std::clamp(getIntCI(p, "octaves", 3), 1, 10);
+
+    cfg.xRandAmp = getFloatCI(p, "xRandAmp", 0.18f);
+    cfg.xRandFreq = getFloatCI(p, "xRandFreq", 1.0f);
+    cfg.xWaveAmp = getFloatCI(p, "xWaveAmp", 0.0f);
+    cfg.xWaveFreq = getFloatCI(p, "xWaveFreq", 0.5f);
+    cfg.yRandAmp = getFloatCI(p, "yRandAmp", 0.14f);
+    cfg.yRandFreq = getFloatCI(p, "yRandFreq", 1.0f);
+    cfg.yWaveAmp = getFloatCI(p, "yWaveAmp", 0.0f);
+    cfg.yWaveFreq = getFloatCI(p, "yWaveFreq", 0.5f);
+    cfg.zRandAmp = getFloatCI(p, "zRandAmp", 0.08f);
+    cfg.zRandFreq = getFloatCI(p, "zRandFreq", 1.0f);
+    cfg.zWaveAmp = getFloatCI(p, "zWaveAmp", 0.0f);
+    cfg.zWaveFreq = getFloatCI(p, "zWaveFreq", 0.5f);
+    cfg.tiltRandAmp = getFloatCI(p, "tiltRandAmp", 3.5f);
+    cfg.tiltRandFreq = getFloatCI(p, "tiltRandFreq", 1.0f);
+    cfg.tiltWaveAmp = getFloatCI(p, "tiltWaveAmp", 0.0f);
+    cfg.tiltWaveFreq = getFloatCI(p, "tiltWaveFreq", 0.5f);
+    cfg.twitchAmp = getFloatCI(p, "twitchAmp", 0.0f);
+    cfg.twitchFreq = getFloatCI(p, "twitchFreq", 1.5f);
+
+    const bool moBlurOn = getBoolCI(p, "motionBlur", true);
+    const float moBlurLen = std::clamp(getFloatCI(p, "moBlurLength", 0.65f), 0.0f, 4.0f);
+    const float rgbPhase = std::clamp(getFloatCI(p, "rgbPhase", 0.0f), 0.0f, 1.0f);
+    const double halfShutterSec = (moBlurOn && moBlurLen > 1e-4f)
+                                      ? (0.5 * static_cast<double>(moBlurLen) / 60.0)
+                                      : ((rgbPhase > 1e-4f) ? 0.015 : 0.0);
+    const int samples = (moBlurOn && moBlurLen > 1e-4f && !cfg.still && cfg.amplitude > 1e-4f)
+                            ? std::clamp(getIntCI(p, "blurSamples", 16), 4, 48)
+                            : 1;
+
+    const ShakePose pose1 = evaluateCameraShake(cfg, mctx.totalTimeSec);
+    const ShakePose pose0 = (halfShutterSec > 1e-6) ? evaluateCameraShake(cfg, mctx.totalTimeSec - halfShutterSec) : pose1;
+    const ShakePose pose2 = (halfShutterSec > 1e-6) ? evaluateCameraShake(cfg, mctx.totalTimeSec + halfShutterSec) : pose1;
+
+    const int wrapX = static_cast<int>(shakeWrapModeFromString(getStringCI(p, "wrapX", "Reflect")));
+    const int wrapY = static_cast<int>(shakeWrapModeFromString(getStringCI(p, "wrapY", "Reflect")));
+    const float aspect = static_cast<float>(std::max(1, width)) / static_cast<float>(std::max(1, height));
+    const float ySign = target.isFbo ? -1.0f : 1.0f;
+
+    scratchVerts.clear();
+    scratchIndices.clear();
+    appendQuadVertices(rect, mainCol.toPackedAbgrU32(), target.isFbo, scratchVerts, scratchIndices);
+
+    device->setBlendMode(elemBlend);
+    device->useShader(shShake);
+    device->setUniformMat4(shShake, "u_projView", projView);
+    device->bindTexture(0, target.tex);
+    device->setUniformInt(shShake, "u_texture", 0);
+    device->setUniformVec4(shShake, "u_pose0", pose0.offsetX, pose0.offsetY * ySign, pose0.zDist, pose0.tiltRad);
+    device->setUniformVec4(shShake, "u_pose1", pose1.offsetX, pose1.offsetY * ySign, pose1.zDist, pose1.tiltRad);
+    device->setUniformVec4(shShake, "u_pose2", pose2.offsetX, pose2.offsetY * ySign, pose2.zDist, pose2.tiltRad);
+    device->setUniformFloat(shShake, "u_aspect", aspect);
+    device->setUniformInt(shShake, "u_wrapX", wrapX);
+    device->setUniformInt(shShake, "u_wrapY", wrapY);
+    device->setUniformInt(shShake, "u_samples", samples);
+    device->setUniformFloat(shShake, "u_rgbPhase", rgbPhase);
+    device->setUniformFloat(shShake, "u_hdrGain", evalElementHdrGain(el, mctx));
+    device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
+    if (stats) stats->drawCalls += 1;
+  }
+
   void renderMirrorEffect(const iota::model::Project& project,
                           int compIdx,
                           int elemIdx,
@@ -2440,7 +2550,7 @@ void SceneRenderer::shutdown() {
 
   for (auto* sh : {&impl_->shBuffer, &impl_->shFxLight, &impl_->shKawaseDown, &impl_->shKawaseUp,
                    &impl_->shGaussianSep, &impl_->shRadialBlur, &impl_->shRgbSplit,
-                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle,
+                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle, &impl_->shShake,
                    &impl_->shBloomPrefilter, &impl_->shBloomDown, &impl_->shBloomUp,
                    &impl_->shTonemap, &impl_->shFxaa}) {
     if (*sh) {
@@ -2662,6 +2772,9 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
           break;
         case iota::model::ElementType::MotionBlurEffect:
           impl_->renderMotionBlurEffect(project, compIdx, elemIdx, el, rt, mctx, outStats);
+          break;
+        case iota::model::ElementType::ShakeEffect:
+          impl_->renderShakeEffect(project, compIdx, elemIdx, el, rt, mctx, outStats);
           break;
         case iota::model::ElementType::MirrorEffect:
           impl_->renderMirrorEffect(project, compIdx, elemIdx, el, mctx, outStats);

@@ -108,6 +108,7 @@ ElementType elementTypeFromString(std::string_view name) noexcept {
   if (name == "StatText") return ElementType::StatText;
   if (name == "CustomShader") return ElementType::CustomShader;
   if (name == "SoundKeys") return ElementType::SoundKeys;
+  if (name == "ShakeEffect") return ElementType::ShakeEffect;
   return ElementType::Unknown;
 }
 
@@ -128,6 +129,7 @@ std::string_view elementTypeToString(ElementType type) noexcept {
     case ElementType::StatText: return "StatText";
     case ElementType::CustomShader: return "CustomShader";
     case ElementType::SoundKeys: return "SoundKeys";
+    case ElementType::ShakeEffect: return "ShakeEffect";
     default: return "None";
   }
 }
@@ -143,6 +145,7 @@ const std::vector<ElementType>& addableElementTypes() noexcept {
       ElementType::BlurEffect,
       ElementType::RgbSplitEffect,
       ElementType::MotionBlurEffect,
+      ElementType::ShakeEffect,
       ElementType::MirrorEffect,
       ElementType::CustomShader,
   };
@@ -490,6 +493,51 @@ Element createDefaultElement(ElementType type) {
       break;
     }
 
+    case ElementType::ShakeEffect: {
+      el.displayName = "Camera Shake";
+      addBaseElementProperties(el.props, id, iota::core::BlendMode::Opaque);
+      el.props.setString("blendMode", "Opaque", "_child Opaque Alpha PreMulAlpha Screen Add AddAlpha", "0_general");
+      el.props.setString("TargetImage", "composition:0", "img composition:0", "1_appearance");
+      el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_appearance");
+      el.props.setString("wrapX", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
+      el.props.setString("wrapY", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
+
+      el.props.setFloat("amplitude", 0.35f, 0.0f, 5.0f, "2_shakeMaster");
+      el.props.setMVar("measureAmplitude", MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_shakeMaster");
+      el.props.setFloat("frequency", 6.0f, 0.05f, 30.0f, "2_shakeMaster");
+      el.props.setFloat("zDist", 1.0f, 0.15f, 3.0f, "2_shakeMaster");
+      el.props.setInt("octaves", 3, 1, 10, "2_shakeMaster");
+      el.props.setFloat("phase", 0.0f, -100.0f, 100.0f, "2_shakeMaster");
+      el.props.setFloat("seed", 0.0f, 0.0f, 1000.0f, "2_shakeMaster");
+      el.props.setBool("still", false, "2_shakeMaster", "b");
+
+      el.props.setFloat("xRandAmp", 0.18f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("xRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("xWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("xWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("yRandAmp", 0.14f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("yRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("yWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("yWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("zRandAmp", 0.08f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("zRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("zWaveAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("zWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("tiltRandAmp", 3.5f, 0.0f, 45.0f, "3_axes");
+      el.props.setFloat("tiltRandFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("tiltWaveAmp", 0.0f, 0.0f, 45.0f, "3_axes");
+      el.props.setFloat("tiltWaveFreq", 0.5f, 0.1f, 5.0f, "3_axes");
+      el.props.setFloat("twitchAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      el.props.setFloat("twitchFreq", 1.5f, 0.1f, 5.0f, "3_axes");
+
+      el.props.setBool("motionBlur", true, "4_motionAndRgb", "b");
+      el.props.setFloat("moBlurLength", 0.65f, 0.0f, 4.0f, "4_motionAndRgb");
+      el.props.setInt("blurSamples", 16, 4, 48, "4_motionAndRgb");
+      el.props.setFloat("rgbPhase", 0.0f, 0.0f, 1.0f, "4_motionAndRgb");
+      break;
+    }
+
     case ElementType::MirrorEffect: {
       addBaseElementProperties(el.props, id, iota::core::BlendMode::PreMulAlpha);
       el.props.setString("TargetImage", "composition:1", "img composition:0", "1_appearance");
@@ -779,6 +827,9 @@ bool assignAssetToElement(Element& el, std::string_view uri, bool asMask) {
     case ElementType::MirrorEffect:
     case ElementType::CustomShader:
       setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:1", "1_appearance");
+      return true;
+    case ElementType::ShakeEffect:
+      setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:0", "1_appearance");
       return true;
     default:
       return false;

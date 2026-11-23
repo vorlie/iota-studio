@@ -27,7 +27,8 @@ enum class ElementType {
   AppLogo,
   StatText,
   CustomShader,
-  SoundKeys
+  SoundKeys,
+  ShakeEffect
 };
 
 ElementType elementTypeFromString(std::string_view name) noexcept;

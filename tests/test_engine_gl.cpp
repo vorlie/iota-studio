@@ -1086,6 +1086,161 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     }
   }
 
+  SUBCASE("Sapphire-style ShakeEffect: canvas-below wrap modes (No/Reflect/Tile/Clamp), curved shutter blur, RGB phase, and audio-reactive HDR") {
+    constexpr int kW = 320;
+    constexpr int kH = 240;
+
+    auto readRgba = [&]() {
+      std::vector<uint8_t> rgba;
+      int rw = 0, rh = 0;
+      REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, rgba, true));
+      REQUIRE(rw == kW);
+      REQUIRE(rh == kH);
+      return rgba;
+    };
+
+    auto lumaAt = [](const std::vector<uint8_t>& buf, int x, int y) {
+      const size_t i = static_cast<size_t>((y * kW + x) * 4);
+      return (static_cast<float>(buf[i + 0]) + buf[i + 1] + buf[i + 2]) / 3.0f;
+    };
+
+    auto makeCanvasShakeProj = [&](bool fullScreenWhite) {
+      iota::model::Project p;
+      p.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto bg = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      bg.props.setString("customImage", "internalres:white", "img", "1_image");
+      bg.props.setBool("keepAspectRatio", !fullScreenWhite, "1_image");
+      bg.props.setBool("scaleIsUniform", !fullScreenWhite, "0_general");
+      bg.props.setVec2("scale",
+                       fullScreenWhite ? iota::core::Vec2{1.0f, 1.0f} : iota::core::Vec2{0.25f, 0.25f},
+                       0.0f,
+                       2.0f,
+                       "0_general");
+      bg.props.setVec2("position", {0.5f, 0.5f}, -1.0f, 1.0f, "0_general");
+      comp0.elements.push_back(std::move(bg));
+
+      auto shake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);
+      shake.props.setFloat("xRandAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      shake.props.setFloat("yRandAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      shake.props.setFloat("zRandAmp", 0.0f, 0.0f, 1.0f, "3_axes");
+      shake.props.setFloat("tiltRandAmp", 0.0f, 0.0f, 45.0f, "3_axes");
+      comp0.elements.push_back(std::move(shake));
+      p.compositions.push_back(std::move(comp0));
+      return p;
+    };
+
+    // 1. Edge wrap modes (No vs Reflect/Tile/Clamp) under Z Dist = 2.0 zoom-out
+    {
+      auto p = makeCanvasShakeProj(true);
+      auto& sp = p.compositions[0].elements[1].props;
+      sp.setFloat("amplitude", 0.0f, 0.0f, 5.0f, "2_shakeMaster");
+      sp.setFloat("zDist", 2.0f, 0.15f, 3.0f, "2_shakeMaster");
+      const iota::engine::FrameTiming tm{1.0f / 60.0f, 0.0, 0.0, true, 0.0f, false, 60.0f};
+
+      sp.setString("wrapX", "No", "sel No Tile Reflect Clamp", "1_appearance");
+      sp.setString("wrapY", "No", "sel No Tile Reflect Clamp", "1_appearance");
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+      const auto noPx = readRgba();
+      CHECK(lumaAt(noPx, 160, 120) > 220.0f);
+      CHECK(lumaAt(noPx, 10, 10) < 20.0f);
+
+      for (const std::string wrap : {"Reflect", "Tile", "Clamp"}) {
+        sp.setString("wrapX", wrap, "sel No Tile Reflect Clamp", "1_appearance");
+        sp.setString("wrapY", wrap, "sel No Tile Reflect Clamp", "1_appearance");
+        REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+        const auto px = readRgba();
+        CHECK_MESSAGE(lumaAt(px, 10, 10) > 180.0f, "Wrap mode failed at border: " << wrap);
+      }
+    }
+
+    // 2. Horizontal Wave shift, curved shutter Motion Blur smear, and Chromatic RGB Phase
+    {
+      auto p = makeCanvasShakeProj(false);
+      auto& sp = p.compositions[0].elements[1].props;
+      sp.setFloat("amplitude", 1.0f, 0.0f, 5.0f, "2_shakeMaster");
+      sp.setFloat("frequency", 6.0f, 0.05f, 30.0f, "2_shakeMaster");
+      sp.setFloat("xWaveAmp", 0.25f, 0.0f, 1.0f, "3_axes");
+      sp.setFloat("xWaveFreq", 1.0f, 0.1f, 5.0f, "3_axes");
+      sp.setString("wrapX", "No", "sel No Tile Reflect Clamp", "1_appearance");
+      sp.setString("wrapY", "No", "sel No Tile Reflect Clamp", "1_appearance");
+      sp.setBool("motionBlur", false, "4_motionAndRgb", "b");
+
+      // Peak displacement at t = 0.25 / 6.0 moves square right by +80px -> center (160,120) clears, x=240 lights
+      const double tPeak = 0.25 / 6.0;
+      REQUIRE(renderer.renderFrame(p, audio, {1.0f / 60.0f, tPeak, tPeak, true, 0.0f, false, 60.0f}, kW, kH));
+      const auto shiftPx = readRgba();
+      CHECK(lumaAt(shiftPx, 160, 120) < 20.0f);
+      CHECK(lumaAt(shiftPx, 240, 120) > 200.0f);
+
+      auto measureLitWidth = [&](const std::vector<uint8_t>& buf) {
+        int lit = 0;
+        for (int x = 0; x < kW; ++x) {
+          if (lumaAt(buf, x, 120) > 20.0f) ++lit;
+        }
+        return lit;
+      };
+
+      const iota::engine::FrameTiming velTm{1.0f / 60.0f, 0.0, 0.0, true, 0.0f, false, 60.0f};
+      REQUIRE(renderer.renderFrame(p, audio, velTm, kW, kH));
+      const auto sharpPx = readRgba();
+      const int staticSpan = measureLitWidth(sharpPx);
+
+      auto measureChromaticRB = [&](const std::vector<uint8_t>& buf) {
+        uint64_t sum = 0;
+        for (size_t i = 0; i + 3 < buf.size(); i += 4) {
+          const int diff = std::abs(static_cast<int>(buf[i + 0]) - static_cast<int>(buf[i + 2]));
+          sum += static_cast<uint64_t>(std::max(0, diff - 12));
+        }
+        return sum;
+      };
+      CHECK(measureChromaticRB(sharpPx) < 500);
+
+      // Motion Blur active at peak velocity t=0.0 widens horizontal streak cleanly
+      sp.setBool("motionBlur", true, "4_motionAndRgb", "b");
+      sp.setFloat("moBlurLength", 2.5f, 0.0f, 4.0f, "4_motionAndRgb");
+      sp.setInt("blurSamples", 24, 4, 48, "4_motionAndRgb");
+      REQUIRE(renderer.renderFrame(p, audio, velTm, kW, kH));
+      const int blurSpan = measureLitWidth(readRgba());
+      CHECK(blurSpan > staticSpan + 12);
+
+      // RGB Phase splits R/G/B along the shake velocity trajectory
+      sp.setBool("motionBlur", false, "4_motionAndRgb", "b");
+      sp.setFloat("rgbPhase", 0.85f, 0.0f, 1.0f, "4_motionAndRgb");
+      REQUIRE(renderer.renderFrame(p, audio, velTm, kW, kH));
+      const auto rgbPx = readRgba();
+      CHECK(measureChromaticRB(rgbPx) > 5000);
+    }
+
+    // 3. Audio-reactive Composition 0 ShakeEffect + HDR16F + Bloom + FXAA
+    {
+      auto starter = iota::model::createStarterProject();
+      auto shake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);
+      shake.props.setFloat("amplitude", 0.05f, 0.0f, 5.0f, "2_shakeMaster");
+      shake.props.setMVar("measureAmplitude",
+                          iota::model::MVariableFloat{{{"SoundKeys1", 1.5f, 0.0f}}},
+                          "mvarf 0.0 5.0",
+                          "2_shakeMaster");
+      shake.props.setFloat("rgbPhase", 0.25f, 0.0f, 1.0f, "4_motionAndRgb");
+      starter.compositions[0].elements.push_back(std::move(shake));
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      for (int f = 0; f < 8; ++f) {
+        REQUIRE(renderer.renderFrame(starter, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f},
+                                     kW, kH, {}, &st));
+      }
+      CHECK(st.hdrPipelineActive);
+      CHECK(st.bloomActive);
+      const auto outPx = readRgba();
+      uint64_t totalLuma = 0;
+      for (size_t i = 0; i + 3 < outPx.size(); i += 4) {
+        totalLuma += outPx[i] + outPx[i + 1] + outPx[i + 2];
+      }
+      CHECK(totalLuma > 25000);
+    }
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

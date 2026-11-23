@@ -10,7 +10,7 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
 
 - **Multi-Composition Scene Graph & Layer Types**
   - Compose multi-pass visual scenes with cross-composition references and layer blend modes.
-  - Built-in element types: `AudioProvider`, `SoundKeys`, `Bars`, `Particles`, `Image`, `Text`, `StatText`, `BlurEffect`, `RgbSplitEffect`, `MotionBlurEffect`, `MirrorEffect`, `AppLogo`, and `CustomShader`.
+  - Built-in element types: `AudioProvider`, `SoundKeys`, `Bars`, `Particles`, `Image`, `Text`, `StatText`, `BlurEffect`, `RgbSplitEffect`, `MotionBlurEffect`, `ShakeEffect`, `MirrorEffect`, `AppLogo`, and `CustomShader`.
 - **Frame-Rate-Independent Audio Analysis (DSP)**
   - Three analysis providers: `Waveform`, `Spectrum` (`kissfft`), and `Spectrum2` (direct DFT filterbank).
   - Automatic Gain Control (`AgcEnvelope`), IEC A-weighting calibration, beat detection, and a 64-frame time-indexed bar history ring (`BarHistoryRing`) for layer reaction delay and accumulation.
@@ -28,6 +28,10 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
 - **GPU Blur & Motion Blur Effects**
   - Resolution-independent `BlurEffect` supporting **Dual Kawase** (continuous downsample + tent upsample pyramid), separable **Gaussian**, **Radial** zoom, and **Directional** blur modes, audio-reactive `measureBlurRadius`, single-composition canvas-below blurring (`sourceCompositionIndex = 0`), and per-layer `Image` blur (`blurEnabled`, `blurDivider`, `blurRadius`).
   - Frame-rate-independent `MotionBlurEffect` with an IGN-jittered 4–64 sample shutter blur (`shutterAngle`, `shutterPhase`, `blurSamples`, `blurCenter`) across translation, signed radial zoom, and aspect-corrected spin, supporting `EffectTransform`, `Manual` (`manualAngle`/`manualDirectional`/`manualZoom`/`manualSpin`), `Temporal` (exponential persistence buffer with `Mix`/`Lighten`/`Screen` trail blending), and `Hybrid` modes alongside single-composition canvas-below capture.
+- **Composition-Wide Camera Shake (`ShakeEffect`)**
+  - BorisFX Sapphire-style 4-axis procedural camera shake (`X`, `Y`, `Z Dist`, and aspect-corrected `Tilt` roll) defaulting to `TargetImage = composition:0` to shake everything rendered below on the canvas.
+  - Combines C1 Catmull-Rom fractal random noise (`octaves = 1..10`), periodic sine waves, sharp `twitchAmp` impulses, deterministic `seed` / `phase` / `still` freeze, and audio-reactive `measureAmplitude` (`Beat` / `SoundKeys1..3`).
+  - Features independent `wrapX`/`wrapY` border modes (`Reflect`, `Tile`, `Clamp`, `No`), Lagrange-curved shutter motion blur (`moBlurLength`, `blurSamples`), optical RGB chromatic trajectory split (`rgbPhase`), HDR emissive gain (`hdrIntensity`), and 1-click presets (`Handheld Drift`, `Bass Impact`, `Earthquake`, `Z-Pump Bounce`, `RGB Glitch Twitch`).
 - **3D Particular-Grade Particle Engine (`ParticleSystem`)**
   - Up to 50,000 active particles with `preRunSec` warm-up, velocity inheritance (`velocityFromMotion`), 3D cone `directionSpread`, and `MVar`-driven emission (`measureEmitRate` / `MeasureOverallSpeed`).
   - Eight emitter geometries: `Rectangle`, `HorizontalLine`, `Point`, `Box3D`, `Sphere`, `Ring`, `Grid`, and `LayerMask` (GPU-sampled color/alpha emission from any composition or canvas-below layers).
@@ -68,9 +72,9 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 │   ├── audio/        # Audio decoding (FFmpeg/miniaudio) and miniaudio real-time playback/PCM windows
 │   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (abstract render device/resources)
 │   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi (Rgba8 & Rgba16F render targets, float readback, sub-rect updates)
-│   ├── engine/       # GPU scene composer, HDR16F Bloom/Tonemapping, 3D ParticleSystem, DirectWrite Unicode font atlas, blur & motion blur
+│   ├── engine/       # GPU scene composer, HDR16F Bloom/Tonemapping, ParticleSystem, ShakeEffect, DirectWrite font atlas, blur/motion blur
 │   └── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
-└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, Unicode/non-UTF-8 IO, and OpenGL 4.5 HDR/Bloom/Font tests)
+└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, ShakeEffect, Unicode IO, and OpenGL 4.5 tests)
 ```
 
 ## Tech Stack
