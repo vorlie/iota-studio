@@ -25,6 +25,9 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
 - **Visual Geometry & Curve Interpolation**
   - Configurable `Bars` shapes (`Circle`, `HorizontalLine`, `SidedPolygon`, `Letter`) and segment renderers (`Bars`, `SharpBars`, `RoundBars`, `Line`).
   - Render-time **Curve Interpolation** (`None`, `Linear`, `CatmullRom`, `CubicBSpline` with configurable subdivisions) decoupled from DSP spectrum calculations.
+- **GPU Blur & Motion Blur Effects**
+  - Resolution-independent `BlurEffect` supporting **Dual Kawase** (continuous downsample + tent upsample pyramid), separable **Gaussian**, **Radial** zoom, and **Directional** blur modes, audio-reactive `measureBlurRadius`, single-composition canvas-below blurring (`sourceCompositionIndex = 0`), and per-layer `Image` blur (`blurEnabled`, `blurDivider`, `blurRadius`).
+  - Frame-rate-independent `MotionBlurEffect` with an IGN-jittered 4–64 sample shutter blur (`shutterAngle`, `shutterPhase`, `blurSamples`, `blurCenter`) across translation, signed radial zoom, and aspect-corrected spin, supporting `EffectTransform`, `Manual` (`manualAngle`/`manualDirectional`/`manualZoom`/`manualSpin`), `Temporal` (exponential persistence buffer with `Mix`/`Lighten`/`Screen` trail blending), and `Hybrid` modes alongside single-composition canvas-below capture.
 - **Docking Studio Editor UI**
   - Multi-panel Dear ImGui workspace featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
   - Inspector supports both slider/drag editing (`Ctrl+Click` for inline typing) and a **Precise Inputs** toggle (`Edit -> Precise Numeric Inputs` or the Inspector checkbox) for exact keyboard entry, plus full snapshot Undo/Redo (`CommandStack`).
@@ -52,9 +55,9 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 │   ├── audio/        # Audio decoding (FFmpeg/miniaudio) and miniaudio real-time playback/PCM windows
 │   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (abstract render device/resources)
 │   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi
-│   ├── engine/       # GPU scene composer, particle simulator, font atlas cache, post-process effects
+│   ├── engine/       # GPU scene composer, particle simulator, font atlas, multi-pass Dual Kawase/Gaussian blur & shutter/temporal motion blur
 │   └── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
-└── tests/            # Automated doctest suite (unit, SoundKeys, Unicode/non-UTF-8 IO, and OpenGL 4.5 tests)
+└── tests/            # Automated doctest suite (unit, SoundKeys, Unicode/non-UTF-8 IO, and OpenGL 4.5 blur/render tests)
 ```
 
 ## Tech Stack

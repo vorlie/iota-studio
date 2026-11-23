@@ -340,6 +340,273 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     CHECK(badPathThumb.texture);
   }
 
+  SUBCASE("Proper BlurEffect (DualKawase/Gaussian/Radial/Directional/Canvas/Image) and MotionBlurEffect (FPS-independent/Manual/Temporal)") {
+    constexpr int kW = 320;
+    constexpr int kH = 240;
+
+    auto readRgba = [&]() {
+      std::vector<uint8_t> buf;
+      int rw = 0, rh = 0;
+      REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, buf, true));
+      REQUIRE(rw == kW);
+      REQUIRE(rh == kH);
+      return buf;
+    };
+    auto lumaAt = [](const std::vector<uint8_t>& buf, int x, int y) -> float {
+      const size_t off = static_cast<size_t>((y * kW + x) * 4);
+      return (static_cast<float>(buf[off]) + buf[off + 1] + buf[off + 2]) / 3.0f;
+    };
+
+    auto makeBoxProject = [&](iota::model::Element effectEl) {
+      iota::model::Project p;
+      p.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      comp0.elements.push_back(std::move(effectEl));
+
+      auto comp1 = iota::model::createDefaultComposition(1);
+      auto sq = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      sq.props.setString("customImage", "internalres:white", "img", "1_image");
+      sq.props.setBool("scaleIsUniform", true, "0_general");
+      sq.props.setVec2("scale", {0.25f, 0.25f}, 0.0f, 2.0f, "0_general");  // 60x60 centered at (160,120)
+      sq.props.setVec2("position", {0.5f, 0.5f}, -1.0f, 1.0f, "0_general");
+      comp1.elements.push_back(std::move(sq));
+
+      p.compositions.push_back(std::move(comp0));
+      p.compositions.push_back(std::move(comp1));
+      return p;
+    };
+
+    // 1. BlurEffect: sharp at radius 0, progressive spread across all 4 blur types, and legacy MaskImage fix
+    auto makeBlurEl = [&](std::string_view type, float radius, float angle = 0.0f) {
+      auto blur = iota::model::createDefaultElement(iota::model::ElementType::BlurEffect);
+      blur.props.setInt("sourceCompositionIndex", 1, 0, 5, "1_appearance");
+      blur.props.setString("blendMode", "Opaque", "_child Alpha Opaque", "0_general");
+      blur.props.setBool("showUnblurredContent", false, "1_appearance");
+      blur.props.setString("MaskImage", "internalres:transparent", "img", "1_appearance");
+      blur.props.setColorArgb("color", {0, 0, 0, 0}, "crgba", "1_appearance");
+      blur.props.setVec2("1layerScale", {1.0f, 1.0f}, 0.0f, 10.0f, "2_blur");
+      blur.props.setVec2("2layerScale", {0.0f, 0.0f}, 0.0f, 10.0f, "2_blur");
+      blur.props.setVec2("3layerScale", {0.0f, 0.0f}, 0.0f, 10.0f, "2_blur");
+      blur.props.setString("blurType", type, "sel DualKawase Gaussian Radial Directional", "2_blur");
+      blur.props.setFloat("blurRadius", radius, 0.0f, 6.0f, "2_blur");
+      blur.props.setFloat("blurMultiplier", 4.0f, 1.0f, 6.0f, "2_blur");
+      blur.props.setFloat("blurAngle", angle, 0.0f, 360.0f, "2_blur");
+      return blur;
+    };
+
+    iota::engine::FrameTiming staticTiming{1.0f / 60.0f, 0.1, 0.1, true, 0.0f, false, 60.0f};
+    renderer.resetSimulation();
+
+    {
+      auto pZero = makeBoxProject(makeBlurEl("DualKawase", 0.0f));
+      REQUIRE(renderer.renderFrame(pZero, audio, staticTiming, kW, kH));
+      const auto px = readRgba();
+      CHECK(lumaAt(px, 160, 120) > 240.0f);
+      CHECK(lumaAt(px, 198, 120) < 2.0f);
+    }
+
+    float smallSpreadFar = 0.0f;
+    {
+      auto pSmall = makeBoxProject(makeBlurEl("DualKawase", 0.6f));
+      REQUIRE(renderer.renderFrame(pSmall, audio, staticTiming, kW, kH));
+      const auto px = readRgba();
+      CHECK(lumaAt(px, 192, 120) > 10.0f);
+      smallSpreadFar = lumaAt(px, 202, 120);
+    }
+
+    {
+      auto pWide = makeBoxProject(makeBlurEl("DualKawase", 5.0f));
+      REQUIRE(renderer.renderFrame(pWide, audio, staticTiming, kW, kH));
+      const auto px = readRgba();
+      CHECK(lumaAt(px, 202, 120) > smallSpreadFar + 15.0f);
+    }
+
+    for (const std::string mode : {"Gaussian", "Radial", "Directional"}) {
+      auto pMode = makeBoxProject(makeBlurEl(mode, 3.0f, 0.0f));
+      REQUIRE(renderer.renderFrame(pMode, audio, staticTiming, kW, kH));
+      const auto px = readRgba();
+      CHECK_MESSAGE(lumaAt(px, 194, 120) > 15.0f, "Mode failed to blur outward: " << mode);
+      if (mode == "Directional") {
+        CHECK(lumaAt(px, 160, 158) < 5.0f);  // 0-deg horizontal directional blur stays sharp vertically
+      }
+    }
+
+    // 2. Single-comp Canvas-Below BlurEffect + Image layer blurEnabled
+    {
+      iota::model::Project singleComp;
+      singleComp.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto sq = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      sq.props.setString("customImage", "internalres:white", "img", "1_image");
+      sq.props.setBool("scaleIsUniform", true, "0_general");
+      sq.props.setVec2("scale", {0.25f, 0.25f}, 0.0f, 2.0f, "0_general");
+      comp0.elements.push_back(std::move(sq));
+      auto blurCanvas = makeBlurEl("DualKawase", 3.0f);
+      blurCanvas.props.setInt("sourceCompositionIndex", 0, 0, 5, "1_appearance");
+      comp0.elements.push_back(std::move(blurCanvas));
+      singleComp.compositions.push_back(std::move(comp0));
+
+      REQUIRE(renderer.renderFrame(singleComp, audio, staticTiming, kW, kH));
+      const auto px = readRgba();
+      CHECK(lumaAt(px, 160, 120) > 120.0f);
+      CHECK(lumaAt(px, 196, 120) > 15.0f);
+    }
+
+    {
+      // 64x64 uncompressed 24-bit BMP with centered 16x16 white square on black background
+      constexpr int kBmpSize = 64;
+      std::vector<uint8_t> spotBmp(54 + kBmpSize * kBmpSize * 3, 0);
+      spotBmp[0] = 'B';
+      spotBmp[1] = 'M';
+      const uint32_t fileSz = static_cast<uint32_t>(spotBmp.size());
+      spotBmp[2] = static_cast<uint8_t>(fileSz & 0xFF);
+      spotBmp[3] = static_cast<uint8_t>((fileSz >> 8) & 0xFF);
+      spotBmp[4] = static_cast<uint8_t>((fileSz >> 16) & 0xFF);
+      spotBmp[5] = static_cast<uint8_t>((fileSz >> 24) & 0xFF);
+      spotBmp[10] = 54;
+      spotBmp[14] = 40;
+      spotBmp[18] = kBmpSize;
+      spotBmp[22] = kBmpSize;
+      spotBmp[26] = 1;
+      spotBmp[28] = 24;
+      for (int y = 24; y < 40; ++y) {
+        for (int x = 24; x < 40; ++x) {
+          const size_t p = 54 + static_cast<size_t>((y * kBmpSize + x) * 3);
+          spotBmp[p + 0] = 255;
+          spotBmp[p + 1] = 255;
+          spotBmp[p + 2] = 255;
+        }
+      }
+
+      iota::model::Project imgBlurProj;
+      imgBlurProj.version = "10";
+      imgBlurProj.localAssets["spot.bmp"] = std::move(spotBmp);
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto img = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      img.props.setString("customImage", "local:spot.bmp", "img", "1_image");
+      img.props.setBool("scaleIsUniform", true, "0_general");
+      img.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+      img.props.setBool("blurEnabled", false, "blur");
+      img.props.setInt("blurDivider", 6, 0, 10, "blur");
+      img.props.setInt("blurRadius", 18, 1, 25, "blur");
+      comp0.elements.push_back(std::move(img));
+      imgBlurProj.compositions.push_back(std::move(comp0));
+
+      REQUIRE(renderer.renderFrame(imgBlurProj, audio, staticTiming, kW, kH));
+      const auto sharpPx = readRgba();
+      CHECK(lumaAt(sharpPx, 122, 120) < 2.0f);   // Outside white square in dark surround
+      CHECK(lumaAt(sharpPx, 134, 120) > 240.0f); // Inside white square near edge
+
+      imgBlurProj.compositions[0].elements[0].props.setBool("blurEnabled", true, "blur");
+      REQUIRE(renderer.renderFrame(imgBlurProj, audio, staticTiming, kW, kH));
+      const auto blurPx = readRgba();
+      CHECK(lumaAt(blurPx, 122, 120) > 15.0f);   // Blurred spot bleeds outward
+      CHECK(lumaAt(blurPx, 134, 120) < lumaAt(sharpPx, 134, 120) - 25.0f);
+    }
+
+    // 3. MotionBlurEffect: frame-rate-independent EffectTransform (60 FPS vs 144 FPS)
+    auto makeMotionProject = [&](float multVal) {
+      auto mb = iota::model::createDefaultElement(iota::model::ElementType::MotionBlurEffect);
+      mb.props.setString("TargetImage", "composition:1", "img composition:0", "1_appearance");
+      mb.props.setString("blendMode", "Opaque", "_child Alpha Opaque", "0_general");
+      mb.props.setString("motionSource", "EffectTransform", "_child EffectTransform Manual Temporal Hybrid", "2_motionBlur");
+      mb.props.setMVar("blurAmountMultiplier",
+                       iota::model::MVariableFloat::constant(multVal),
+                       "mvarf 0.0 3.0",
+                       "2_motionBlur");
+      mb.props.setFloat("shutterAngle", 360.0f, 0.0f, 720.0f, "2_motionBlur");
+      mb.props.setInt("blurSamples", 32, 8, 64, "2_motionBlur");
+      auto p = makeBoxProject(std::move(mb));
+      p.desktopTracks.push_back({0, 0, "position.x", {{0.0, 0.40f}, {1.0, 2.40f}}});  // 2.0 width/sec
+      return p;
+    };
+
+    auto runFpsMotion = [&](int frames, float multVal) {
+      auto p = makeMotionProject(multVal);
+      renderer.resetSimulation();
+      const double totalDur = 5.0 / 60.0;  // 5/60 s == 12/144 s exactly
+      const float dt = static_cast<float>(totalDur / static_cast<double>(frames));
+      for (int f = 0; f <= frames; ++f) {
+        const double t = static_cast<double>(f) * dt;
+        iota::engine::FrameTiming tm{dt, t, t, true, 0.0f, false, 1.0f / dt};
+        REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH));
+      }
+      return readRgba();
+    };
+
+    auto measureActiveWidth = [&](const std::vector<uint8_t>& buf) {
+      int lit = 0;
+      for (int x = 0; x < kW; ++x) {
+        if (lumaAt(buf, x, 120) > 15.0f) ++lit;
+      }
+      return lit;
+    };
+
+    const auto mbStaticPx = runFpsMotion(5, 0.0f);
+    const auto mb60Px = runFpsMotion(5, 1.0f);
+    const auto mb144Px = runFpsMotion(12, 1.0f);
+    const int staticW = measureActiveWidth(mbStaticPx);
+    const int blur60W = measureActiveWidth(mb60Px);
+    const int blur144W = measureActiveWidth(mb144Px);
+    CHECK(blur60W >= staticW + 6);
+    CHECK(std::abs(blur60W - blur144W) <= 2);
+
+    // 4. MotionBlurEffect: Manual directional mode produces blur on static input
+    {
+      auto mb = iota::model::createDefaultElement(iota::model::ElementType::MotionBlurEffect);
+      mb.props.setString("TargetImage", "composition:1", "img composition:0", "1_appearance");
+      mb.props.setString("blendMode", "Opaque", "_child Alpha Opaque", "0_general");
+      mb.props.setString("motionSource", "Manual", "_child EffectTransform Manual Temporal Hybrid", "2_motionBlur");
+      mb.props.setFloat("manualAngle", 0.0f, 0.0f, 360.0f, "2_motionBlur");
+      mb.props.setFloat("manualDirectional", 0.16f, 0.0f, 0.5f, "2_motionBlur");
+      mb.props.setFloat("manualZoom", 0.0f, -0.5f, 0.5f, "2_motionBlur");
+      mb.props.setInt("blurSamples", 24, 8, 64, "2_motionBlur");
+      auto pManual = makeBoxProject(std::move(mb));
+      renderer.resetSimulation();
+      REQUIRE(renderer.renderFrame(pManual, audio, staticTiming, kW, kH));
+      const auto px = readRgba();
+      CHECK(lumaAt(px, 198, 120) > 25.0f);
+    }
+
+    // 5. MotionBlurEffect: Temporal trail accumulation is frame-rate-independent (60 FPS vs 144 FPS)
+    auto runTemporalFade = [&](int decayFrames) {
+      iota::model::Project tp;
+      tp.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto sq = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      sq.props.setString("customImage", "internalres:white", "img", "1_image");
+      sq.props.setBool("scaleIsUniform", true, "0_general");
+      sq.props.setVec2("scale", {0.25f, 0.25f}, 0.0f, 2.0f, "0_general");
+      comp0.elements.push_back(std::move(sq));
+
+      auto mb = iota::model::createDefaultElement(iota::model::ElementType::MotionBlurEffect);
+      mb.props.setString("TargetImage", "composition:0", "img composition:0", "1_appearance");
+      mb.props.setString("blendMode", "Opaque", "_child Alpha Opaque", "0_general");
+      mb.props.setString("motionSource", "Temporal", "_child EffectTransform Manual Temporal Hybrid", "2_motionBlur");
+      mb.props.setFloat("trailDecayMs", 150.0f, 10.0f, 1000.0f, "2_motionBlur");
+      mb.props.setString("trailBlend", "Mix", "sel Mix Lighten Screen", "2_motionBlur");
+      mb.props.setMVar("blurAmountMultiplier", iota::model::MVariableFloat::constant(1.0f), "mvarf 0.0 3.0", "2_motionBlur");
+      comp0.elements.push_back(std::move(mb));
+      tp.compositions.push_back(std::move(comp0));
+
+      renderer.resetSimulation();
+      const float dt = static_cast<float>((5.0 / 60.0) / static_cast<double>(decayFrames));
+      REQUIRE(renderer.renderFrame(tp, audio, {dt, 0.0, 0.0, true, 0.0f, false, 1.0f / dt}, kW, kH));
+      tp.compositions[0].elements[0].props.setBool("visible", false, "0_general");
+      for (int f = 1; f <= decayFrames; ++f) {
+        const double t = static_cast<double>(f) * dt;
+        REQUIRE(renderer.renderFrame(tp, audio, {dt, t, t, true, 0.0f, false, 1.0f / dt}, kW, kH));
+      }
+      return lumaAt(readRgba(), 160, 120);
+    };
+
+    const float temp60 = runTemporalFade(5);
+    const float temp144 = runTemporalFade(12);
+    CHECK(temp60 > 90.0f);
+    CHECK(temp60 < 200.0f);
+    CHECK(std::abs(temp60 - temp144) < 12.0f);
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

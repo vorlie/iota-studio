@@ -76,35 +76,135 @@ layout(location = 2) in vec2 a_uv;
 out vec2 v_uv;
 
 void main() {
-  v_uv = a_pos.xy * 0.5 + vec2(0.5);
+  v_uv = a_uv;
   gl_Position = vec4(a_pos.xy, 0.0, 1.0);
 }
 )glsl";
 
-inline constexpr const char* kBlurStackFrag = R"glsl(#version 450 core
+// Dual Kawase downsample pass (5 taps, energy-conserving).
+inline constexpr const char* kKawaseDownFrag = R"glsl(#version 450 core
 in vec2 v_uv;
 
 uniform sampler2D u_texture;
-uniform float blurWH;
-uniform vec2 resolution;
+uniform vec2 u_halfPixel;
+uniform float u_offset;
 
 out vec4 fragColor;
 
 void main() {
-  vec2 stepUv = resolution * blurWH;
+  vec2 d = u_halfPixel * u_offset;
+  vec4 sum = texture(u_texture, v_uv) * 4.0;
+  sum += texture(u_texture, clamp(v_uv - d, 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv + d, 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv + vec2(d.x, -d.y), 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv - vec2(d.x, -d.y), 0.0, 1.0));
+  fragColor = sum * 0.125;
+}
+)glsl";
+
+// Dual Kawase upsample pass (8-tap tent filter + continuous fine-level mix).
+inline constexpr const char* kKawaseUpFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform sampler2D u_fineTexture;
+uniform vec2 u_halfPixel;
+uniform float u_offset;
+uniform float u_blend;
+
+out vec4 fragColor;
+
+void main() {
+  vec2 d = u_halfPixel * u_offset;
+  vec4 sum = vec4(0.0);
+  sum += texture(u_texture, clamp(v_uv + vec2(-d.x * 2.0, 0.0), 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv + vec2(-d.x, d.y), 0.0, 1.0)) * 2.0;
+  sum += texture(u_texture, clamp(v_uv + vec2(0.0, d.y * 2.0), 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv + vec2(d.x, d.y), 0.0, 1.0)) * 2.0;
+  sum += texture(u_texture, clamp(v_uv + vec2(d.x * 2.0, 0.0), 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv + vec2(d.x, -d.y), 0.0, 1.0)) * 2.0;
+  sum += texture(u_texture, clamp(v_uv + vec2(0.0, -d.y * 2.0), 0.0, 1.0));
+  sum += texture(u_texture, clamp(v_uv + vec2(-d.x, -d.y), 0.0, 1.0)) * 2.0;
+  vec4 blurred = sum / 12.0;
+  if (u_blend < 0.999) {
+    vec4 fine = texture(u_fineTexture, v_uv);
+    fragColor = mix(fine, blurred, clamp(u_blend, 0.0, 1.0));
+  } else {
+    fragColor = blurred;
+  }
+}
+)glsl";
+
+// Separable Gaussian / Directional blur pass.
+inline constexpr const char* kGaussianSepFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform vec2 u_stepUv;
+uniform float u_radiusPx;
+uniform int u_halfTaps;
+
+out vec4 fragColor;
+
+void main() {
+  float r = max(u_radiusPx, 0.0);
+  if (r < 0.05) {
+    fragColor = texture(u_texture, v_uv);
+    return;
+  }
+  int taps = clamp(u_halfTaps, 1, 32);
+  float sigma = max(r * 0.45, 0.25);
+  float invTwoSigma2 = 0.5 / (sigma * sigma);
+  float stepScale = max(1.0, r / float(taps));
+
+  vec4 acc = texture(u_texture, v_uv);
+  float wSum = 1.0;
+  for (int i = 1; i <= taps; ++i) {
+    float dist = float(i) * stepScale;
+    float w = exp(-(dist * dist) * invTwoSigma2);
+    vec2 off = u_stepUv * dist;
+    acc += texture(u_texture, clamp(v_uv + off, 0.0, 1.0)) * w;
+    acc += texture(u_texture, clamp(v_uv - off, 0.0, 1.0)) * w;
+    wSum += 2.0 * w;
+  }
+  fragColor = acc / wSum;
+}
+)glsl";
+
+// Radial zoom blur with spatial interleaved gradient noise jitter.
+inline constexpr const char* kRadialBlurFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform vec2 u_center;
+uniform float u_strength;
+
+out vec4 fragColor;
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+  float s = clamp(u_strength, 0.0, 0.85);
+  if (s < 0.001) {
+    fragColor = texture(u_texture, v_uv);
+    return;
+  }
+  const int kSamples = 24;
+  vec2 dir = v_uv - u_center;
+  float jitter = ign(gl_FragCoord.xy) - 0.5;
   vec4 acc = vec4(0.0);
-  acc += texture(u_texture, clamp(v_uv + vec2(-stepUv.x, -stepUv.y), 0.0, 1.0)) * 0.0625;
-  acc += texture(u_texture, clamp(v_uv + vec2(0.0,       -stepUv.y), 0.0, 1.0)) * 0.1250;
-  acc += texture(u_texture, clamp(v_uv + vec2(+stepUv.x, -stepUv.y), 0.0, 1.0)) * 0.0625;
-
-  acc += texture(u_texture, clamp(v_uv + vec2(-stepUv.x, 0.0),       0.0, 1.0)) * 0.1250;
-  acc += texture(u_texture, v_uv)                                               * 0.2500;
-  acc += texture(u_texture, clamp(v_uv + vec2(+stepUv.x, 0.0),       0.0, 1.0)) * 0.1250;
-
-  acc += texture(u_texture, clamp(v_uv + vec2(-stepUv.x, +stepUv.y), 0.0, 1.0)) * 0.0625;
-  acc += texture(u_texture, clamp(v_uv + vec2(0.0,       +stepUv.y), 0.0, 1.0)) * 0.1250;
-  acc += texture(u_texture, clamp(v_uv + vec2(+stepUv.x, +stepUv.y), 0.0, 1.0)) * 0.0625;
-  fragColor = acc;
+  float wSum = 0.0;
+  for (int i = 0; i < kSamples; ++i) {
+    float t = ((float(i) + 0.5 + jitter) / float(kSamples)) - 0.5;
+    float w = exp(-2.2 * t * t);
+    float scale = 1.0 - t * s;
+    vec2 uv = clamp(u_center + dir * scale, 0.0, 1.0);
+    acc += texture(u_texture, uv) * w;
+    wSum += w;
+  }
+  fragColor = acc / max(wSum, 1e-5);
 }
 )glsl";
 
@@ -131,28 +231,89 @@ void main() {
 }
 )glsl";
 
+// Multi-sample shutter motion blur supporting translation, signed radial zoom, and rotation.
 inline constexpr const char* kMotionBlurFrag = R"glsl(#version 450 core
 in vec4 v_color;
 in vec2 v_uv;
 
 uniform sampler2D u_texture;
-uniform vec2 posAmount;
-uniform vec2 scaleAmount;
+uniform vec2 u_posAmount;
+uniform vec2 u_scaleAmount;
+uniform float u_rotAmount;
+uniform float u_shutterPhase;
+uniform vec2 u_center;
+uniform float u_aspect;
+uniform int u_samples;
+
+out vec4 fragColor;
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+  float motionMag = length(u_posAmount) + length(u_scaleAmount) + abs(u_rotAmount);
+  if (motionMag < 1e-5) {
+    fragColor = texture(u_texture, v_uv) * v_color;
+    return;
+  }
+
+  int count = clamp(u_samples, 4, 64);
+  float jitter = ign(gl_FragCoord.xy) - 0.5;
+  float aspect = max(u_aspect, 0.01);
+  vec2 baseOffset = v_uv - u_center;
+  vec4 acc = vec4(0.0);
+
+  for (int i = 0; i < count; ++i) {
+    float t = ((float(i) + 0.5 + jitter) / float(count)) - 0.5 + u_shutterPhase;
+    vec2 p = baseOffset;
+
+    if (abs(u_rotAmount) > 1e-5) {
+      float a = t * u_rotAmount;
+      float cs = cos(a);
+      float sn = sin(a);
+      vec2 q = vec2(p.x * aspect, p.y);
+      vec2 rq = vec2(q.x * cs - q.y * sn, q.x * sn + q.y * cs);
+      p = vec2(rq.x / aspect, rq.y);
+    }
+
+    vec2 zoom = max(vec2(0.25), vec2(1.0) + t * u_scaleAmount);
+    p = p / zoom;
+
+    vec2 sampleUv = clamp(p + u_center - t * u_posAmount, 0.0, 1.0);
+    acc += texture(u_texture, sampleUv);
+  }
+
+  fragColor = (acc / float(count)) * v_color;
+}
+)glsl";
+
+// Frame-rate-independent temporal accumulation shader for moving scene elements.
+inline constexpr const char* kTemporalBlurFrag = R"glsl(#version 450 core
+in vec2 v_uv;
+
+uniform sampler2D u_currentTex;
+uniform sampler2D u_historyTex;
+uniform float u_keepFactor;
+uniform float u_currFlipY;
+uniform int u_trailBlend;
 
 out vec4 fragColor;
 
 void main() {
-  vec2 d = posAmount + abs(scaleAmount) * ((v_uv - vec2(0.5)) * 2.0);
-  const float w[9] = float[9](
-    0.063327, 0.093095, 0.122589, 0.144599, 0.152781,
-    0.144599, 0.122589, 0.093095, 0.063327
-  );
-  vec4 sum = vec4(0.0);
-  for (int i = -4; i <= 4; ++i) {
-    vec2 uv = clamp(v_uv + float(i) * d, 0.0, 1.0);
-    sum += texture(u_texture, uv) * w[i + 4];
+  vec2 currUv = vec2(v_uv.x, mix(v_uv.y, 1.0 - v_uv.y, u_currFlipY));
+  vec4 curr = texture(u_currentTex, currUv);
+  vec4 prev = texture(u_historyTex, v_uv) * clamp(u_keepFactor, 0.0, 0.99);
+
+  if (u_trailBlend == 1) {
+    fragColor = max(curr, prev);
+  } else if (u_trailBlend == 2) {
+    fragColor = vec4(1.0 - (1.0 - clamp(curr.rgb, 0.0, 1.0)) * (1.0 - clamp(prev.rgb, 0.0, 1.0)),
+                     max(curr.a, prev.a));
+  } else {
+    vec4 rawPrev = texture(u_historyTex, v_uv);
+    fragColor = mix(curr, rawPrev, clamp(u_keepFactor, 0.0, 0.99));
   }
-  fragColor = sum * v_color;
 }
 )glsl";
 

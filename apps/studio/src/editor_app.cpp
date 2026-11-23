@@ -597,7 +597,22 @@ void EditorApp::drawHierarchyPanel() {
       std::string s(label);
       if (ImGui::MenuItem(s.c_str())) {
         auto& elems = project_.compositions[static_cast<size_t>(selectedCompIdx_)].elements;
-        elems.push_back(iota::model::createDefaultElement(et));
+        auto newEl = iota::model::createDefaultElement(et);
+        if (project_.compositions.size() == 1) {
+          if (et == iota::model::ElementType::BlurEffect) {
+            newEl.props.setInt("sourceCompositionIndex", 0, 0, 5, "1_appearance");
+            newEl.props.setString("blendMode", "Alpha",
+                                  "_child Alpha PreMulAlpha Screen Add AddAlpha Opaque", "0_general");
+            newEl.props.setBool("showUnblurredContent", false, "1_appearance");
+          } else if (et == iota::model::ElementType::MotionBlurEffect) {
+            newEl.props.setString("TargetImage", "composition:0", "img composition:0", "1_appearance");
+            newEl.props.setString("motionSource", "Temporal",
+                                  "_child EffectTransform Manual Temporal Hybrid", "2_motionBlur");
+            newEl.props.setString("blendMode", "Opaque",
+                                  "_child Alpha PreMulAlpha Screen Add AddAlpha Opaque", "0_general");
+          }
+        }
+        elems.push_back(std::move(newEl));
         selectedElemIdx_ = static_cast<int>(elems.size()) - 1;
         pushUndoState("Add " + s);
       }
@@ -815,15 +830,48 @@ void EditorApp::drawInspectorPanel() {
       ImGui::Separator();
       renderSoundKeysCanvasAndMeters(el, frameStats_, activeSoundKeysRange_, actions, 115.0f);
     } else if (el.type == iota::model::ElementType::BlurEffect) {
-      if (!el.props.contains("measureBlurRadius")) {
-        if (ImGui::SmallButton("Enable Audio-Reactive Blur Radius")) {
-          el.props.setMVar("measureBlurRadius",
-                           iota::model::MVariableFloat{{{"Nothing", 0.5f, 0.5f}}},
-                           "mvarf 0.0 3.0",
-                           "2_blur");
+      if (!el.props.contains("measureBlurRadius") || !el.props.contains("blurType")) {
+        if (ImGui::SmallButton("Enable Advanced Blur Controls")) {
+          if (!el.props.contains("measureBlurRadius")) {
+            el.props.setMVar("measureBlurRadius",
+                             iota::model::MVariableFloat{{{"Nothing", 0.5f, 0.5f}}},
+                             "mvarf 0.0 3.0",
+                             "2_blur");
+          }
+          if (!el.props.contains("blurType")) {
+            el.props.setString("blurType", "DualKawase",
+                               "sel DualKawase Gaussian Radial Directional", "2_blur");
+          }
+          if (!el.props.contains("blurAngle")) {
+            el.props.setFloat("blurAngle", 0.0f, 0.0f, 360.0f, "2_blur");
+          }
+          if (!el.props.contains("blurCenter")) {
+            el.props.setVec2("blurCenter", {0.5f, 0.5f}, 0.0f, 1.0f, "2_blur");
+          }
+          el.props.getOrAdd("sourceCompositionIndex").typeTag = "i 0 5";
+          el.props.getOrAdd("blurRadius").typeTag = "f 0.0 6.0";
           actions.modified = true;
           actions.undoSnapshotNeeded = true;
-          actions.editLabel = "Enable Audio-Reactive Blur Radius";
+          actions.editLabel = "Enable Advanced Blur Controls";
+        }
+      }
+    } else if (el.type == iota::model::ElementType::MotionBlurEffect) {
+      if (!el.props.contains("shutterAngle")) {
+        if (ImGui::SmallButton("Enable Advanced Motion Blur Controls")) {
+          el.props.getOrAdd("motionSource").typeTag = "_child EffectTransform Manual Temporal Hybrid";
+          el.props.setFloat("shutterAngle", 180.0f, 0.0f, 720.0f, "2_motionBlur");
+          el.props.setFloat("shutterPhase", 0.0f, -0.5f, 0.5f, "2_motionBlur");
+          el.props.setInt("blurSamples", 24, 8, 64, "2_motionBlur");
+          el.props.setVec2("blurCenter", {0.5f, 0.5f}, 0.0f, 1.0f, "2_motionBlur");
+          el.props.setFloat("manualAngle", 0.0f, 0.0f, 360.0f, "2_motionBlur");
+          el.props.setFloat("manualDirectional", 0.0f, 0.0f, 0.5f, "2_motionBlur");
+          el.props.setFloat("manualZoom", 0.08f, -0.5f, 0.5f, "2_motionBlur");
+          el.props.setFloat("manualSpin", 0.0f, -45.0f, 45.0f, "2_motionBlur");
+          el.props.setFloat("trailDecayMs", 120.0f, 10.0f, 1000.0f, "2_motionBlur");
+          el.props.setString("trailBlend", "Mix", "sel Mix Lighten Screen", "2_motionBlur");
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = "Enable Advanced Motion Blur Controls";
         }
       }
     }

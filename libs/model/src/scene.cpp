@@ -353,10 +353,13 @@ Element createDefaultElement(ElementType type) {
       addBaseElementProperties(el.props, id, iota::core::BlendMode::Add);
       el.props.setString("blendModeContent", "Add", kBlendChoices, "1_appearance");
       el.props.setColorArgb("color", {0, 0, 0, 255}, "crgba", "1_appearance");
-      el.props.setInt("sourceCompositionIndex", 1, 1, 5, "1_appearance");
+      el.props.setInt("sourceCompositionIndex", 1, 0, 5, "1_appearance");
       el.props.setString("MaskImage", "internalres:white", "img internalres:white internalres:vignette80 composition:0", "1_appearance");
-      el.props.setFloat("blurRadius", 1.5f, 0.0f, 3.0f, "2_blur");
+      el.props.setString("blurType", "DualKawase", "sel DualKawase Gaussian Radial Directional", "2_blur");
+      el.props.setFloat("blurRadius", 1.5f, 0.0f, 6.0f, "2_blur");
       el.props.setFloat("blurMultiplier", 4.0f, 1.0f, 6.0f, "2_blur");
+      el.props.setFloat("blurAngle", 0.0f, 0.0f, 360.0f, "2_blur");
+      el.props.setVec2("blurCenter", {0.5f, 0.5f}, 0.0f, 1.0f, "2_blur");
       el.props.setMVar("measureBlurRadius", MVariableFloat{{{"Nothing", 0.5f, 0.5f}}}, "mvarf 0.0 3.0", "2_blur");
       el.props.setBool("showUnblurredContent", true, "1_appearance");
       el.props.setBool("showUnblurredContentUnder", false, "1_appearance");
@@ -391,9 +394,19 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("TargetImage", "composition:1", "img composition:0", "1_appearance");
       el.props.setBool("showUnblurredContent", false, "1_appearance");
       el.props.setBool("showUnblurredContentUnder", false, "1_appearance");
-      el.props.setMVar("blurAmountMultiplier", MVariableFloat::constant2(0.5f, 1.0f), "mvarf 0.0 2.0", "2_motionBlur");
-      el.props.setString("motionSource", "EffectTransform", "_child EffectTransform Manual", "2_motionBlur");
+      el.props.setMVar("blurAmountMultiplier", MVariableFloat::constant2(1.0f, 1.0f), "mvarf 0.0 3.0", "2_motionBlur");
+      el.props.setString("motionSource", "EffectTransform", "_child EffectTransform Manual Temporal Hybrid", "2_motionBlur");
       el.props.setBool("relativeMotionMode", true, "2_motionBlur");
+      el.props.setFloat("shutterAngle", 180.0f, 0.0f, 720.0f, "2_motionBlur");
+      el.props.setFloat("shutterPhase", 0.0f, -0.5f, 0.5f, "2_motionBlur");
+      el.props.setInt("blurSamples", 24, 8, 64, "2_motionBlur");
+      el.props.setVec2("blurCenter", {0.5f, 0.5f}, 0.0f, 1.0f, "2_motionBlur");
+      el.props.setFloat("manualAngle", 0.0f, 0.0f, 360.0f, "2_motionBlur");
+      el.props.setFloat("manualDirectional", 0.0f, 0.0f, 0.5f, "2_motionBlur");
+      el.props.setFloat("manualZoom", 0.08f, -0.5f, 0.5f, "2_motionBlur");
+      el.props.setFloat("manualSpin", 0.0f, -45.0f, 45.0f, "2_motionBlur");
+      el.props.setFloat("trailDecayMs", 120.0f, 10.0f, 1000.0f, "2_motionBlur");
+      el.props.setString("trailBlend", "Mix", "sel Mix Lighten Screen", "2_motionBlur");
       break;
     }
 
