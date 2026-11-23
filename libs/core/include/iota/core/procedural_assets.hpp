@@ -1,0 +1,19 @@
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string_view>
+#include <vector>
+
+namespace iota::core {
+
+struct RgbaImage {
+  int width = 0;
+  int height = 0;
+  std::vector<uint8_t> pixels; // RGBA8 row-major
+};
+
+// Clean-room procedural textures for built-in internalres: identifiers.
+std::optional<RgbaImage> generateInternalResource(std::string_view uri);
+
+} // namespace iota::core

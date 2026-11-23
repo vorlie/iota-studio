@@ -1,0 +1,14 @@
+build/
+out/
+.vs/
+cmake-build-*/
+*.apk
+*.apk.jadx
+*.pdb
+*.ilk
+*.user
+*.suo
+.cache/
+*_layout.ini
+test_template/
+local/
