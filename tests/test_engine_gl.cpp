@@ -933,6 +933,159 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     }
   }
 
+  SUBCASE("Unicode FontAtlasCache: DirectWrite multi-script shaping, RTL Arabic, outlines, shadows, alignment, tracking, and embedded fonts") {
+    constexpr int kW = 480;
+    constexpr int kH = 360;
+    const iota::engine::FrameTiming tm{1.0f / 60.0f, 0.1, 0.1, true, 0.0f, false, 60.0f};
+
+    auto makeTextProject = [&](std::string_view textStr, std::string_view face = "Segoe UI") {
+      iota::model::Project p;
+      p.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      auto txt = iota::model::createDefaultElement(iota::model::ElementType::Text);
+      txt.props.setString("text", textStr, "ptxt", "appearance");
+      txt.props.setString("typeFace", face, "passet", "appearance");
+      txt.props.setInt("fontSize", 72, 8, 120, "appearance");
+      txt.props.setVec2("position", {0.5f, 0.5f}, -1.0f, 1.0f, "0_general");
+      txt.props.setBool("scaleIsUniform", false, "0_general");
+      txt.props.setVec2("scale", {0.9f, 0.45f}, 0.0f, 2.0f, "0_general");
+      txt.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "appearance");
+      comp0.elements.push_back(std::move(txt));
+      p.compositions.push_back(std::move(comp0));
+      return p;
+    };
+
+    auto renderAndRead = [&](const iota::model::Project& p, iota::engine::RenderFrameStats* outSt = nullptr) {
+      REQUIRE(renderer.renderFrame(p, audio, tm, kW, kH, {}, outSt));
+      std::vector<uint8_t> rgba;
+      int rw = 0, rh = 0;
+      REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, rgba, true));
+      REQUIRE(rw == kW);
+      REQUIRE(rh == kH);
+      return rgba;
+    };
+
+    auto measureAboveBg = [&](const std::vector<uint8_t>& rgba, int x0, int x1) {
+      uint64_t sum = 0;
+      for (int y = 0; y < kH; ++y) {
+        for (int x = x0; x < x1; ++x) {
+          const size_t i = static_cast<size_t>((y * kW + x) * 4);
+          sum += static_cast<uint64_t>(std::max(0, static_cast<int>(rgba[i + 0]) - 15));
+          sum += static_cast<uint64_t>(std::max(0, static_cast<int>(rgba[i + 1]) - 15));
+          sum += static_cast<uint64_t>(std::max(0, static_cast<int>(rgba[i + 2]) - 15));
+        }
+      }
+      return sum;
+    };
+
+    // 1. Multi-script non-ASCII rendering (Polish, Cyrillic, Greek, Japanese, Korean, Arabic RTL, Symbols + invalid UTF-8)
+    const std::array<std::pair<const char*, std::string>, 7> scripts = {{
+        {"Polish", "Za\xC5\xBC\xC3\xB3\xC5\x82\xC4\x87 g\xC4\x99\xC5\x9Bl\xC4\x85 ja\xC5\xBA\xC5\x84"},
+        {"Cyrillic", "\xD0\x9C\xD1\x83\xD0\xB7\xD1\x8B\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB2\xD1\x83\xD0\xBA"},
+        {"Greek", "\xCE\x9C\xCE\xBF\xCF\x85\xCF\x83\xCE\xB9\xCE\xBA\xCE\xAE \xCE\x89\xCF\x87\xCE\xBF\xCF\x82"},
+        {"Japanese", "\xE9\x9F\xB3\xE6\xA5\xBD\xE3\x82\xB5\xE3\x82\xA6\xE3\x83\xB3\xE3\x83\x89"},
+        {"Korean", "\xED\x95\x9C\xEA\xB5\xAD\xEC\x96\xB4 \xEC\x9D\x8C\xEC\x95\x85"},
+        {"ArabicRTL", "\xD9\x85\xD9\x88\xD8\xB3\xD9\x8A\xD9\x82\xD9\x89 \xD8\xAC\xD9\x85\xD9\x8A\xD9\x84\xD8\xA9"},
+        {"SymbolsInvalidUtf8", std::string("\xE2\x99\xAA \xE2\x99\xAB \xE2\x98\x85 \xFF\xFE", 13)},
+    }};
+    for (const auto& [label, str] : scripts) {
+      auto p = makeTextProject(str);
+      iota::engine::RenderFrameStats st;
+      const auto rgba = renderAndRead(p, &st);
+      CHECK_MESSAGE(st.fontUsingDirectWrite, "Expected DirectWrite active for: " << label);
+      CHECK_MESSAGE(st.cachedGlyphs > 0, "No glyphs cached for: " << label);
+      CHECK_MESSAGE(measureAboveBg(rgba, 0, kW) > 5000, "Empty output for script: " << label);
+    }
+
+    // 2. Circular Outline & Drop Shadow in single draw call
+    {
+      auto pNoFx = makeTextProject("HDR", "Impact");
+      const auto noFxPx = renderAndRead(pNoFx);
+      auto measureCyanExcess = [&](const std::vector<uint8_t>& buf) {
+        uint64_t sum = 0;
+        for (size_t i = 0; i + 3 < buf.size(); i += 4) {
+          const int r = buf[i + 0];
+          const int g = buf[i + 1];
+          const int b = buf[i + 2];
+          sum += static_cast<uint64_t>(std::max(0, g - r - 12) + std::max(0, b - r - 12));
+        }
+        return sum;
+      };
+      CHECK(measureCyanExcess(noFxPx) < 500);
+
+      auto pOutline = makeTextProject("HDR", "Impact");
+      pOutline.compositions[0].elements[0].props.setFloat("outlineWidth", 6.0f, 0.0f, 12.0f, "2_typography");
+      pOutline.compositions[0].elements[0].props.setColorArgb("outlineColor", {0, 255, 255, 255}, "crgba", "2_typography");
+      const auto outlinePx = renderAndRead(pOutline);
+      CHECK(measureCyanExcess(outlinePx) > 10000);
+
+      auto pShadow = makeTextProject("HDR", "Impact");
+      pShadow.compositions[0].elements[0].props.setVec2("shadowOffset", {12.0f, 12.0f}, -40.0f, 40.0f, "2_typography");
+      pShadow.compositions[0].elements[0].props.setColorArgb("shadowColor", {255, 0, 0, 255}, "crgba", "2_typography");
+      const auto shadowPx = renderAndRead(pShadow);
+      uint64_t redExcess = 0;
+      for (size_t i = 0; i + 3 < shadowPx.size(); i += 4) {
+        redExcess += static_cast<uint64_t>(std::max(0, static_cast<int>(shadowPx[i + 0]) - static_cast<int>(shadowPx[i + 1])));
+      }
+      CHECK(redExcess > 5000);
+    }
+
+    // 3. Left/Right Alignment & Letter Spacing Tracking
+    {
+      auto pLeft = makeTextProject("TEST");
+      pLeft.compositions[0].elements[0].props.setString("textAlign", "Left", "sel Center Left Right", "2_typography");
+      const auto leftPx = renderAndRead(pLeft);
+      CHECK(measureAboveBg(leftPx, 0, kW / 2) > measureAboveBg(leftPx, kW / 2, kW) + 5000);
+
+      auto pRight = makeTextProject("TEST");
+      pRight.compositions[0].elements[0].props.setString("textAlign", "Right", "sel Center Left Right", "2_typography");
+      const auto rightPx = renderAndRead(pRight);
+      CHECK(measureAboveBg(rightPx, kW / 2, kW) > measureAboveBg(rightPx, 0, kW / 2) + 5000);
+
+      auto measureLitWidth = [&](const std::vector<uint8_t>& buf) {
+        int minX = kW, maxX = -1;
+        for (int y = 0; y < kH; ++y) {
+          for (int x = 0; x < kW; ++x) {
+            const size_t i = static_cast<size_t>((y * kW + x) * 4);
+            if (buf[i] > 100 || buf[i + 1] > 100 || buf[i + 2] > 100) {
+              minX = std::min(minX, x);
+              maxX = std::max(maxX, x);
+            }
+          }
+        }
+        return (maxX >= minX) ? (maxX - minX) : 0;
+      };
+
+      auto pTight = makeTextProject("ABCD");
+      pTight.compositions[0].elements[0].props.setFloat("letterSpacing", 0.0f, -10.0f, 40.0f, "2_typography");
+      const int tightSpan = measureLitWidth(renderAndRead(pTight));
+
+      auto pWide = makeTextProject("ABCD");
+      pWide.compositions[0].elements[0].props.setFloat("letterSpacing", 28.0f, -10.0f, 40.0f, "2_typography");
+      const int wideSpan = measureLitWidth(renderAndRead(pWide));
+      CHECK(wideSpan > tightSpan + 20);
+    }
+
+    // 4. Embedded local: Font Loading + Automatic CJK System Font Fallback
+    const std::filesystem::path consolaPath("C:/Windows/Fonts/consola.ttf");
+    if (std::filesystem::exists(consolaPath)) {
+      std::ifstream tf(consolaPath, std::ios::binary | std::ios::ate);
+      REQUIRE(tf.is_open());
+      const auto tsz = tf.tellg();
+      REQUIRE(tsz > 0);
+      std::vector<uint8_t> ttfBytes(static_cast<size_t>(tsz));
+      tf.seekg(0, std::ios::beg);
+      REQUIRE(tf.read(reinterpret_cast<char*>(ttfBytes.data()), tsz));
+
+      auto pLocal = makeTextProject("MONO  \xE9\x9F\xB3\xE6\xA5\xBD", "local:embedded_mono.ttf");
+      pLocal.localAssets["embedded_mono.ttf"] = std::move(ttfBytes);
+      renderer.invalidateLocalAssets();
+      const auto localPx = renderAndRead(pLocal);
+      CHECK(measureAboveBg(localPx, 0, kW / 2) > 1500);
+      CHECK(measureAboveBg(localPx, kW / 2, kW) > 1500);
+    }
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

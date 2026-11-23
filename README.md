@@ -38,8 +38,11 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
   - Per-layer HDR emissive gain (`hdrIntensity` + audio-reactive `measureHdrIntensity` `MVar`) across `Image`, `Bars`, `Particles`, `Text`, `BlurEffect`, `RgbSplitEffect`, and `MotionBlurEffect`.
   - 6-mip Jimenez 2014 energy-conserving **Physical Bloom** pyramid with Karis anti-flicker prefiltering, soft-knee threshold (`bloomThreshold`, `bloomSoftKnee`), `bloomRadius`, optional anamorphic stretch (`bloomAnamorphic`), `bloomTint`, and audio-reactive `measureBloomIntensity`.
   - Filmic **Tonemapping** (`ACES` RRT+ODT, `AgX`, `PBRNeutral`, `Reinhard`, or `None`) with `exposureEv`, `contrast`, `saturation`, `gamma`, `vignette`, 8-bit IGN dithering, and 1-click Composition 0 HDR presets (`Clean SDR`, `ACES Cinema`, `AgX Neon`, `Anamorphic Flare`, `Audio Pulse Bloom`).
+- **Unicode Typography & Dynamic GPU Font Atlas**
+  - DirectWrite-shaped `FontAtlasCache` with automatic multi-script OS font fallback (Latin-Ext, Cyrillic, Greek, Japanese/Chinese CJK, Korean Hangul, Arabic/Hebrew RTL BiDi shaping, and symbol sets) plus safe `U+FFFD` sanitization for malformed UTF-8 sequences.
+  - Dynamic 2048×2048 shelf-packed GPU glyph atlas with quantized resolution buckets, sub-region texture uploads (`updateTexture2DRegion`), custom `.ttf`/`.otf`/`.ttc` and bundled `local:` font loading, single-draw-call circularly dilated outlines & drop shadows, weight/italic/alignment/tracking/line-spacing/word-wrap controls, and 1-click typography presets (`Clean Title`, `Neon Glow`, `Bold Outline`, `Cinema Wide`).
 - **Docking Studio Editor UI**
-  - Multi-panel Dear ImGui workspace featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA, HDR16F/Bloom/Tonemapping toggles), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
+  - Multi-panel Dear ImGui workspace (`IMGUI_USE_WCHAR32` with merged Unicode system UI fonts) featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA, HDR16F/Bloom/Tonemapping toggles), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
   - Inspector supports both slider/drag editing (`Ctrl+Click` for inline typing) and a **Precise Inputs** toggle (`Edit -> Precise Numeric Inputs` or the Inspector checkbox) for exact keyboard entry, plus full snapshot Undo/Redo (`CommandStack`).
 - **Asset Browser & Project Manager**
   - **Assets** panel (`Viewport -> Asset Browser`) with live thumbnail preview header, layer reference usage counts, Grid/List views, category filters (`All`, `Project`, `Audio`, `Comps`, `Built-in`), live search, custom virtual bins, multi-file image import, rename/replace/unused-asset cleanup, and drag-and-drop onto Hierarchy layers or Inspector image/mask fields.
@@ -64,10 +67,10 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 │   ├── dsp/          # Waveform/FFT/DFT analysis, SoundKeys bands, attack/release, frequency smoothing, curve splines
 │   ├── audio/        # Audio decoding (FFmpeg/miniaudio) and miniaudio real-time playback/PCM windows
 │   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (abstract render device/resources)
-│   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi (Rgba8 & Rgba16F render targets + float readback)
-│   ├── engine/       # GPU scene composer, HDR16F Bloom/Tonemapping, 3D Particular ParticleSystem, font atlas, Dual Kawase/Gaussian blur & motion blur
+│   ├── rhi_gl45/     # OpenGL 4.5 implementation of iota_rhi (Rgba8 & Rgba16F render targets, float readback, sub-rect updates)
+│   ├── engine/       # GPU scene composer, HDR16F Bloom/Tonemapping, 3D ParticleSystem, DirectWrite Unicode font atlas, blur & motion blur
 │   └── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
-└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, Unicode/non-UTF-8 IO, and OpenGL 4.5 HDR/Bloom/FX tests)
+└── tests/            # Automated doctest suite (unit, SoundKeys, ParticleSystem, Unicode/non-UTF-8 IO, and OpenGL 4.5 HDR/Bloom/Font tests)
 ```
 
 ## Tech Stack
@@ -75,7 +78,7 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 | Area | Technology |
 |---|---|
 | Language & Build | C++20, CMake 3.24+, Ninja (`CMakePresets.json`), MSVC x64 |
-| UI | Dear ImGui (`v1.93.0-docking`) + GLFW 3.4 |
+| UI & Typography | Dear ImGui (`v1.93.0-docking`, `IMGUI_USE_WCHAR32`), GLFW 3.4, Windows DirectWrite |
 | Graphics | OpenGL 4.5 via `iota_rhi` + GLM 1.0.1 |
 | Audio Playback & Analysis | `miniaudio`, `kissfft` (`float`), custom DFT filterbank |
 | Media & Packaging | `ffmpeg` / `ffprobe` (external CLI in `PATH`), `miniz`, `nlohmann/json`, `stb` |

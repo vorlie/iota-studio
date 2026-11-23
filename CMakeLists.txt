@@ -128,6 +128,7 @@ target_include_directories(imgui_docking PUBLIC
   "${imgui_SOURCE_DIR}"
   "${imgui_SOURCE_DIR}/backends"
 )
+target_compile_definitions(imgui_docking PUBLIC IMGUI_USE_WCHAR32)
 target_link_libraries(imgui_docking PUBLIC glfw opengl32)
 
 add_library(miniaudio_hdr INTERFACE)

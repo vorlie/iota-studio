@@ -277,6 +277,23 @@ void Gl45RenderDevice::updateTexture2D(TextureHandle tex, int width, int height,
   glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void Gl45RenderDevice::updateTexture2DRegion(TextureHandle tex,
+                                             int x,
+                                             int y,
+                                             int width,
+                                             int height,
+                                             const uint8_t* rgbaPixels) {
+  auto it = impl_->textures.find(tex.id);
+  if (it == impl_->textures.end() || !rgbaPixels || width <= 0 || height <= 0 ||
+      x < 0 || y < 0 || x + width > it->second.width || y + height > it->second.height) {
+    return;
+  }
+  glBindTexture(GL_TEXTURE_2D, it->second.glId);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgbaPixels);
+  glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 void Gl45RenderDevice::destroyTexture(TextureHandle tex) {
   auto it = impl_->textures.find(tex.id);
   if (it == impl_->textures.end()) {

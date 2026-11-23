@@ -15,6 +15,7 @@ struct InspectorActions {
   std::string addKeyframeProperty;
   float addKeyframeValue = 0.0f;
   bool requestLocalAssetImport = false;
+  bool requestLocalFontImport = false;
   std::string assetTargetPropName;
   bool showHiddenProperties = false;
   bool preciseNumericInputs = false;

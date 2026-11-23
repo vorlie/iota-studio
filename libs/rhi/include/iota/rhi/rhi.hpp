@@ -80,6 +80,12 @@ class IRenderDevice {
 
   virtual TextureHandle createTexture2D(const TextureDesc& desc, std::string* outError = nullptr) = 0;
   virtual void updateTexture2D(TextureHandle tex, int width, int height, const uint8_t* rgbaPixels) = 0;
+  virtual void updateTexture2DRegion(TextureHandle tex,
+                                     int x,
+                                     int y,
+                                     int width,
+                                     int height,
+                                     const uint8_t* rgbaPixels) = 0;
   virtual void destroyTexture(TextureHandle tex) = 0;
   virtual bool textureSize(TextureHandle tex, int& outW, int& outH) const = 0;
   [[nodiscard]] virtual uint64_t nativeTextureId(TextureHandle tex) const noexcept = 0;

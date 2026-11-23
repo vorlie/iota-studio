@@ -24,6 +24,12 @@ class Gl45RenderDevice final : public IRenderDevice {
 
   TextureHandle createTexture2D(const TextureDesc& desc, std::string* outError = nullptr) override;
   void updateTexture2D(TextureHandle tex, int width, int height, const uint8_t* rgbaPixels) override;
+  void updateTexture2DRegion(TextureHandle tex,
+                             int x,
+                             int y,
+                             int width,
+                             int height,
+                             const uint8_t* rgbaPixels) override;
   void destroyTexture(TextureHandle tex) override;
   bool textureSize(TextureHandle tex, int& outW, int& outH) const override;
   [[nodiscard]] uint64_t nativeTextureId(TextureHandle tex) const noexcept override;

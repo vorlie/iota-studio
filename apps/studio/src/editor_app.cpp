@@ -173,6 +173,33 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
 
   applyStudioTheme();
 
+  {
+    std::filesystem::path winFonts("C:/Windows/Fonts");
+    wchar_t winDir[MAX_PATH]{};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0) {
+      winFonts = std::filesystem::path(winDir) / "Fonts";
+    }
+    const auto primaryFont = winFonts / "segoeui.ttf";
+    if (iota::core::pathExistsNoThrow(primaryFont) &&
+        io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(primaryFont).c_str(), 16.0f) != nullptr) {
+      ImFontConfig mergeCfg;
+      mergeCfg.MergeMode = true;
+      for (const char* cjkName : {"YuGothM.ttc", "msgothic.ttc", "msyh.ttc"}) {
+        const auto cjkPath = winFonts / cjkName;
+        if (iota::core::pathExistsNoThrow(cjkPath)) {
+          io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(cjkPath).c_str(), 16.0f, &mergeCfg);
+          break;
+        }
+      }
+      for (const char* extraName : {"malgun.ttf", "seguisym.ttf"}) {
+        const auto extraPath = winFonts / extraName;
+        if (iota::core::pathExistsNoThrow(extraPath)) {
+          io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(extraPath).c_str(), 16.0f, &mergeCfg);
+        }
+      }
+    }
+  }
+
   if (!ImGui_ImplGlfw_InitForOpenGL(window_, true) ||
       !ImGui_ImplOpenGL3_Init("#version 450")) {
     std::cerr << "Failed to initialize Dear ImGui GLFW/OpenGL3 backends\n";
@@ -1081,6 +1108,80 @@ void EditorApp::drawInspectorPanel() {
           actions.editLabel = "Enable Advanced Motion Blur Controls";
         }
       }
+    } else if (el.type == iota::model::ElementType::Text ||
+               el.type == iota::model::ElementType::StatText ||
+               el.type == iota::model::ElementType::AppLogo) {
+      ImGui::TextDisabled("%s | Cached glyphs: %d",
+                          frameStats_.fontUsingDirectWrite ? "DirectWrite Unicode" : "Fallback Atlas",
+                          frameStats_.cachedGlyphs);
+      auto ensureTextProps = [&]() {
+        const auto defText = iota::model::createDefaultElement(iota::model::ElementType::Text);
+        for (const auto& defItem : defText.props.items()) {
+          if (!el.props.contains(defItem.key)) {
+            el.props.items().push_back(defItem);
+          }
+        }
+      };
+      if (!el.props.contains("outlineWidth")) {
+        if (ImGui::SmallButton("Enable Typography Controls")) {
+          ensureTextProps();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = "Enable Typography Controls";
+        }
+      }
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Presets:");
+      const float maxWrapX = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+      auto applyTextPreset = [&](const char* label, const auto& fn) {
+        const float btnW = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + btnW <= maxWrapX) {
+          ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(label)) {
+          ensureTextProps();
+          fn();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = std::string("Apply Text Preset: ") + label;
+        }
+      };
+      applyTextPreset("Clean Title", [&]() {
+        el.props.setString("fontWeight", "Regular", "sel Default Light Regular SemiBold Bold Black", "2_typography");
+        el.props.setBool("fontItalic", false, "2_typography", "b");
+        el.props.setFloat("letterSpacing", 1.5f, -10.0f, 40.0f, "2_typography");
+        el.props.setFloat("outlineWidth", 0.0f, 0.0f, 12.0f, "2_typography");
+        el.props.setVec2("shadowOffset", {0.0f, 3.0f}, -40.0f, 40.0f, "2_typography");
+        el.props.setColorArgb("shadowColor", {0, 0, 0, 140}, "crgba", "2_typography");
+        el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "appearance");
+      });
+      applyTextPreset("Neon Glow", [&]() {
+        el.props.setString("fontWeight", "Bold", "sel Default Light Regular SemiBold Bold Black", "2_typography");
+        el.props.setFloat("letterSpacing", 2.0f, -10.0f, 40.0f, "2_typography");
+        el.props.setFloat("outlineWidth", 1.5f, 0.0f, 12.0f, "2_typography");
+        el.props.setColorArgb("outlineColor", {0, 220, 255, 220}, "crgba", "2_typography");
+        el.props.setVec2("shadowOffset", {0.0f, 0.0f}, -40.0f, 40.0f, "2_typography");
+        el.props.setColorArgb("color", {220, 250, 255, 255}, "crgba", "appearance");
+        el.props.setFloat("hdrIntensity", 2.6f, 0.0f, 16.0f, "appearance");
+      });
+      applyTextPreset("Bold Outline", [&]() {
+        el.props.setString("fontWeight", "Black", "sel Default Light Regular SemiBold Bold Black", "2_typography");
+        el.props.setFloat("letterSpacing", 0.5f, -10.0f, 40.0f, "2_typography");
+        el.props.setFloat("outlineWidth", 4.0f, 0.0f, 12.0f, "2_typography");
+        el.props.setColorArgb("outlineColor", {10, 10, 15, 255}, "crgba", "2_typography");
+        el.props.setVec2("shadowOffset", {3.0f, 4.0f}, -40.0f, 40.0f, "2_typography");
+        el.props.setColorArgb("shadowColor", {0, 0, 0, 210}, "crgba", "2_typography");
+        el.props.setFloat("hdrIntensity", 1.1f, 0.0f, 16.0f, "appearance");
+      });
+      applyTextPreset("Cinema Wide", [&]() {
+        el.props.setString("fontWeight", "Light", "sel Default Light Regular SemiBold Bold Black", "2_typography");
+        el.props.setFloat("letterSpacing", 8.0f, -10.0f, 40.0f, "2_typography");
+        el.props.setFloat("lineSpacing", 1.25f, 0.6f, 2.5f, "2_typography");
+        el.props.setFloat("outlineWidth", 0.0f, 0.0f, 12.0f, "2_typography");
+        el.props.setVec2("shadowOffset", {0.0f, 2.0f}, -40.0f, 40.0f, "2_typography");
+        el.props.setColorArgb("shadowColor", {0, 0, 0, 160}, "crgba", "2_typography");
+        el.props.setFloat("hdrIntensity", 1.2f, 0.0f, 16.0f, "appearance");
+      });
     }
 
     ImGui::Separator();
@@ -1126,6 +1227,23 @@ void EditorApp::drawInspectorPanel() {
           renderer_.invalidateLocalAssets();
           pushUndoState("Import Local Asset");
           statusBanner_ = "Bundled asset local:" + fname;
+        }
+      }
+    }
+
+    if (actions.requestLocalFontImport && !actions.assetTargetPropName.empty() && window_) {
+      HWND hwnd = glfwGetWin32Window(window_);
+      if (auto chosen = showOpenFileDialog(hwnd,
+                                             L"Import TrueType / OpenType Font",
+                                             L"Fonts (*.ttf;*.otf;*.ttc)\0*.ttf;*.otf;*.ttc\0All Files (*.*)\0*.*\0")) {
+        auto bytes = readAllBytes(*chosen);
+        if (!bytes.empty()) {
+          const std::string fname = iota::core::pathFilenameUtf8(*chosen);
+          project_.localAssets[fname] = std::move(bytes);
+          el.props.setString(actions.assetTargetPropName, "local:" + fname, "passet", "appearance");
+          renderer_.invalidateLocalAssets();
+          pushUndoState("Import Custom Font");
+          statusBanner_ = "Bundled font local:" + fname;
         }
       }
     }

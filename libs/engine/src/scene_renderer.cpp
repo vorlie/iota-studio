@@ -1830,13 +1830,28 @@ struct SceneRenderer::Impl {
       pattern = "{Fps} FPS";
     }
     const std::string resolved = expandTextTokens(pattern, tctx);
-    const float fontSizePx = std::max(10.0f, static_cast<float>(getIntCI(p, "fontSize", 32)) * (static_cast<float>(std::min(width, height)) / 720.0f));
+    const float resScale = static_cast<float>(std::min(width, height)) / 720.0f;
+    const float fontSizePx = std::max(10.0f, static_cast<float>(getIntCI(p, "fontSize", 32)) * resScale);
     const auto col = getColorArgbCI(p, "color", {255, 255, 255, 255});
     const std::string face = getStringCI(p, "typeFace", "internal_2");
 
+    TextStyle style;
+    style.weight = fontWeightFromString(getStringCI(p, "fontWeight", "Default"));
+    style.italic = getBoolCI(p, "fontItalic", false);
+    style.alignment = textAlignmentFromString(getStringCI(p, "textAlign", "Center"));
+    style.wordWrap = getBoolCI(p, "wordWrap", false);
+    style.letterSpacingPx = getFloatCI(p, "letterSpacing", 0.0f) * resScale;
+    style.lineSpacing = std::clamp(getFloatCI(p, "lineSpacing", 1.0f), 0.5f, 3.0f);
+    style.outlineWidthPx = std::max(0.0f, getFloatCI(p, "outlineWidth", 0.0f)) * resScale;
+    style.outlineColor = getColorArgbCI(p, "outlineColor", {0, 0, 0, 255});
+    const auto shOff = p.getVec2("shadowOffset", {0.0f, 0.0f});
+    style.shadowOffsetPx = {shOff.x * resScale, shOff.y * resScale};
+    style.shadowColor = getColorArgbCI(p, "shadowColor", {0, 0, 0, 180});
+    style.localAssets = &project.localAssets;
+
     scratchVerts.clear();
     scratchIndices.clear();
-    const auto tex = fontCache.buildTextQuads(face, resolved, fontSizePx, rect, col, scratchVerts, scratchIndices);
+    const auto tex = fontCache.buildTextQuads(face, resolved, fontSizePx, rect, col, style, scratchVerts, scratchIndices);
     if (tex && !scratchVerticesEmpty()) {
       const auto blend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "PreMulAlpha"));
       device->setBlendMode(blend);
@@ -2456,6 +2471,7 @@ void SceneRenderer::invalidateLocalAssets() {
     impl_->device->destroyTexture(t);
   }
   impl_->localTexCache.clear();
+  impl_->fontCache.invalidateCustomFonts();
 }
 
 AssetThumbnail SceneRenderer::resolveAssetPreview(const iota::model::Project& project,
@@ -2802,6 +2818,12 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     impl_->activeFinalRt = dstRt;
   } else {
     impl_->activeFinalRt = comp0Rt;
+  }
+
+  if (outStats) {
+    const auto fStats = impl_->fontCache.stats();
+    outStats->cachedGlyphs = fStats.cachedGlyphs;
+    outStats->fontUsingDirectWrite = fStats.usingDirectWrite;
   }
 
   impl_->device->bindRenderTarget({}, 0, 0);

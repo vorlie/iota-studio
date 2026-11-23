@@ -411,8 +411,18 @@ Element createDefaultElement(ElementType type) {
       el.props.setInt("fontSize", 32, 8, 100, "appearance");
       el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "appearance");
       el.props.setString("typeFace", "internal_2",
-                         "passet internal_0:2131230884 internal_1:2131230885 internal_2:2131230886 internal_3:2131230887",
+                         "passet internal_0:2131230884 internal_1:2131230885 internal_2:2131230886 internal_3:2131230887 internal_4 internal_5 internal_8 Segoe_UI Bahnschrift Impact Consolas Georgia",
                          "appearance");
+      el.props.setString("fontWeight", "Default", "sel Default Light Regular SemiBold Bold Black", "2_typography");
+      el.props.setBool("fontItalic", false, "2_typography", "b");
+      el.props.setString("textAlign", "Center", "sel Center Left Right", "2_typography");
+      el.props.setBool("wordWrap", false, "2_typography", "b");
+      el.props.setFloat("letterSpacing", 0.0f, -10.0f, 40.0f, "2_typography");
+      el.props.setFloat("lineSpacing", 1.0f, 0.6f, 2.5f, "2_typography");
+      el.props.setFloat("outlineWidth", 0.0f, 0.0f, 12.0f, "2_typography");
+      el.props.setColorArgb("outlineColor", {0, 0, 0, 255}, "crgba", "2_typography");
+      el.props.setVec2("shadowOffset", {0.0f, 0.0f}, -40.0f, 40.0f, "2_typography");
+      el.props.setColorArgb("shadowColor", {0, 0, 0, 180}, "crgba", "2_typography");
       break;
     }
 

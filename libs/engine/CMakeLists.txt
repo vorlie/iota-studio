@@ -21,4 +21,8 @@ target_link_libraries(iota_engine
     stb_hdr
 )
 
+if(WIN32)
+  target_link_libraries(iota_engine PRIVATE dwrite)
+endif()
+
 iota_configure_target(iota_engine)

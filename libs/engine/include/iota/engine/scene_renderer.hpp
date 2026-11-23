@@ -47,6 +47,8 @@ struct RenderFrameStats {
   float soundKeysPeak = 0.0f;
   int activeParticles = 0;
   int activeAuxParticles = 0;
+  int cachedGlyphs = 0;
+  bool fontUsingDirectWrite = false;
   bool hdrPipelineActive = false;
   bool bloomActive = false;
   std::string lastError;

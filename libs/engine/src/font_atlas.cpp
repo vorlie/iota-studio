@@ -2,6 +2,11 @@
 
 #include "iota/core/utf8_path.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <dwrite_3.h>
+#endif
+
 #ifdef _MSC_VER
 #pragma warning(push, 0)
 #endif
@@ -11,20 +16,33 @@
 #pragma warning(pop)
 #endif
 
-#include <windows.h>
-
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace iota::engine {
 
 namespace {
+
+bool asciiEqualsIgnoreCase(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
 
 std::string formatMinutesSeconds(double sec) {
   const int total = std::max(0, static_cast<int>(std::floor(sec)));
@@ -57,52 +75,280 @@ std::vector<uint8_t> readFileBytes(const std::filesystem::path& p) {
   }
   std::vector<uint8_t> bytes(static_cast<size_t>(sz));
   f.seekg(0, std::ios::beg);
-  f.read(reinterpret_cast<char*>(bytes.data()), sz);
+  if (!f.read(reinterpret_cast<char*>(bytes.data()), sz)) {
+    return {};
+  }
   return bytes;
 }
 
-std::vector<std::filesystem::path> candidateFontPaths(std::string_view typeFaceKey) {
-  std::filesystem::path winFonts("C:/Windows/Fonts");
-  wchar_t winDir[MAX_PATH]{};
-  if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0) {
-    winFonts = std::filesystem::path(winDir) / "Fonts";
+uint16_t quantizeFontBucketPx(float fontSizePx) noexcept {
+  constexpr std::array<uint16_t, 7> kBuckets = {16, 24, 32, 48, 64, 96, 128};
+  const float clamped = std::clamp(fontSizePx, 12.0f, 128.0f);
+  for (uint16_t b : kBuckets) {
+    if (static_cast<float>(b) >= clamped - 0.5f) {
+      return b;
+    }
+  }
+  return kBuckets.back();
+}
+
+uint32_t packPremultipliedAbgr(iota::core::ColorRgba color) noexcept {
+  iota::core::ColorRgba premul = color;
+  premul.r = static_cast<uint8_t>((static_cast<uint32_t>(color.r) * color.a) / 255u);
+  premul.g = static_cast<uint8_t>((static_cast<uint32_t>(color.g) * color.a) / 255u);
+  premul.b = static_cast<uint8_t>((static_cast<uint32_t>(color.b) * color.a) / 255u);
+  return premul.toPackedAbgrU32();
+}
+
+struct GlyphKey {
+  uintptr_t fontFaceKey = 0;
+  uint32_t glyphIndex = 0;
+  uint16_t sizeBucketPx = 48;
+  uint8_t outlinePx = 0;
+  bool operator==(const GlyphKey&) const noexcept = default;
+};
+
+struct GlyphKeyHash {
+  size_t operator()(const GlyphKey& k) const noexcept {
+    size_t h = std::hash<uintptr_t>{}(k.fontFaceKey);
+    h ^= std::hash<uint32_t>{}(k.glyphIndex) + 0x9e3779b9u + (h << 6) + (h >> 2);
+    const uint32_t packed = (static_cast<uint32_t>(k.sizeBucketPx) << 8) | k.outlinePx;
+    h ^= std::hash<uint32_t>{}(packed) + 0x9e3779b9u + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+struct CachedGlyph {
+  bool visible = false;
+  float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
+  int offsetX = 0;
+  int offsetY = 0;
+  int width = 0;
+  int height = 0;
+};
+
+struct AtlasShelf {
+  int y = 0;
+  int height = 0;
+  int cursorX = 0;
+};
+
+#ifdef _WIN32
+
+template <typename T>
+class ComPtr {
+ public:
+  ComPtr() noexcept = default;
+  ~ComPtr() { reset(); }
+
+  ComPtr(const ComPtr& other) noexcept : ptr_(other.ptr_) {
+    if (ptr_) ptr_->AddRef();
+  }
+  ComPtr(ComPtr&& other) noexcept : ptr_(other.ptr_) { other.ptr_ = nullptr; }
+
+  ComPtr& operator=(const ComPtr& other) noexcept {
+    if (this != &other) {
+      reset();
+      ptr_ = other.ptr_;
+      if (ptr_) ptr_->AddRef();
+    }
+    return *this;
+  }
+  ComPtr& operator=(ComPtr&& other) noexcept {
+    if (this != &other) {
+      reset();
+      ptr_ = other.ptr_;
+      other.ptr_ = nullptr;
+    }
+    return *this;
   }
 
-  std::vector<const char*> names;
-  if (typeFaceKey == "internal_0") {
-    names = {"segoesc.ttf", "gabriola.ttf", "segoeuii.ttf", "georgiai.ttf"};
-  } else if (typeFaceKey == "internal_1") {
-    names = {"consola.ttf", "cour.ttf", "lucon.ttf"};
-  } else if (typeFaceKey == "internal_2") {
-    names = {"segoeuib.ttf", "trebucbd.ttf", "bahnschrift.ttf", "arialbd.ttf"};
-  } else if (typeFaceKey == "internal_3") {
-    names = {"segoeuil.ttf", "calibril.ttf", "segoeui.ttf"};
-  } else if (typeFaceKey == "internal_4" || typeFaceKey == "internal_6") {
-    names = {"impact.ttf", "arialbd.ttf", "segoeuib.ttf"};
-  } else if (typeFaceKey == "internal_5" || typeFaceKey == "internal_7") {
-    names = {"bahnschrift.ttf", "verdanab.ttf", "trebuc.ttf"};
-  } else if (typeFaceKey == "internal_8") {
-    names = {"georgia.ttf", "times.ttf"};
-  } else {
-    names = {"segoeui.ttf", "arial.ttf"};
+  void attach(T* p) noexcept {
+    reset();
+    ptr_ = p;
   }
 
-  std::vector<std::filesystem::path> out;
-  for (const char* n : names) {
-    out.push_back(winFonts / n);
+  void reset() noexcept {
+    if (ptr_) {
+      ptr_->Release();
+      ptr_ = nullptr;
+    }
   }
-  out.push_back(winFonts / "segoeui.ttf");
-  out.push_back(winFonts / "arial.ttf");
-  out.push_back(winFonts / "tahoma.ttf");
+
+  T* get() const noexcept { return ptr_; }
+  T* operator->() const noexcept { return ptr_; }
+  T** put() noexcept {
+    reset();
+    return &ptr_;
+  }
+  explicit operator bool() const noexcept { return ptr_ != nullptr; }
+
+ private:
+  T* ptr_ = nullptr;
+};
+
+std::wstring utf8ToWide(std::string_view utf8) {
+  const std::string clean = iota::core::sanitizeUtf8(utf8);
+  if (clean.empty()) {
+    return {};
+  }
+  const int needed = MultiByteToWideChar(
+      CP_UTF8, 0, clean.data(), static_cast<int>(clean.size()), nullptr, 0);
+  if (needed <= 0) {
+    return {};
+  }
+  std::wstring out(static_cast<size_t>(needed), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, clean.data(), static_cast<int>(clean.size()), out.data(), needed);
   return out;
 }
 
-// Ultra-compact fallback 5x7 glyph bitmap rows (ASCII 32..126) used only if no OS TTF is found.
+DWRITE_FONT_WEIGHT toDWriteWeight(FontWeight w, DWRITE_FONT_WEIGHT fallbackDefault) noexcept {
+  switch (w) {
+    case FontWeight::Light: return DWRITE_FONT_WEIGHT_LIGHT;
+    case FontWeight::Regular: return DWRITE_FONT_WEIGHT_REGULAR;
+    case FontWeight::SemiBold: return DWRITE_FONT_WEIGHT_SEMI_BOLD;
+    case FontWeight::Bold: return DWRITE_FONT_WEIGHT_BOLD;
+    case FontWeight::Black: return DWRITE_FONT_WEIGHT_BLACK;
+    case FontWeight::Default:
+    default: return fallbackDefault;
+  }
+}
+
+struct FamilyPresetSpec {
+  std::wstring familyName;
+  DWRITE_FONT_WEIGHT defaultWeight = DWRITE_FONT_WEIGHT_REGULAR;
+};
+
+FamilyPresetSpec resolveSystemFamilyPreset(std::string_view key) {
+  if (key.empty() || key == "internal_2") return {L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD};
+  if (key == "internal_0") return {L"Segoe Script", DWRITE_FONT_WEIGHT_NORMAL};
+  if (key == "internal_1") return {L"Consolas", DWRITE_FONT_WEIGHT_NORMAL};
+  if (key == "internal_3") return {L"Segoe UI", DWRITE_FONT_WEIGHT_LIGHT};
+  if (key == "internal_4" || key == "internal_6") return {L"Impact", DWRITE_FONT_WEIGHT_NORMAL};
+  if (key == "internal_5" || key == "internal_7") return {L"Bahnschrift", DWRITE_FONT_WEIGHT_SEMI_BOLD};
+  if (key == "internal_8") return {L"Georgia", DWRITE_FONT_WEIGHT_NORMAL};
+  return {utf8ToWide(key), DWRITE_FONT_WEIGHT_REGULAR};
+}
+
+struct ShapedGlyph {
+  IDWriteFontFace* face = nullptr;
+  uint16_t glyphIndex = 0;
+  float x = 0.0f;
+  float y = 0.0f;
+};
+
+class ShapingCollector final : public IDWriteTextRenderer {
+ public:
+  explicit ShapingCollector(std::vector<ShapedGlyph>& outGlyphs,
+                            std::unordered_map<uintptr_t, ComPtr<IDWriteFontFace>>& pinnedFaces) noexcept
+      : out_(outGlyphs), pinned_(pinnedFaces) {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == __uuidof(IUnknown) ||
+        riid == __uuidof(IDWritePixelSnapping) ||
+        riid == __uuidof(IDWriteTextRenderer)) {
+      *ppv = static_cast<IDWriteTextRenderer*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+  ULONG STDMETHODCALLTYPE Release() override { return 1; }
+
+  HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* isDisabled) override {
+    if (!isDisabled) return E_INVALIDARG;
+    *isDisabled = TRUE;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* transform) override {
+    if (!transform) return E_INVALIDARG;
+    transform->m11 = 1.0f;
+    transform->m12 = 0.0f;
+    transform->m21 = 0.0f;
+    transform->m22 = 1.0f;
+    transform->dx = 0.0f;
+    transform->dy = 0.0f;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* pixelsPerDip) override {
+    if (!pixelsPerDip) return E_INVALIDARG;
+    *pixelsPerDip = 1.0f;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*,
+                                         FLOAT baselineOriginX,
+                                         FLOAT baselineOriginY,
+                                         DWRITE_MEASURING_MODE,
+                                         DWRITE_GLYPH_RUN const* glyphRun,
+                                         DWRITE_GLYPH_RUN_DESCRIPTION const*,
+                                         IUnknown*) override {
+    if (!glyphRun || !glyphRun->fontFace || glyphRun->glyphCount == 0 || !glyphRun->glyphIndices) {
+      return S_OK;
+    }
+
+    const uintptr_t faceKey = reinterpret_cast<uintptr_t>(glyphRun->fontFace);
+    if (pinned_.find(faceKey) == pinned_.end()) {
+      glyphRun->fontFace->AddRef();
+      ComPtr<IDWriteFontFace> holder;
+      holder.attach(glyphRun->fontFace);
+      pinned_.emplace(faceKey, std::move(holder));
+    }
+
+    const bool rtl = (glyphRun->bidiLevel & 1u) != 0u;
+    float penX = baselineOriginX;
+    for (UINT32 i = 0; i < glyphRun->glyphCount; ++i) {
+      const float adv = glyphRun->glyphAdvances ? glyphRun->glyphAdvances[i] : 0.0f;
+      const float advOff = glyphRun->glyphOffsets ? glyphRun->glyphOffsets[i].advanceOffset : 0.0f;
+      const float ascOff = glyphRun->glyphOffsets ? glyphRun->glyphOffsets[i].ascenderOffset : 0.0f;
+
+      float gx = penX;
+      if (rtl) {
+        penX -= adv;
+        gx = penX - advOff;
+      } else {
+        gx = penX + advOff;
+        penX += adv;
+      }
+      const float gy = baselineOriginY - ascOff;
+      out_.push_back({glyphRun->fontFace, glyphRun->glyphIndices[i], gx, gy});
+    }
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, DWRITE_UNDERLINE const*, IUnknown*) override {
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, DWRITE_STRIKETHROUGH const*, IUnknown*) override {
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT, IDWriteInlineObject*, BOOL, BOOL, IUnknown*) override {
+    return S_OK;
+  }
+
+ private:
+  std::vector<ShapedGlyph>& out_;
+  std::unordered_map<uintptr_t, ComPtr<IDWriteFontFace>>& pinned_;
+};
+
+struct CustomFontCollectionEntry {
+  ComPtr<IDWriteFontCollection1> collection;
+  std::wstring familyName;
+};
+
+#endif
+
+// Compact fallback 5x7 glyph bitmap atlas (ASCII 32..126) used only if DirectWrite is unavailable.
 std::vector<uint8_t> buildFallbackBitmapAtlas(int& outW, int& outH) {
   outW = 256;
   outH = 128;
   std::vector<uint8_t> rgba(static_cast<size_t>(outW * outH * 4), 0);
-  // Fill readable minimal block glyphs centered per 16x16 cell so text remains visible cleanly.
   for (int c = 32; c < 127; ++c) {
     const int idx = c - 32;
     const int col = idx % 16;
@@ -127,16 +373,22 @@ std::vector<uint8_t> buildFallbackBitmapAtlas(int& outW, int& outH) {
   return rgba;
 }
 
-struct CachedFontAtlas {
-  iota::rhi::TextureHandle texture{};
-  int atlasW = 512;
-  int atlasH = 512;
-  float bakePixelHeight = 48.0f;
-  bool usingTtf = false;
-  std::array<stbtt_bakedchar, 96> bakedChars{};
-};
-
 }  // namespace
+
+TextAlignment textAlignmentFromString(std::string_view s) noexcept {
+  if (asciiEqualsIgnoreCase(s, "Left")) return TextAlignment::Left;
+  if (asciiEqualsIgnoreCase(s, "Right")) return TextAlignment::Right;
+  return TextAlignment::Center;
+}
+
+FontWeight fontWeightFromString(std::string_view s) noexcept {
+  if (asciiEqualsIgnoreCase(s, "Light")) return FontWeight::Light;
+  if (asciiEqualsIgnoreCase(s, "Regular") || asciiEqualsIgnoreCase(s, "Normal")) return FontWeight::Regular;
+  if (asciiEqualsIgnoreCase(s, "SemiBold")) return FontWeight::SemiBold;
+  if (asciiEqualsIgnoreCase(s, "Bold")) return FontWeight::Bold;
+  if (asciiEqualsIgnoreCase(s, "Black")) return FontWeight::Black;
+  return FontWeight::Default;
+}
 
 std::string expandTextTokens(std::string_view pattern, const TextTokenContext& ctx) {
   std::string out(pattern);
@@ -183,82 +435,480 @@ std::string expandTextTokens(std::string_view pattern, const TextTokenContext& c
 }
 
 struct FontAtlasCache::Impl {
+  static constexpr int kAtlasSize = 2048;
+
   iota::rhi::IRenderDevice* device = nullptr;
-  std::unordered_map<std::string, CachedFontAtlas> fonts;
+  iota::rhi::TextureHandle atlasTex{};
+  int atlasW = kAtlasSize;
+  int atlasH = kAtlasSize;
+  int nextShelfY = 1;
+  int atlasResets = 0;
+  std::vector<AtlasShelf> shelves;
+  std::unordered_map<GlyphKey, CachedGlyph, GlyphKeyHash> glyphCache;
 
-  CachedFontAtlas& getOrCreate(std::string_view typeFaceKey) {
-    std::string key(typeFaceKey.empty() ? "internal_2" : typeFaceKey);
-    auto it = fonts.find(key);
-    if (it != fonts.end()) {
-      return it->second;
+  // Scratch buffers reused across glyphs
+  std::vector<uint8_t> rgbScratch;
+  std::vector<uint8_t> alphaScratch;
+  std::vector<uint8_t> dilatedScratch;
+  std::vector<uint8_t> rgbaScratch;
+
+#ifdef _WIN32
+  bool dwriteInitAttempted = false;
+  bool dwriteReady = false;
+  ComPtr<IDWriteFactory> dwFactory;
+  ComPtr<IDWriteFactory2> dwFactory2;
+  ComPtr<IDWriteFactory3> dwFactory3;
+  ComPtr<IDWriteFactory5> dwFactory5;
+  ComPtr<IDWriteFontFallback> systemFallback;
+  ComPtr<IDWriteInMemoryFontFileLoader> inMemoryLoader;
+  std::unordered_map<std::string, CustomFontCollectionEntry> customFonts;
+  std::unordered_map<uintptr_t, ComPtr<IDWriteFontFace>> pinnedFontFaces;
+  std::vector<ShapedGlyph> scratchShaped;
+#endif
+
+  iota::rhi::TextureHandle fallbackTex{};
+  int fallbackW = 256;
+  int fallbackH = 128;
+
+#ifdef _WIN32
+  void initDirectWrite() {
+    if (dwriteInitAttempted) return;
+    dwriteInitAttempted = true;
+
+    HRESULT hr = DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED,
+        __uuidof(IDWriteFactory),
+        reinterpret_cast<IUnknown**>(dwFactory.put()));
+    if (FAILED(hr) || !dwFactory) {
+      return;
     }
 
-    CachedFontAtlas atlas;
-    if (!device) {
-      return fonts.emplace(std::move(key), atlas).first->second;
+    dwFactory->QueryInterface(__uuidof(IDWriteFactory2), reinterpret_cast<void**>(dwFactory2.put()));
+    if (dwFactory2) {
+      dwFactory2->GetSystemFontFallback(systemFallback.put());
     }
-
-    std::vector<uint8_t> ttfBytes;
-    for (const auto& candidate : candidateFontPaths(key)) {
-      if (iota::core::pathExistsNoThrow(candidate)) {
-        ttfBytes = readFileBytes(candidate);
-        if (!ttfBytes.empty()) {
-          break;
+    dwFactory->QueryInterface(__uuidof(IDWriteFactory3), reinterpret_cast<void**>(dwFactory3.put()));
+    dwFactory->QueryInterface(__uuidof(IDWriteFactory5), reinterpret_cast<void**>(dwFactory5.put()));
+    if (dwFactory5) {
+      if (SUCCEEDED(dwFactory5->CreateInMemoryFontFileLoader(inMemoryLoader.put())) && inMemoryLoader) {
+        if (FAILED(dwFactory->RegisterFontFileLoader(inMemoryLoader.get()))) {
+          inMemoryLoader.reset();
         }
       }
     }
+    dwriteReady = true;
+  }
 
-    if (!ttfBytes.empty()) {
-      atlas.atlasW = 512;
-      atlas.atlasH = 512;
-      atlas.bakePixelHeight = 46.0f;
-      std::vector<uint8_t> alphaBitmap(static_cast<size_t>(atlas.atlasW * atlas.atlasH), 0);
-      const int res = stbtt_BakeFontBitmap(ttfBytes.data(),
-                                           0,
-                                           atlas.bakePixelHeight,
-                                           alphaBitmap.data(),
-                                           atlas.atlasW,
-                                           atlas.atlasH,
-                                           32,
-                                           95,
-                                           atlas.bakedChars.data());
-      if (res > 0) {
-        atlas.usingTtf = true;
-        std::vector<uint8_t> rgba(static_cast<size_t>(atlas.atlasW * atlas.atlasH * 4));
-        for (size_t i = 0; i < alphaBitmap.size(); ++i) {
-          const uint8_t a = alphaBitmap[i];
-          // Premultiplied white coverage avoids bright/dark fringe regardless of PreMulAlpha blend
-          rgba[i * 4 + 0] = a;
-          rgba[i * 4 + 1] = a;
-          rgba[i * 4 + 2] = a;
-          rgba[i * 4 + 3] = a;
-        }
-        iota::rhi::TextureDesc td;
-        td.width = atlas.atlasW;
-        td.height = atlas.atlasH;
-        td.rgbaPixels = rgba.data();
-        td.filter = iota::rhi::TextureFilter::Linear;
-        td.wrap = iota::rhi::TextureWrap::ClampToEdge;
-        atlas.texture = device->createTexture2D(td);
+  void shutdownDirectWrite() {
+    pinnedFontFaces.clear();
+    customFonts.clear();
+    if (dwFactory && inMemoryLoader) {
+      dwFactory->UnregisterFontFileLoader(inMemoryLoader.get());
+    }
+    inMemoryLoader.reset();
+    systemFallback.reset();
+    dwFactory5.reset();
+    dwFactory3.reset();
+    dwFactory2.reset();
+    dwFactory.reset();
+    dwriteInitAttempted = false;
+    dwriteReady = false;
+  }
+#endif
+
+  bool ensureAtlasTexture() {
+    if (!device) return false;
+    if (atlasTex) return true;
+
+    std::vector<uint8_t> zeros(static_cast<size_t>(kAtlasSize) * kAtlasSize * 4u, 0);
+    iota::rhi::TextureDesc td;
+    td.width = kAtlasSize;
+    td.height = kAtlasSize;
+    td.rgbaPixels = zeros.data();
+    td.filter = iota::rhi::TextureFilter::Linear;
+    td.wrap = iota::rhi::TextureWrap::ClampToEdge;
+    atlasTex = device->createTexture2D(td);
+    atlasW = kAtlasSize;
+    atlasH = kAtlasSize;
+    nextShelfY = 1;
+    shelves.clear();
+    return static_cast<bool>(atlasTex);
+  }
+
+  void resetAtlas() {
+    glyphCache.clear();
+    shelves.clear();
+    nextShelfY = 1;
+#ifdef _WIN32
+    pinnedFontFaces.clear();
+#endif
+    ++atlasResets;
+    if (device && atlasTex) {
+      std::vector<uint8_t> zeros(static_cast<size_t>(atlasW) * atlasH * 4u, 0);
+      device->updateTexture2D(atlasTex, atlasW, atlasH, zeros.data());
+    }
+  }
+
+  bool packRect(int w, int h, int& outX, int& outY) {
+    if (!ensureAtlasTexture()) return false;
+    const int pw = w + 2;
+    const int ph = h + 2;
+    if (pw > atlasW - 2 || ph > atlasH - 2) {
+      return false;
+    }
+
+    for (auto& shelf : shelves) {
+      if (shelf.height >= ph && shelf.height <= ph + 24 && shelf.cursorX + pw <= atlasW - 1) {
+        outX = shelf.cursorX + 1;
+        outY = shelf.y + 1;
+        shelf.cursorX += pw;
+        return true;
       }
     }
 
-    if (!atlas.texture) {
-      int fw = 0, fh = 0;
-      auto fallbackRgba = buildFallbackBitmapAtlas(fw, fh);
-      atlas.atlasW = fw;
-      atlas.atlasH = fh;
-      atlas.usingTtf = false;
+    if (nextShelfY + ph <= atlasH - 1) {
+      shelves.push_back(AtlasShelf{nextShelfY, ph, 1 + pw});
+      outX = 2;
+      outY = nextShelfY + 1;
+      nextShelfY += ph;
+      return true;
+    }
+    return false;
+  }
+
+#ifdef _WIN32
+  void resolveCustomCollection(std::string_view typeFaceKey,
+                               const TextStyle& style,
+                               std::wstring& outFamily,
+                               IDWriteFontCollection*& outCollection) {
+    outCollection = nullptr;
+    if (typeFaceKey.empty()) {
+      return;
+    }
+
+    const bool isLocalUri = (typeFaceKey.rfind("local:", 0) == 0);
+    const std::filesystem::path diskPath =
+        isLocalUri ? std::filesystem::path() : iota::core::pathFromUtf8(typeFaceKey);
+    const bool isDiskFont = !isLocalUri && iota::core::pathExistsNoThrow(diskPath);
+    if (!isLocalUri && !isDiskFont) {
+      return;
+    }
+
+    std::string cacheKey(typeFaceKey);
+    auto it = customFonts.find(cacheKey);
+    if (it != customFonts.end() && it->second.collection) {
+      outFamily = it->second.familyName;
+      outCollection = it->second.collection.get();
+      return;
+    }
+
+    if (!dwFactory3 || !dwFactory5 || !inMemoryLoader) {
+      return;
+    }
+
+    std::vector<uint8_t> bytes;
+    if (isLocalUri && style.localAssets) {
+      const std::string assetName(typeFaceKey.substr(6));
+      if (auto mapIt = style.localAssets->find(assetName); mapIt != style.localAssets->end()) {
+        bytes = mapIt->second;
+      }
+    } else if (isDiskFont) {
+      bytes = readFileBytes(diskPath);
+    }
+    if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<UINT32>::max())) {
+      return;
+    }
+
+    ComPtr<IDWriteFontFile> fontFile;
+    if (FAILED(inMemoryLoader->CreateInMemoryFontFileReference(
+            dwFactory.get(), bytes.data(), static_cast<UINT32>(bytes.size()), nullptr, fontFile.put())) ||
+        !fontFile) {
+      return;
+    }
+
+    ComPtr<IDWriteFontSetBuilder1> builder;
+    if (FAILED(dwFactory5->CreateFontSetBuilder(builder.put())) || !builder) {
+      return;
+    }
+    if (FAILED(builder->AddFontFile(fontFile.get()))) {
+      return;
+    }
+    ComPtr<IDWriteFontSet> fontSet;
+    if (FAILED(builder->CreateFontSet(fontSet.put())) || !fontSet) {
+      return;
+    }
+    ComPtr<IDWriteFontCollection1> collection;
+    if (FAILED(dwFactory3->CreateFontCollectionFromFontSet(fontSet.get(), collection.put())) || !collection) {
+      return;
+    }
+
+    std::wstring familyName;
+    if (collection->GetFontFamilyCount() > 0) {
+      ComPtr<IDWriteFontFamily> fam;
+      if (SUCCEEDED(collection->GetFontFamily(0, fam.put())) && fam) {
+        ComPtr<IDWriteLocalizedStrings> names;
+        if (SUCCEEDED(fam->GetFamilyNames(names.put())) && names && names->GetCount() > 0) {
+          UINT32 nameLen = 0;
+          if (SUCCEEDED(names->GetStringLength(0, &nameLen)) && nameLen > 0) {
+            std::wstring wname(nameLen + 1, L'\0');
+            if (SUCCEEDED(names->GetString(0, wname.data(), nameLen + 1))) {
+              wname.resize(nameLen);
+              familyName = std::move(wname);
+            }
+          }
+        }
+      }
+    }
+    if (familyName.empty()) {
+      return;
+    }
+
+    CustomFontCollectionEntry entry{std::move(collection), familyName};
+    outFamily = entry.familyName;
+    outCollection = entry.collection.get();
+    customFonts.emplace(std::move(cacheKey), std::move(entry));
+  }
+
+  bool ensureGlyph(IDWriteFontFace* face,
+                   uint16_t glyphIndex,
+                   uint16_t sizeBucketPx,
+                   uint8_t outlinePx,
+                   bool& outResetOccurred) {
+    if (!face) return false;
+    const uintptr_t faceKey = reinterpret_cast<uintptr_t>(face);
+    if (pinnedFontFaces.find(faceKey) == pinnedFontFaces.end()) {
+      face->AddRef();
+      ComPtr<IDWriteFontFace> holder;
+      holder.attach(face);
+      pinnedFontFaces.emplace(faceKey, std::move(holder));
+    }
+    const GlyphKey key{faceKey, glyphIndex, sizeBucketPx, outlinePx};
+    if (glyphCache.find(key) != glyphCache.end()) {
+      return true;
+    }
+
+    DWRITE_GLYPH_RUN run{};
+    run.fontFace = face;
+    run.fontEmSize = static_cast<FLOAT>(sizeBucketPx);
+    run.glyphCount = 1;
+    run.glyphIndices = &glyphIndex;
+
+    ComPtr<IDWriteGlyphRunAnalysis> analysis;
+    const HRESULT hr = dwFactory->CreateGlyphRunAnalysis(
+        &run,
+        1.0f,
+        nullptr,
+        DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+        DWRITE_MEASURING_MODE_NATURAL,
+        0.0f,
+        0.0f,
+        analysis.put());
+    if (FAILED(hr) || !analysis) {
+      glyphCache.emplace(key, CachedGlyph{false});
+      return true;
+    }
+
+    RECT rc{};
+    DWRITE_TEXTURE_TYPE texType = DWRITE_TEXTURE_CLEARTYPE_3x1;
+    if (FAILED(analysis->GetAlphaTextureBounds(texType, &rc)) ||
+        rc.right <= rc.left || rc.bottom <= rc.top) {
+      texType = DWRITE_TEXTURE_ALIASED_1x1;
+      if (FAILED(analysis->GetAlphaTextureBounds(texType, &rc)) ||
+          rc.right <= rc.left || rc.bottom <= rc.top) {
+        glyphCache.emplace(key, CachedGlyph{false});
+        return true;
+      }
+    }
+
+    const int gw = static_cast<int>(rc.right - rc.left);
+    const int gh = static_cast<int>(rc.bottom - rc.top);
+    const size_t pixelCount = static_cast<size_t>(gw) * static_cast<size_t>(gh);
+    alphaScratch.resize(pixelCount);
+
+    if (texType == DWRITE_TEXTURE_CLEARTYPE_3x1) {
+      rgbScratch.resize(pixelCount * 3u);
+      if (FAILED(analysis->CreateAlphaTexture(texType, &rc, rgbScratch.data(),
+                                              static_cast<UINT32>(rgbScratch.size())))) {
+        glyphCache.emplace(key, CachedGlyph{false});
+        return true;
+      }
+      for (size_t i = 0; i < pixelCount; ++i) {
+        const uint32_t avg = (static_cast<uint32_t>(rgbScratch[i * 3 + 0]) +
+                              static_cast<uint32_t>(rgbScratch[i * 3 + 1]) +
+                              static_cast<uint32_t>(rgbScratch[i * 3 + 2]) + 1u) /
+                             3u;
+        alphaScratch[i] = static_cast<uint8_t>(avg);
+      }
+    } else {
+      if (FAILED(analysis->CreateAlphaTexture(texType, &rc, alphaScratch.data(),
+                                              static_cast<UINT32>(alphaScratch.size())))) {
+        glyphCache.emplace(key, CachedGlyph{false});
+        return true;
+      }
+    }
+
+    const uint8_t* finalAlpha = alphaScratch.data();
+    int outW = gw;
+    int outH = gh;
+    int offX = static_cast<int>(rc.left);
+    int offY = static_cast<int>(rc.top);
+
+    if (outlinePx > 0) {
+      const int rad = static_cast<int>(outlinePx);
+      outW = gw + 2 * rad;
+      outH = gh + 2 * rad;
+      offX -= rad;
+      offY -= rad;
+      dilatedScratch.assign(static_cast<size_t>(outW) * static_cast<size_t>(outH), 0);
+
+      struct KernelTap {
+        int dx;
+        int dy;
+        float weight;
+      };
+      std::vector<KernelTap> taps;
+      taps.reserve(static_cast<size_t>((2 * rad + 1) * (2 * rad + 1)));
+      const float maxDist = static_cast<float>(rad) + 0.5f;
+      for (int dy = -rad; dy <= rad; ++dy) {
+        for (int dx = -rad; dx <= rad; ++dx) {
+          const float d = std::hypot(static_cast<float>(dx), static_cast<float>(dy));
+          const float w = std::clamp(maxDist - d, 0.0f, 1.0f);
+          if (w > 0.001f) {
+            taps.push_back({dx, dy, w});
+          }
+        }
+      }
+
+      for (int oy = 0; oy < outH; ++oy) {
+        const int iy = oy - rad;
+        for (int ox = 0; ox < outW; ++ox) {
+          const int ix = ox - rad;
+          float best = 0.0f;
+          for (const auto& t : taps) {
+            const int sx = ix + t.dx;
+            const int sy = iy + t.dy;
+            if (sx >= 0 && sx < gw && sy >= 0 && sy < gh) {
+              const float cov = static_cast<float>(alphaScratch[static_cast<size_t>(sy) * gw + sx]) * t.weight;
+              if (cov > best) {
+                best = cov;
+              }
+            }
+          }
+          dilatedScratch[static_cast<size_t>(oy) * outW + ox] =
+              static_cast<uint8_t>(std::clamp(std::lround(best), 0l, 255l));
+        }
+      }
+      finalAlpha = dilatedScratch.data();
+    }
+
+    int px = 0;
+    int py = 0;
+    if (!packRect(outW, outH, px, py)) {
+      resetAtlas();
+      outResetOccurred = true;
+      face->AddRef();
+      ComPtr<IDWriteFontFace> rePin;
+      rePin.attach(face);
+      pinnedFontFaces.emplace(faceKey, std::move(rePin));
+      if (!packRect(outW, outH, px, py)) {
+        glyphCache.emplace(key, CachedGlyph{false});
+        return false;
+      }
+    }
+
+    const size_t totalOut = static_cast<size_t>(outW) * static_cast<size_t>(outH);
+    rgbaScratch.resize(totalOut * 4u);
+    for (size_t i = 0; i < totalOut; ++i) {
+      const uint8_t a = finalAlpha[i];
+      rgbaScratch[i * 4 + 0] = a;
+      rgbaScratch[i * 4 + 1] = a;
+      rgbaScratch[i * 4 + 2] = a;
+      rgbaScratch[i * 4 + 3] = a;
+    }
+    device->updateTexture2DRegion(atlasTex, px, py, outW, outH, rgbaScratch.data());
+
+    CachedGlyph cg;
+    cg.visible = true;
+    cg.u0 = static_cast<float>(px) / static_cast<float>(atlasW);
+    cg.v0 = static_cast<float>(py) / static_cast<float>(atlasH);
+    cg.u1 = static_cast<float>(px + outW) / static_cast<float>(atlasW);
+    cg.v1 = static_cast<float>(py + outH) / static_cast<float>(atlasH);
+    cg.offsetX = offX;
+    cg.offsetY = offY;
+    cg.width = outW;
+    cg.height = outH;
+    glyphCache.emplace(key, cg);
+    return true;
+  }
+#endif
+
+  iota::rhi::TextureHandle buildFallbackQuads(std::string_view text,
+                                                float fontSizePx,
+                                                iota::core::RectF bounds,
+                                                uint32_t packedColor,
+                                                std::vector<iota::rhi::VertexPosColUv>& outVertices,
+                                                std::vector<uint32_t>& outIndices) {
+    if (!fallbackTex) {
+      auto fallbackRgba = buildFallbackBitmapAtlas(fallbackW, fallbackH);
       iota::rhi::TextureDesc td;
-      td.width = fw;
-      td.height = fh;
+      td.width = fallbackW;
+      td.height = fallbackH;
       td.rgbaPixels = fallbackRgba.data();
       td.filter = iota::rhi::TextureFilter::Linear;
       td.wrap = iota::rhi::TextureWrap::ClampToEdge;
-      atlas.texture = device->createTexture2D(td);
+      fallbackTex = device->createTexture2D(td);
+    }
+    if (!fallbackTex) return {};
+
+    const float scale = std::max(8.0f, fontSizePx) / 14.0f;
+    const float lineAdvance = std::max(8.0f, fontSizePx) * 1.15f;
+
+    std::vector<std::string_view> lines;
+    size_t lineStart = 0;
+    while (lineStart <= text.size()) {
+      const size_t nl = text.find('\n', lineStart);
+      if (nl == std::string_view::npos) {
+        lines.push_back(text.substr(lineStart));
+        break;
+      }
+      lines.push_back(text.substr(lineStart, nl - lineStart));
+      lineStart = nl + 1;
     }
 
-    return fonts.emplace(std::move(key), atlas).first->second;
+    const float totalH = static_cast<float>(lines.size()) * lineAdvance;
+    float baselineY = bounds.centerY() - totalH * 0.5f + fontSizePx * 0.85f;
+    for (std::string_view line : lines) {
+      float lineWidth = 0.0f;
+      for (unsigned char ch : line) {
+        if (ch >= 32 && ch < 127) lineWidth += 11.0f * scale;
+      }
+      float cursorX = bounds.centerX() - lineWidth * 0.5f;
+      for (unsigned char ch : line) {
+        if (ch < 32 || ch >= 127) continue;
+        const int idx = ch - 32;
+        const float u0 = static_cast<float>(idx % 16) / 16.0f;
+        const float v0 = static_cast<float>(idx / 16) / 8.0f;
+        const float u1 = u0 + (1.0f / 16.0f);
+        const float v1 = v0 + (1.0f / 8.0f);
+        const float gw = 11.0f * scale;
+        const float gh = 14.0f * scale;
+
+        const uint32_t base = static_cast<uint32_t>(outVertices.size());
+        outVertices.push_back({cursorX, baselineY - gh, 0.0f, packedColor, u0, v0});
+        outVertices.push_back({cursorX + gw, baselineY - gh, 0.0f, packedColor, u1, v0});
+        outVertices.push_back({cursorX + gw, baselineY, 0.0f, packedColor, u1, v1});
+        outVertices.push_back({cursorX, baselineY, 0.0f, packedColor, u0, v1});
+        outIndices.push_back(base + 0);
+        outIndices.push_back(base + 1);
+        outIndices.push_back(base + 2);
+        outIndices.push_back(base + 0);
+        outIndices.push_back(base + 2);
+        outIndices.push_back(base + 3);
+        cursorX += gw;
+      }
+      baselineY += lineAdvance;
+    }
+    return fallbackTex;
   }
 };
 
@@ -269,18 +919,54 @@ void FontAtlasCache::setDevice(iota::rhi::IRenderDevice* device) {
   if (impl_->device != device) {
     shutdown();
     impl_->device = device;
+#ifdef _WIN32
+    if (impl_->device) {
+      impl_->initDirectWrite();
+    }
+#endif
   }
 }
 
 void FontAtlasCache::shutdown() {
-  if (impl_ && impl_->device) {
-    for (auto& [k, a] : impl_->fonts) {
-      if (a.texture) {
-        impl_->device->destroyTexture(a.texture);
-      }
+  if (!impl_) return;
+  if (impl_->device) {
+    if (impl_->atlasTex) {
+      impl_->device->destroyTexture(impl_->atlasTex);
+      impl_->atlasTex = {};
     }
-    impl_->fonts.clear();
+    if (impl_->fallbackTex) {
+      impl_->device->destroyTexture(impl_->fallbackTex);
+      impl_->fallbackTex = {};
+    }
   }
+  impl_->glyphCache.clear();
+  impl_->shelves.clear();
+  impl_->nextShelfY = 1;
+#ifdef _WIN32
+  impl_->shutdownDirectWrite();
+#endif
+  impl_->device = nullptr;
+}
+
+void FontAtlasCache::invalidateCustomFonts() {
+  if (!impl_) return;
+#ifdef _WIN32
+  impl_->customFonts.clear();
+#endif
+  impl_->resetAtlas();
+}
+
+FontAtlasStats FontAtlasCache::stats() const noexcept {
+  FontAtlasStats st;
+  if (!impl_) return st;
+  st.cachedGlyphs = static_cast<int>(impl_->glyphCache.size());
+  st.atlasResets = impl_->atlasResets;
+  st.atlasWidth = impl_->atlasW;
+  st.atlasHeight = impl_->atlasH;
+#ifdef _WIN32
+  st.usingDirectWrite = impl_->dwriteReady;
+#endif
+  return st;
 }
 
 iota::rhi::TextureHandle FontAtlasCache::buildTextQuads(std::string_view typeFaceKey,
@@ -290,122 +976,216 @@ iota::rhi::TextureHandle FontAtlasCache::buildTextQuads(std::string_view typeFac
                                                        iota::core::ColorRgba color,
                                                        std::vector<iota::rhi::VertexPosColUv>& outVertices,
                                                        std::vector<uint32_t>& outIndices) {
+  static const TextStyle kDefaultStyle{};
+  return buildTextQuads(typeFaceKey, text, fontSizePx, bounds, color, kDefaultStyle, outVertices, outIndices);
+}
+
+iota::rhi::TextureHandle FontAtlasCache::buildTextQuads(std::string_view typeFaceKey,
+                                                       std::string_view text,
+                                                       float fontSizePx,
+                                                       iota::core::RectF bounds,
+                                                       iota::core::ColorRgba color,
+                                                       const TextStyle& style,
+                                                       std::vector<iota::rhi::VertexPosColUv>& outVertices,
+                                                       std::vector<uint32_t>& outIndices) {
   outVertices.clear();
   outIndices.clear();
-  if (!impl_->device || text.empty()) {
+  if (!impl_ || !impl_->device || text.empty()) {
     return {};
   }
 
-  CachedFontAtlas& atlas = impl_->getOrCreate(typeFaceKey);
-  if (!atlas.texture) {
-    return {};
-  }
+  const uint32_t fillAbgr = packPremultipliedAbgr(color);
 
-  const float scale = atlas.usingTtf
-                          ? (std::max(8.0f, fontSizePx) / atlas.bakePixelHeight)
-                          : (std::max(8.0f, fontSizePx) / 14.0f);
-  const float lineAdvance = std::max(8.0f, fontSizePx) * 1.15f;
+#ifdef _WIN32
+  impl_->initDirectWrite();
+  if (impl_->dwriteReady && impl_->dwFactory) {
+    const float clampedSize = std::max(8.0f, fontSizePx);
+    const uint16_t bucketPx = quantizeFontBucketPx(clampedSize);
+    const float renderScale = clampedSize / static_cast<float>(bucketPx);
 
-  // Split text into lines to center horizontally & vertically cleanly inside bounds
-  std::vector<std::string_view> lines;
-  size_t lineStart = 0;
-  while (lineStart <= text.size()) {
-    const size_t nl = text.find('\n', lineStart);
-    if (nl == std::string_view::npos) {
-      lines.push_back(text.substr(lineStart));
-      break;
+    const std::wstring wText = utf8ToWide(text);
+    if (wText.empty()) {
+      return {};
     }
-    lines.push_back(text.substr(lineStart, nl - lineStart));
-    lineStart = nl + 1;
-  }
 
-  // Pack premultiplied RGBA color into uint32 ABGR vertex attribute
-  iota::core::ColorRgba premul = color;
-  premul.r = static_cast<uint8_t>((static_cast<uint32_t>(color.r) * color.a) / 255u);
-  premul.g = static_cast<uint8_t>((static_cast<uint32_t>(color.g) * color.a) / 255u);
-  premul.b = static_cast<uint8_t>((static_cast<uint32_t>(color.b) * color.a) / 255u);
-  const uint32_t packedColor = premul.toPackedAbgrU32();
+    FamilyPresetSpec famSpec = resolveSystemFamilyPreset(typeFaceKey);
+    IDWriteFontCollection* customCol = nullptr;
+    std::wstring customFam;
+    impl_->resolveCustomCollection(typeFaceKey, style, customFam, customCol);
+    if (customCol && !customFam.empty()) {
+      famSpec.familyName = std::move(customFam);
+    }
 
-  const float totalH = static_cast<float>(lines.size()) * lineAdvance;
-  float baselineY = bounds.centerY() - totalH * 0.5f + fontSizePx * 0.85f;
+    const DWRITE_FONT_WEIGHT dwWeight = toDWriteWeight(style.weight, famSpec.defaultWeight);
+    const DWRITE_FONT_STYLE dwStyle = style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
 
-  for (std::string_view line : lines) {
-    // Measure line width first so we center around bounds.centerX()
-    float lineWidth = 0.0f;
-    for (unsigned char ch : line) {
-      if (ch < 32 || ch >= 127) continue;
-      if (atlas.usingTtf) {
-        lineWidth += atlas.bakedChars[ch - 32].xadvance * scale;
-      } else {
-        lineWidth += 11.0f * scale;
+    ComPtr<IDWriteTextFormat> textFormat;
+    HRESULT hr = impl_->dwFactory->CreateTextFormat(
+        famSpec.familyName.c_str(),
+        customCol,
+        dwWeight,
+        dwStyle,
+        DWRITE_FONT_STRETCH_NORMAL,
+        static_cast<FLOAT>(bucketPx),
+        L"",
+        textFormat.put());
+    if ((FAILED(hr) || !textFormat) && customCol != nullptr) {
+      hr = impl_->dwFactory->CreateTextFormat(
+          L"Segoe UI",
+          nullptr,
+          dwWeight,
+          dwStyle,
+          DWRITE_FONT_STRETCH_NORMAL,
+          static_cast<FLOAT>(bucketPx),
+          L"",
+          textFormat.put());
+    }
+    if (FAILED(hr) || !textFormat) {
+      return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
+    }
+
+    DWRITE_TEXT_ALIGNMENT dwAlign = DWRITE_TEXT_ALIGNMENT_CENTER;
+    if (style.alignment == TextAlignment::Left) dwAlign = DWRITE_TEXT_ALIGNMENT_LEADING;
+    else if (style.alignment == TextAlignment::Right) dwAlign = DWRITE_TEXT_ALIGNMENT_TRAILING;
+    textFormat->SetTextAlignment(dwAlign);
+    textFormat->SetWordWrapping(style.wordWrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
+
+    const float layoutW = style.wordWrap
+                              ? std::max(bounds.width() / std::max(renderScale, 0.05f), 16.0f)
+                              : std::max(16384.0f, (bounds.width() / std::max(renderScale, 0.05f)) * 2.0f);
+    const float layoutH = 65536.0f;
+
+    ComPtr<IDWriteTextLayout> textLayout;
+    hr = impl_->dwFactory->CreateTextLayout(
+        wText.c_str(),
+        static_cast<UINT32>(wText.size()),
+        textFormat.get(),
+        layoutW,
+        layoutH,
+        textLayout.put());
+    if (FAILED(hr) || !textLayout) {
+      return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
+    }
+
+    if (impl_->systemFallback) {
+      ComPtr<IDWriteTextLayout2> layout2;
+      if (SUCCEEDED(textLayout->QueryInterface(__uuidof(IDWriteTextLayout2),
+                                               reinterpret_cast<void**>(layout2.put()))) &&
+          layout2) {
+        layout2->SetFontFallback(impl_->systemFallback.get());
       }
     }
 
-    float cursorX = bounds.centerX() - lineWidth * 0.5f;
-    float cursorY = baselineY;
-
-    for (unsigned char ch : line) {
-      if (ch < 32 || ch >= 127) {
-        continue;
+    if (std::abs(style.letterSpacingPx) > 1e-3f) {
+      ComPtr<IDWriteTextLayout1> layout1;
+      if (SUCCEEDED(textLayout->QueryInterface(__uuidof(IDWriteTextLayout1),
+                                               reinterpret_cast<void**>(layout1.put()))) &&
+          layout1) {
+        const DWRITE_TEXT_RANGE fullRange{0, static_cast<UINT32>(wText.size())};
+        layout1->SetCharacterSpacing(
+            0.0f,
+            style.letterSpacingPx / std::max(renderScale, 0.05f),
+            0.0f,
+            fullRange);
       }
-      if (atlas.usingTtf) {
-        stbtt_aligned_quad q{};
-        float x = cursorX / scale;
-        float y = 0.0f;
-        stbtt_GetBakedQuad(atlas.bakedChars.data(),
-                           atlas.atlasW,
-                           atlas.atlasH,
-                           ch - 32,
-                           &x,
-                           &y,
-                           &q,
-                           1);
-        const float x0 = q.x0 * scale;
-        const float y0 = cursorY + q.y0 * scale;
-        const float x1 = q.x1 * scale;
-        const float y1 = cursorY + q.y1 * scale;
-        cursorX = x * scale;
+    }
 
-        if (x1 > x0 && y1 > y0) {
-          const uint32_t base = static_cast<uint32_t>(outVertices.size());
-          outVertices.push_back({x0, y0, 0.0f, packedColor, q.s0, q.t0});
-          outVertices.push_back({x1, y0, 0.0f, packedColor, q.s1, q.t0});
-          outVertices.push_back({x1, y1, 0.0f, packedColor, q.s1, q.t1});
-          outVertices.push_back({x0, y1, 0.0f, packedColor, q.s0, q.t1});
-          outIndices.push_back(base + 0);
-          outIndices.push_back(base + 1);
-          outIndices.push_back(base + 2);
-          outIndices.push_back(base + 0);
-          outIndices.push_back(base + 2);
-          outIndices.push_back(base + 3);
+    if (std::abs(style.lineSpacing - 1.0f) > 1e-3f) {
+      const float spacingDip = static_cast<float>(bucketPx) * 1.2f * std::clamp(style.lineSpacing, 0.4f, 4.0f);
+      const float baselineDip = spacingDip * 0.78f;
+      textLayout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, spacingDip, baselineDip);
+    }
+
+    DWRITE_TEXT_METRICS metrics{};
+    textLayout->GetMetrics(&metrics);
+
+    float originScreenX = bounds.centerX() - (layoutW * 0.5f) * renderScale;
+    if (style.alignment == TextAlignment::Left) {
+      originScreenX = bounds.left;
+    } else if (style.alignment == TextAlignment::Right) {
+      originScreenX = bounds.right - layoutW * renderScale;
+    }
+    const float originScreenY = bounds.centerY() - (metrics.top + metrics.height * 0.5f) * renderScale;
+
+    impl_->scratchShaped.clear();
+    ShapingCollector collector(impl_->scratchShaped, impl_->pinnedFontFaces);
+    if (FAILED(textLayout->Draw(nullptr, &collector, 0.0f, 0.0f))) {
+      return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
+    }
+
+    const int outlineRad = (style.outlineWidthPx > 0.05f)
+                               ? std::clamp(static_cast<int>(std::lround(style.outlineWidthPx / std::max(renderScale, 0.05f))), 1, 10)
+                               : 0;
+    const uint8_t outlineKey = static_cast<uint8_t>(outlineRad);
+
+    // Pass 1: Ensure every glyph (and outline mask if enabled) fits in the GPU atlas; re-ensure once if reset occurred.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      bool anyReset = false;
+      for (const auto& sg : impl_->scratchShaped) {
+        if (outlineKey > 0) {
+          impl_->ensureGlyph(sg.face, sg.glyphIndex, bucketPx, outlineKey, anyReset);
+          if (anyReset) break;
         }
-      } else {
-        const int idx = ch - 32;
-        const float u0 = static_cast<float>(idx % 16) / 16.0f;
-        const float v0 = static_cast<float>(idx / 16) / 8.0f;
-        const float u1 = u0 + (1.0f / 16.0f);
-        const float v1 = v0 + (1.0f / 8.0f);
-        const float gw = 11.0f * scale;
-        const float gh = 14.0f * scale;
+        impl_->ensureGlyph(sg.face, sg.glyphIndex, bucketPx, 0, anyReset);
+        if (anyReset) break;
+      }
+      if (!anyReset) {
+        break;
+      }
+    }
+
+    if (!impl_->atlasTex) {
+      return {};
+    }
+
+    auto emitGlyphQuads = [&](uint8_t glyphOutlineKey,
+                              uint32_t abgrCol,
+                              float shiftX,
+                              float shiftY) {
+      for (const auto& sg : impl_->scratchShaped) {
+        const GlyphKey gk{reinterpret_cast<uintptr_t>(sg.face), sg.glyphIndex, bucketPx, glyphOutlineKey};
+        const auto it = impl_->glyphCache.find(gk);
+        if (it == impl_->glyphCache.end() || !it->second.visible) {
+          continue;
+        }
+        const auto& cg = it->second;
+        const float gx = originScreenX + (sg.x + static_cast<float>(cg.offsetX)) * renderScale + shiftX;
+        const float gy = originScreenY + (sg.y + static_cast<float>(cg.offsetY)) * renderScale + shiftY;
+        const float gw = static_cast<float>(cg.width) * renderScale;
+        const float gh = static_cast<float>(cg.height) * renderScale;
 
         const uint32_t base = static_cast<uint32_t>(outVertices.size());
-        outVertices.push_back({cursorX, cursorY - gh, 0.0f, packedColor, u0, v0});
-        outVertices.push_back({cursorX + gw, cursorY - gh, 0.0f, packedColor, u1, v0});
-        outVertices.push_back({cursorX + gw, cursorY, 0.0f, packedColor, u1, v1});
-        outVertices.push_back({cursorX, cursorY, 0.0f, packedColor, u0, v1});
+        outVertices.push_back({gx, gy, 0.0f, abgrCol, cg.u0, cg.v0});
+        outVertices.push_back({gx + gw, gy, 0.0f, abgrCol, cg.u1, cg.v0});
+        outVertices.push_back({gx + gw, gy + gh, 0.0f, abgrCol, cg.u1, cg.v1});
+        outVertices.push_back({gx, gy + gh, 0.0f, abgrCol, cg.u0, cg.v1});
         outIndices.push_back(base + 0);
         outIndices.push_back(base + 1);
         outIndices.push_back(base + 2);
         outIndices.push_back(base + 0);
         outIndices.push_back(base + 2);
         outIndices.push_back(base + 3);
-        cursorX += gw;
       }
-    }
-    baselineY += lineAdvance;
-  }
+    };
 
-  return atlas.texture;
+    const bool hasShadow =
+        style.shadowColor.a > 0 &&
+        (std::abs(style.shadowOffsetPx.x) > 0.01f || std::abs(style.shadowOffsetPx.y) > 0.01f);
+    if (hasShadow) {
+      emitGlyphQuads(outlineKey,
+                     packPremultipliedAbgr(style.shadowColor),
+                     style.shadowOffsetPx.x,
+                     style.shadowOffsetPx.y);
+    }
+    if (outlineKey > 0 && style.outlineColor.a > 0) {
+      emitGlyphQuads(outlineKey, packPremultipliedAbgr(style.outlineColor), 0.0f, 0.0f);
+    }
+    emitGlyphQuads(0, fillAbgr, 0.0f, 0.0f);
+    return impl_->atlasTex;
+  }
+#endif
+
+  return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
 }
 
 }  // namespace iota::engine

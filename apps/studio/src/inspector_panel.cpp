@@ -490,7 +490,39 @@ void renderPropertyEntry(const std::string& key,
         }
         choiceList = &dynChoices;
       }
-      if (choiceList->empty()) {
+      if (key == "typeFace") {
+        if (drawInputTextString("##v", s)) {
+          actions.modified = true;
+        }
+        markDeactivated("Edit Font");
+        if (ImGui::SmallButton("Pick")) {
+          ImGui::OpenPopup("FontPickPopup");
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Font...")) {
+          actions.requestLocalFontImport = true;
+          actions.assetTargetPropName = key;
+        }
+        if (ImGui::BeginPopup("FontPickPopup")) {
+          static constexpr const char* kFontChoices[] = {
+              "Segoe UI", "Bahnschrift", "Impact", "Consolas", "Georgia",
+              "Segoe Script", "Arial", "Yu Gothic UI", "Malgun Gothic", "Microsoft YaHei UI",
+              "internal_0", "internal_1", "internal_2", "internal_3",
+              "internal_4", "internal_5", "internal_6", "internal_7", "internal_8",
+          };
+          for (const char* fc : kFontChoices) {
+            const bool selected = (s == fc);
+            if (ImGui::Selectable(fc, selected)) {
+              s = fc;
+              actions.modified = true;
+              actions.undoSnapshotNeeded = true;
+              actions.editLabel = "Select Font";
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndPopup();
+        }
+      } else if (choiceList->empty()) {
         if (drawInputTextString("##v", s)) {
           actions.modified = true;
         }
