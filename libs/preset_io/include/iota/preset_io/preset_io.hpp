@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 
+#include "iota/model/hierarchy_ops.hpp"
 #include "iota/model/scene.hpp"
 
 namespace iota::preset_io {
@@ -36,5 +37,9 @@ bool saveProjectAsViz(
     const iota::model::Project& project,
     const std::filesystem::path& path,
     std::string* outError = nullptr);
+
+std::string serializeHierarchyClipboardToJson(const iota::model::HierarchyClipboard& clip);
+std::optional<iota::model::HierarchyClipboard> parseHierarchyClipboardFromJson(
+    std::string_view jsonText);
 
 } // namespace iota::preset_io

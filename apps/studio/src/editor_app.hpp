@@ -1,6 +1,7 @@
 #pragma once
 
 #include "asset_browser_panel.hpp"
+#include "hierarchy_panel.hpp"
 #include "project_manager_modal.hpp"
 
 #include "iota/audio/audio_engine.hpp"
@@ -48,6 +49,19 @@ class EditorApp {
 
   void pushUndoState(std::string label);
   void updateWindowTitle();
+  void syncSelectionFromHierarchy();
+  void setSingleSelection(int compIdx, int elemIdx);
+  void clampSelectionToProject();
+  [[nodiscard]] bool hasHierarchyClipboard() const;
+  void actionUndo();
+  void actionRedo();
+  void actionCopySelection();
+  void actionCutSelection();
+  void actionPasteClipboard();
+  void actionDuplicateSelection();
+  void actionDeleteSelection();
+  void actionPrecomposeSelection();
+  void actionNudgeSelection(int delta, bool toBoundary);
   void applyProjectMetadata(const iota::model::ProjectMetadata& meta);
   bool loadProjectFromPath(const std::filesystem::path& path);
   bool saveCurrentProject();
@@ -92,6 +106,8 @@ class EditorApp {
   iota::engine::RenderFrameStats frameStats_;
 
   AssetBrowserState assetBrowserState_;
+  HierarchyPanelState hierarchyState_;
+  iota::model::HierarchyClipboard hierarchyClipboard_;
   ProjectManagerModalState projectManagerState_;
   iota::preset_io::ProjectLibrary projectLibrary_;
   bool openProjectManagerModal_ = false;

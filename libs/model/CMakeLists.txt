@@ -2,6 +2,7 @@ add_library(iota_model STATIC
   src/measured_var.cpp
   src/property.cpp
   src/scene.cpp
+  src/hierarchy_ops.cpp
   src/command_stack.cpp
 )
 target_include_directories(iota_model PUBLIC include)

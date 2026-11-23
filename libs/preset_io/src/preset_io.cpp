@@ -174,6 +174,33 @@ bool asciiEndsWithCaseInsensitive(std::string_view s, std::string_view suffix) n
   return true;
 }
 
+Json serializeKeyframeTrack(const iota::model::KeyframeTrack& tr) {
+  Json keys = Json::array();
+  for (const auto& k : tr.keyframes) {
+    keys.push_back({{"t", k.timeSec}, {"v", k.value}});
+  }
+  return {
+      {"comp", tr.compositionIndex},
+      {"elem", tr.elementIndex},
+      {"prop", tr.propertyPath},
+      {"keys", std::move(keys)},
+  };
+}
+
+iota::model::KeyframeTrack parseKeyframeTrack(const Json& tj) {
+  iota::model::KeyframeTrack tr;
+  tr.compositionIndex = tj.value("comp", 0);
+  tr.elementIndex = tj.value("elem", 0);
+  tr.propertyPath = tj.value("prop", "");
+  if (auto kfsIt = tj.find("keys"); kfsIt != tj.end() && kfsIt->is_array()) {
+    for (const auto& kj : *kfsIt) {
+      if (!kj.is_object()) continue;
+      tr.keyframes.push_back({kj.value("t", 0.0), kj.value("v", 0.0f)});
+    }
+  }
+  return tr;
+}
+
 bool hasNonDefaultMetadata(const iota::model::ProjectMetadata& m) noexcept {
   return m.name != "Untitled Project" || !m.notes.empty() || !m.audioPath.empty() ||
          m.previewWidth != 1280 || m.previewHeight != 720 || m.targetFps != 60 ||
@@ -228,17 +255,7 @@ std::optional<iota::model::Project> parseProjectJsonString(
       if (auto tracksIt = it->find("keyframeTracks"); tracksIt != it->end() && tracksIt->is_array()) {
         for (const auto& tj : *tracksIt) {
           if (!tj.is_object()) continue;
-          iota::model::KeyframeTrack tr;
-          tr.compositionIndex = tj.value("comp", 0);
-          tr.elementIndex = tj.value("elem", 0);
-          tr.propertyPath = tj.value("prop", "");
-          if (auto kfsIt = tj.find("keys"); kfsIt != tj.end() && kfsIt->is_array()) {
-            for (const auto& kj : *kfsIt) {
-              if (!kj.is_object()) continue;
-              tr.keyframes.push_back({kj.value("t", 0.0), kj.value("v", 0.0f)});
-            }
-          }
-          proj.desktopTracks.push_back(std::move(tr));
+          proj.desktopTracks.push_back(parseKeyframeTrack(tj));
         }
       }
       if (auto metaIt = it->find("projectMeta"); metaIt != it->end() && metaIt->is_object()) {
@@ -297,16 +314,7 @@ std::string serializeProjectToJsonString(const iota::model::Project& project, in
     if (!project.desktopTracks.empty()) {
       Json tracks = Json::array();
       for (const auto& tr : project.desktopTracks) {
-        Json keys = Json::array();
-        for (const auto& k : tr.keyframes) {
-          keys.push_back({{"t", k.timeSec}, {"v", k.value}});
-        }
-        tracks.push_back({
-            {"comp", tr.compositionIndex},
-            {"elem", tr.elementIndex},
-            {"prop", tr.propertyPath},
-            {"keys", std::move(keys)},
-        });
+        tracks.push_back(serializeKeyframeTrack(tr));
       }
       ext["keyframeTracks"] = std::move(tracks);
     }
@@ -429,6 +437,115 @@ bool saveProjectAsViz(
     entries.push_back({name, bytes});
   }
   return iota::core::writeZipToFile(path, entries, outError);
+}
+
+std::string serializeHierarchyClipboardToJson(const iota::model::HierarchyClipboard& clip) {
+  if (clip.kind == iota::model::HierarchyClipboard::Kind::Empty) {
+    return {};
+  }
+  Json root = Json::object();
+  root["iotaClipboard"] = 1;
+
+  if (clip.kind == iota::model::HierarchyClipboard::Kind::Elements) {
+    root["kind"] = "elements";
+    Json arr = Json::array();
+    for (const auto& ce : clip.elements) {
+      Json item = Json::object();
+      item["element"] = serializeElement(ce.element);
+      Json tracks = Json::array();
+      for (const auto& tr : ce.tracks) {
+        tracks.push_back(serializeKeyframeTrack(tr));
+      }
+      item["tracks"] = std::move(tracks);
+      arr.push_back(std::move(item));
+    }
+    root["elements"] = std::move(arr);
+  } else if (clip.kind == iota::model::HierarchyClipboard::Kind::Composition) {
+    root["kind"] = "composition";
+    root["composition"] = serializeComposition(clip.composition);
+    Json tracks = Json::array();
+    for (const auto& tr : clip.compTracks) {
+      tracks.push_back(serializeKeyframeTrack(tr));
+    }
+    root["tracks"] = std::move(tracks);
+  }
+
+  return root.dump(2, ' ', false, Json::error_handler_t::replace);
+}
+
+std::optional<iota::model::HierarchyClipboard> parseHierarchyClipboardFromJson(
+    std::string_view jsonText) {
+  const std::string_view trimmed = iota::core::stripUtf8Bom(jsonText);
+  size_t first = 0;
+  while (first < trimmed.size() &&
+         std::isspace(static_cast<unsigned char>(trimmed[first])) != 0) {
+    ++first;
+  }
+  if (first >= trimmed.size() || trimmed[first] != '{') {
+    return std::nullopt;
+  }
+
+  Json root;
+  try {
+    root = Json::parse(trimmed.begin() + static_cast<std::ptrdiff_t>(first), trimmed.end());
+  } catch (...) {
+    return std::nullopt;
+  }
+
+  if (!root.is_object()) return std::nullopt;
+  auto verIt = root.find("iotaClipboard");
+  if (verIt == root.end() || !verIt->is_number_integer() || verIt->get<int>() != 1) {
+    return std::nullopt;
+  }
+  auto kindIt = root.find("kind");
+  if (kindIt == root.end() || !kindIt->is_string()) {
+    return std::nullopt;
+  }
+
+  const std::string kind = kindIt->get<std::string>();
+  iota::model::HierarchyClipboard out;
+  try {
+    if (kind == "elements") {
+      auto elemsIt = root.find("elements");
+      if (elemsIt == root.end() || !elemsIt->is_array() || elemsIt->empty()) {
+        return std::nullopt;
+      }
+      out.kind = iota::model::HierarchyClipboard::Kind::Elements;
+      for (const auto& item : *elemsIt) {
+        if (!item.is_object()) continue;
+        auto elIt = item.find("element");
+        if (elIt == item.end() || !elIt->is_object()) continue;
+        iota::model::CopiedElement ce;
+        ce.element = parseElement(*elIt);
+        if (auto trIt = item.find("tracks"); trIt != item.end() && trIt->is_array()) {
+          for (const auto& tj : *trIt) {
+            if (tj.is_object()) ce.tracks.push_back(parseKeyframeTrack(tj));
+          }
+        }
+        out.elements.push_back(std::move(ce));
+      }
+      if (out.elements.empty()) return std::nullopt;
+      return out;
+    }
+
+    if (kind == "composition") {
+      auto compIt = root.find("composition");
+      if (compIt == root.end() || !compIt->is_object()) {
+        return std::nullopt;
+      }
+      out.kind = iota::model::HierarchyClipboard::Kind::Composition;
+      out.composition = parseComposition(*compIt);
+      if (auto trIt = root.find("tracks"); trIt != root.end() && trIt->is_array()) {
+        for (const auto& tj : *trIt) {
+          if (tj.is_object()) out.compTracks.push_back(parseKeyframeTrack(tj));
+        }
+      }
+      return out;
+    }
+  } catch (...) {
+    return std::nullopt;
+  }
+  return std::nullopt;
 }
 
 } // namespace iota::preset_io

@@ -1,6 +1,7 @@
 add_executable(iota_tests
   test_main.cpp
   test_model_preset_io.cpp
+  test_hierarchy.cpp
   test_dsp.cpp
   test_particles.cpp
   test_shake.cpp

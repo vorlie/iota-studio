@@ -2,6 +2,8 @@ add_executable(iota_studio
   src/main.cpp
   src/editor_app.hpp
   src/editor_app.cpp
+  src/hierarchy_panel.hpp
+  src/hierarchy_panel.cpp
   src/inspector_panel.hpp
   src/inspector_panel.cpp
   src/sound_keys_panel.hpp

@@ -208,9 +208,10 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   imguiInitialized_ = true;
 
   project_ = iota::model::createStarterProject();
-  if (!project_.compositions.empty() && project_.compositions[0].elements.size() > 3) {
-    selectedCompIdx_ = 0;
-    selectedElemIdx_ = 4;  // Circular Spectrum default selection
+  if (!project_.compositions.empty() && project_.compositions[0].elements.size() > 4) {
+    setSingleSelection(0, 4);  // Circular Spectrum default selection
+  } else {
+    setSingleSelection(0, -1);
   }
   undoStack_.clear(project_);
   if (!isSmokeTest_) {
@@ -435,24 +436,241 @@ void EditorApp::handleShortcuts() {
   } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N)) {
     openProjectManagerModal_ = true;
   } else if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)))) {
-    if (const auto* snap = undoStack_.redo()) {
-      project_ = *snap;
-      renderer_.invalidateLocalAssets();
-      projectDirty_ = true;
-      updateWindowTitle();
-      statusBanner_ = "Redo";
-    }
+    actionRedo();
   } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
-    if (const auto* snap = undoStack_.undo()) {
-      project_ = *snap;
-      renderer_.invalidateLocalAssets();
-      projectDirty_ = true;
-      updateWindowTitle();
-      statusBanner_ = "Undo";
+    actionUndo();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)) {
+    actionCopySelection();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X)) {
+    actionCutSelection();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V)) {
+    actionPasteClipboard();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D)) {
+    actionDuplicateSelection();
+  } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A) && hierarchyState_.windowFocused) {
+    if (selectedCompIdx_ >= 0 && selectedCompIdx_ < static_cast<int>(project_.compositions.size())) {
+      const int n = static_cast<int>(project_.compositions[static_cast<size_t>(selectedCompIdx_)].elements.size());
+      std::vector<iota::model::ElementRef> allRefs;
+      allRefs.reserve(static_cast<size_t>(n));
+      for (int ei = 0; ei < n; ++ei) {
+        allRefs.push_back({selectedCompIdx_, ei});
+      }
+      hierarchyState_.setSelection(allRefs, selectedCompIdx_);
+      syncSelectionFromHierarchy();
     }
+  } else if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+    actionNudgeSelection(-1, true);
+  } else if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+    actionNudgeSelection(+1, true);
+  } else if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+    actionNudgeSelection(-1, false);
+  } else if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+    actionNudgeSelection(+1, false);
+  } else if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+    actionDeleteSelection();
+  } else if (ImGui::IsKeyPressed(ImGuiKey_F2)) {
+    hierarchyState_.beginRenameCurrent(project_);
   } else if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
     if (audio_.isPlaying()) audio_.pause();
     else audio_.play();
+  }
+}
+
+void EditorApp::syncSelectionFromHierarchy() {
+  hierarchyState_.clampToProject(project_);
+  selectedCompIdx_ = hierarchyState_.primaryCompIdx;
+  selectedElemIdx_ = hierarchyState_.primaryElemIdx;
+}
+
+void EditorApp::setSingleSelection(int compIdx, int elemIdx) {
+  if (elemIdx >= 0) {
+    hierarchyState_.selectSingleElement(compIdx, elemIdx);
+  } else {
+    hierarchyState_.selectComposition(compIdx);
+  }
+  syncSelectionFromHierarchy();
+}
+
+void EditorApp::clampSelectionToProject() {
+  syncSelectionFromHierarchy();
+}
+
+bool EditorApp::hasHierarchyClipboard() const {
+  if (imguiInitialized_) {
+    if (const char* txt = ImGui::GetClipboardText(); txt != nullptr && *txt != '\0') {
+      if (iota::preset_io::parseHierarchyClipboardFromJson(txt).has_value()) {
+        return true;
+      }
+    }
+  }
+  return hierarchyClipboard_.kind != iota::model::HierarchyClipboard::Kind::Empty;
+}
+
+void EditorApp::actionUndo() {
+  if (const auto* snap = undoStack_.undo()) {
+    project_ = *snap;
+    renderer_.invalidateLocalAssets();
+    clampSelectionToProject();
+    projectDirty_ = true;
+    updateWindowTitle();
+    statusBanner_ = "Undo";
+  }
+}
+
+void EditorApp::actionRedo() {
+  if (const auto* snap = undoStack_.redo()) {
+    project_ = *snap;
+    renderer_.invalidateLocalAssets();
+    clampSelectionToProject();
+    projectDirty_ = true;
+    updateWindowTitle();
+    statusBanner_ = "Redo";
+  }
+}
+
+void EditorApp::actionCopySelection() {
+  iota::model::HierarchyClipboard clip;
+  std::string banner;
+  if (!hierarchyState_.selectedElements.empty()) {
+    clip = iota::model::copyElements(project_, hierarchyState_.selectedElements);
+    if (clip.kind != iota::model::HierarchyClipboard::Kind::Empty) {
+      banner = "Copied " + std::to_string(clip.elements.size()) + " layer(s)";
+    }
+  } else if (selectedCompIdx_ >= 0 && selectedCompIdx_ < static_cast<int>(project_.compositions.size())) {
+    clip = iota::model::copyComposition(project_, selectedCompIdx_);
+    if (clip.kind != iota::model::HierarchyClipboard::Kind::Empty) {
+      banner = "Copied Composition " + std::to_string(selectedCompIdx_);
+    }
+  }
+  if (clip.kind == iota::model::HierarchyClipboard::Kind::Empty) return;
+
+  hierarchyClipboard_ = std::move(clip);
+  if (imguiInitialized_) {
+    const std::string jsonTxt = iota::preset_io::serializeHierarchyClipboardToJson(hierarchyClipboard_);
+    if (!jsonTxt.empty()) ImGui::SetClipboardText(jsonTxt.c_str());
+  }
+  statusBanner_ = std::move(banner);
+}
+
+void EditorApp::actionCutSelection() {
+  if (hierarchyState_.selectedElements.empty()) return;
+  std::optional<iota::model::ElementRef> fallbackSel;
+  auto clip = iota::model::cutElements(project_, hierarchyState_.selectedElements, &fallbackSel);
+  if (clip.kind != iota::model::HierarchyClipboard::Kind::Empty) {
+    const size_t nCut = clip.elements.size();
+    hierarchyClipboard_ = std::move(clip);
+    if (imguiInitialized_) {
+      const std::string jsonTxt = iota::preset_io::serializeHierarchyClipboardToJson(hierarchyClipboard_);
+      if (!jsonTxt.empty()) ImGui::SetClipboardText(jsonTxt.c_str());
+    }
+    if (fallbackSel.has_value()) {
+      setSingleSelection(fallbackSel->compIdx, fallbackSel->elemIdx);
+    } else {
+      clampSelectionToProject();
+    }
+    pushUndoState(nCut == 1 ? "Cut Layer" : "Cut Layers");
+    statusBanner_ = "Cut " + std::to_string(nCut) + " layer(s)";
+  }
+}
+
+void EditorApp::actionPasteClipboard() {
+  iota::model::HierarchyClipboard effective = hierarchyClipboard_;
+  if (imguiInitialized_) {
+    if (const char* txt = ImGui::GetClipboardText(); txt != nullptr && *txt != '\0') {
+      if (auto parsed = iota::preset_io::parseHierarchyClipboardFromJson(txt)) {
+        effective = std::move(*parsed);
+      }
+    }
+  }
+  if (effective.kind == iota::model::HierarchyClipboard::Kind::Empty || project_.compositions.empty()) {
+    return;
+  }
+
+  const int dstComp = std::clamp(selectedCompIdx_, 0, static_cast<int>(project_.compositions.size()) - 1);
+  int insertAt = -1;
+  if (effective.kind == iota::model::HierarchyClipboard::Kind::Elements && selectedElemIdx_ >= 0) {
+    insertAt = selectedElemIdx_ + 1;
+  }
+  const auto pasted = iota::model::pasteClipboard(project_, effective, dstComp, insertAt, false);
+  if (!pasted.empty()) {
+    if (effective.kind == iota::model::HierarchyClipboard::Kind::Composition) {
+      setSingleSelection(pasted.front().compIdx, -1);
+      pushUndoState("Paste Composition");
+      statusBanner_ = "Pasted Composition " + std::to_string(pasted.front().compIdx);
+    } else {
+      hierarchyState_.setSelection(pasted, dstComp);
+      syncSelectionFromHierarchy();
+      pushUndoState(pasted.size() == 1 ? "Paste Layer" : "Paste Layers");
+      statusBanner_ = "Pasted " + std::to_string(pasted.size()) + " layer(s)";
+    }
+  }
+}
+
+void EditorApp::actionDuplicateSelection() {
+  if (!hierarchyState_.selectedElements.empty()) {
+    const auto dups = iota::model::duplicateElements(project_, hierarchyState_.selectedElements);
+    if (!dups.empty()) {
+      hierarchyState_.setSelection(dups, selectedCompIdx_);
+      syncSelectionFromHierarchy();
+      pushUndoState(dups.size() == 1 ? "Duplicate Layer" : "Duplicate Layers");
+      statusBanner_ = "Duplicated " + std::to_string(dups.size()) + " layer(s)";
+    }
+  } else if (selectedCompIdx_ >= 0 && selectedCompIdx_ < static_cast<int>(project_.compositions.size())) {
+    const int newCompIdx = iota::model::duplicateComposition(project_, selectedCompIdx_);
+    if (newCompIdx >= 0) {
+      setSingleSelection(newCompIdx, -1);
+      pushUndoState("Duplicate Composition");
+      statusBanner_ = "Duplicated Composition [" + std::to_string(newCompIdx) + "]";
+    }
+  }
+}
+
+void EditorApp::actionDeleteSelection() {
+  if (!hierarchyState_.selectedElements.empty()) {
+    const size_t nDel = hierarchyState_.selectedElements.size();
+    if (const auto fallback = iota::model::deleteElements(project_, hierarchyState_.selectedElements)) {
+      setSingleSelection(fallback->compIdx, fallback->elemIdx);
+      pushUndoState(nDel == 1 ? "Delete Layer" : "Delete Layers");
+      statusBanner_ = "Deleted " + std::to_string(nDel) + " layer(s)";
+    }
+  } else if (selectedCompIdx_ > 0 && selectedCompIdx_ < static_cast<int>(project_.compositions.size())) {
+    const int deletedIdx = selectedCompIdx_;
+    if (iota::model::deleteComposition(project_, deletedIdx)) {
+      setSingleSelection(std::max(0, deletedIdx - 1), -1);
+      pushUndoState("Delete Composition");
+      statusBanner_ = "Deleted Composition " + std::to_string(deletedIdx);
+    }
+  }
+}
+
+void EditorApp::actionPrecomposeSelection() {
+  int srcComp = -1;
+  if (!hierarchyState_.allSelectedInSameComp(&srcComp) || hierarchyState_.selectedElements.empty()) {
+    return;
+  }
+  std::vector<int> indices;
+  indices.reserve(hierarchyState_.selectedElements.size());
+  for (const auto& r : hierarchyState_.selectedElements) {
+    indices.push_back(r.elemIdx);
+  }
+  const auto res = iota::model::precomposeElements(project_, srcComp, indices);
+  if (res.newCompIdx >= 0 && res.hostLayerRef.elemIdx >= 0) {
+    setSingleSelection(res.hostLayerRef.compIdx, res.hostLayerRef.elemIdx);
+    pushUndoState("Pre-Compose Layers");
+    statusBanner_ = "Pre-composed into Composition " + std::to_string(res.newCompIdx);
+  }
+}
+
+void EditorApp::actionNudgeSelection(int delta, bool toBoundary) {
+  if (hierarchyState_.selectedElements.empty()) return;
+  const auto moved = toBoundary
+                         ? iota::model::moveElementsToBoundary(project_, hierarchyState_.selectedElements, delta < 0)
+                         : iota::model::nudgeElements(project_, hierarchyState_.selectedElements, delta);
+  if (!moved.empty() && moved != hierarchyState_.selectedElements) {
+    hierarchyState_.setSelection(moved, selectedCompIdx_);
+    syncSelectionFromHierarchy();
+    pushUndoState(toBoundary ? (delta < 0 ? "Move Layer to Top" : "Move Layer to Bottom")
+                             : (delta < 0 ? "Move Layer Up" : "Move Layer Down"));
   }
 }
 
@@ -474,8 +692,7 @@ void EditorApp::drawMenuBar() {
       currentProjectPath_.clear();
       projectDirty_ = false;
       applyProjectMetadata(project_.metadata);
-      selectedCompIdx_ = 0;
-      selectedElemIdx_ = 4;
+      setSingleSelection(0, 4);
       renderer_.invalidateLocalAssets();
       renderer_.resetSimulation();
       undoStack_.clear(project_);
@@ -524,20 +741,34 @@ void EditorApp::drawMenuBar() {
                                       ? ("Redo " + undoStack_.redoDescription() + "\tCtrl+Y")
                                       : "Redo\tCtrl+Y";
     if (ImGui::MenuItem(undoLabel.c_str(), nullptr, false, undoStack_.canUndo())) {
-      if (const auto* snap = undoStack_.undo()) {
-        project_ = *snap;
-        renderer_.invalidateLocalAssets();
-        projectDirty_ = true;
-        updateWindowTitle();
-      }
+      actionUndo();
     }
     if (ImGui::MenuItem(redoLabel.c_str(), nullptr, false, undoStack_.canRedo())) {
-      if (const auto* snap = undoStack_.redo()) {
-        project_ = *snap;
-        renderer_.invalidateLocalAssets();
-        projectDirty_ = true;
-        updateWindowTitle();
-      }
+      actionRedo();
+    }
+    ImGui::Separator();
+    const bool hasElemSel = !hierarchyState_.selectedElements.empty();
+    const bool hasCompSel =
+        (selectedCompIdx_ >= 0 && selectedCompIdx_ < static_cast<int>(project_.compositions.size()));
+    const bool canDeleteSel = hasElemSel || selectedCompIdx_ > 0;
+    const bool canPrecomp = hierarchyState_.allSelectedInSameComp();
+    if (ImGui::MenuItem("Cut\tCtrl+X", nullptr, false, hasElemSel)) {
+      actionCutSelection();
+    }
+    if (ImGui::MenuItem("Copy\tCtrl+C", nullptr, false, hasElemSel || hasCompSel)) {
+      actionCopySelection();
+    }
+    if (ImGui::MenuItem("Paste\tCtrl+V", nullptr, false, hasHierarchyClipboard())) {
+      actionPasteClipboard();
+    }
+    if (ImGui::MenuItem("Duplicate\tCtrl+D", nullptr, false, hasElemSel || hasCompSel)) {
+      actionDuplicateSelection();
+    }
+    if (ImGui::MenuItem("Delete\tDel", nullptr, false, canDeleteSel)) {
+      actionDeleteSelection();
+    }
+    if (ImGui::MenuItem("Pre-Compose Selected", nullptr, false, canPrecomp)) {
+      actionPrecomposeSelection();
     }
     ImGui::Separator();
     ImGui::MenuItem("Show Advanced Hidden Properties", nullptr, &showHiddenProps_);
@@ -598,8 +829,7 @@ void EditorApp::drawMenuBar() {
       }
       if (ImGui::MenuItem("Edit HDR & Bloom Settings...")) {
         ensureComp0HdrProps();
-        selectedCompIdx_ = 0;
-        selectedElemIdx_ = -1;
+        setSingleSelection(0, -1);
       }
     }
     ImGui::Separator();
@@ -650,177 +880,21 @@ void EditorApp::drawViewportPanel() {
 }
 
 void EditorApp::drawHierarchyPanel() {
-  ImGui::Begin("Hierarchy");
-
-  if (ImGui::Button("+ Composition")) {
-    const int nextIdx = static_cast<int>(project_.compositions.size());
-    project_.compositions.push_back(iota::model::createDefaultComposition(nextIdx));
-    selectedCompIdx_ = nextIdx;
-    selectedElemIdx_ = -1;
-    pushUndoState("Add Composition");
+  HierarchyActions actions;
+  renderHierarchyPanel(project_, hierarchyState_, hasHierarchyClipboard(), actions);
+  syncSelectionFromHierarchy();
+  if (!actions.statusMessage.empty()) {
+    statusBanner_ = actions.statusMessage;
   }
-  ImGui::SameLine();
-  if (ImGui::Button("+ Element") &&
-      selectedCompIdx_ >= 0 && selectedCompIdx_ < static_cast<int>(project_.compositions.size())) {
-    ImGui::OpenPopup("AddElementPopup");
+  if (actions.undoSnapshotNeeded) {
+    pushUndoState(actions.editLabel.empty() ? "Modify Hierarchy" : actions.editLabel);
   }
-
-  if (ImGui::BeginPopup("AddElementPopup")) {
-    for (iota::model::ElementType et : iota::model::addableElementTypes()) {
-      const std::string_view label = iota::model::elementTypeToString(et);
-      std::string s(label);
-      if (ImGui::MenuItem(s.c_str())) {
-        auto& elems = project_.compositions[static_cast<size_t>(selectedCompIdx_)].elements;
-        auto newEl = iota::model::createDefaultElement(et);
-        if (project_.compositions.size() == 1) {
-          if (et == iota::model::ElementType::BlurEffect) {
-            newEl.props.setInt("sourceCompositionIndex", 0, 0, 5, "1_appearance");
-            newEl.props.setString("blendMode", "Alpha",
-                                  "_child Alpha PreMulAlpha Screen Add AddAlpha Opaque", "0_general");
-            newEl.props.setBool("showUnblurredContent", false, "1_appearance");
-          } else if (et == iota::model::ElementType::MotionBlurEffect) {
-            newEl.props.setString("TargetImage", "composition:0", "img composition:0", "1_appearance");
-            newEl.props.setString("motionSource", "Temporal",
-                                  "_child EffectTransform Manual Temporal Hybrid", "2_motionBlur");
-            newEl.props.setString("blendMode", "Opaque",
-                                  "_child Alpha PreMulAlpha Screen Add AddAlpha Opaque", "0_general");
-          }
-        }
-        elems.push_back(std::move(newEl));
-        selectedElemIdx_ = static_cast<int>(elems.size()) - 1;
-        pushUndoState("Add " + s);
-      }
-    }
-    ImGui::EndPopup();
-  }
-
-  ImGui::Separator();
-
-  int compToDelete = -1;
-  for (int ci = 0; ci < static_cast<int>(project_.compositions.size()); ++ci) {
-    auto& comp = project_.compositions[static_cast<size_t>(ci)];
-    ImGui::PushID(ci);
-
-    const bool compSelected = (selectedCompIdx_ == ci && selectedElemIdx_ < 0);
-    std::string compTitle = "[" + std::to_string(ci) + "] " + comp.displayName;
-    const ImGuiTreeNodeFlags flags =
-        ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen |
-        (compSelected ? ImGuiTreeNodeFlags_Selected : 0);
-
-    const bool open = ImGui::TreeNodeEx(compTitle.c_str(), flags);
-    if (ImGui::IsItemClicked()) {
-      selectedCompIdx_ = ci;
-      selectedElemIdx_ = -1;
-    }
-    if (ImGui::BeginDragDropTarget()) {
-      if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetDragDropPayload)) {
-        const char* dropped = static_cast<const char*>(payload->Data);
-        if (dropped != nullptr && *dropped != '\0') {
-          auto newImg = iota::model::createDefaultElement(iota::model::ElementType::Image);
-          std::string label(dropped);
-          if (label.rfind("local:", 0) == 0) label = label.substr(6);
-          else if (label.rfind("internalres:", 0) == 0) label = label.substr(12);
-          newImg.displayName = label;
-          iota::model::assignAssetToElement(newImg, dropped, false);
-          comp.elements.push_back(std::move(newImg));
-          selectedCompIdx_ = ci;
-          selectedElemIdx_ = static_cast<int>(comp.elements.size()) - 1;
-          pushUndoState("Drop Asset into Comp");
-        }
-      }
-      ImGui::EndDragDropTarget();
-    }
-    if (ci > 0 && ImGui::BeginPopupContextItem()) {
-      if (ImGui::MenuItem("Delete Composition")) compToDelete = ci;
-      ImGui::EndPopup();
-    }
-
-    if (open) {
-      int moveFrom = -1;
-      int moveTo = -1;
-      int deleteElem = -1;
-      int dupElem = -1;
-
-      for (int ei = 0; ei < static_cast<int>(comp.elements.size()); ++ei) {
-        auto& el = comp.elements[static_cast<size_t>(ei)];
-        ImGui::PushID(ei);
-
-        bool vis = el.props.getBool("visible", true);
-        if (el.type != iota::model::ElementType::AudioProvider) {
-          if (ImGui::Checkbox("##vis", &vis)) {
-            el.props.setBool("visible", vis, "0_general",
-                             el.type == iota::model::ElementType::AppLogo ? "pb" : "b");
-            pushUndoState("Toggle Visible");
-          }
-          ImGui::SameLine();
-        }
-
-        const bool selected = (selectedCompIdx_ == ci && selectedElemIdx_ == ei);
-        const std::string elLabel = el.displayName.empty()
-                                        ? el.typeName
-                                        : (el.displayName + " (" + el.typeName + ")");
-        if (ImGui::Selectable(elLabel.c_str(), selected)) {
-          selectedCompIdx_ = ci;
-          selectedElemIdx_ = ei;
-        }
-        if (ImGui::BeginDragDropTarget()) {
-          if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetDragDropPayload)) {
-            const char* dropped = static_cast<const char*>(payload->Data);
-            if (dropped != nullptr && *dropped != '\0' &&
-                iota::model::assignAssetToElement(el, dropped, false)) {
-              selectedCompIdx_ = ci;
-              selectedElemIdx_ = ei;
-              pushUndoState("Assign Asset to Layer");
-            }
-          }
-          ImGui::EndDragDropTarget();
-        }
-        if (ImGui::BeginPopupContextItem()) {
-          if (ImGui::MenuItem("Move Up", nullptr, false, ei > 0)) {
-            moveFrom = ei; moveTo = ei - 1;
-          }
-          if (ImGui::MenuItem("Move Down", nullptr, false, ei + 1 < static_cast<int>(comp.elements.size()))) {
-            moveFrom = ei; moveTo = ei + 1;
-          }
-          if (ImGui::MenuItem("Duplicate")) dupElem = ei;
-          ImGui::Separator();
-          if (ImGui::MenuItem("Delete")) deleteElem = ei;
-          ImGui::EndPopup();
-        }
-        ImGui::PopID();
-      }
-
-      if (moveFrom >= 0 && moveTo >= 0) {
-        std::swap(comp.elements[static_cast<size_t>(moveFrom)],
-                  comp.elements[static_cast<size_t>(moveTo)]);
-        selectedElemIdx_ = moveTo;
-        pushUndoState("Reorder Element");
-      } else if (dupElem >= 0) {
-        auto copy = comp.elements[static_cast<size_t>(dupElem)];
-        copy.displayName += " Copy";
-        comp.elements.insert(comp.elements.begin() + dupElem + 1, std::move(copy));
-        selectedElemIdx_ = dupElem + 1;
-        pushUndoState("Duplicate Element");
-      } else if (deleteElem >= 0) {
-        comp.elements.erase(comp.elements.begin() + deleteElem);
-        if (selectedElemIdx_ == deleteElem) selectedElemIdx_ = -1;
-        else if (selectedElemIdx_ > deleteElem) selectedElemIdx_ -= 1;
-        pushUndoState("Delete Element");
-      }
-
-      ImGui::TreePop();
-    }
-    ImGui::PopID();
-  }
-
-  if (compToDelete > 0) {
-    project_.compositions.erase(project_.compositions.begin() + compToDelete);
-    selectedCompIdx_ = 0;
-    selectedElemIdx_ = -1;
-    pushUndoState("Delete Composition");
-  }
-
-  ImGui::End();
+  if (actions.requestCopy) actionCopySelection();
+  if (actions.requestCut) actionCutSelection();
+  if (actions.requestPaste) actionPasteClipboard();
+  if (actions.requestDuplicate) actionDuplicateSelection();
+  if (actions.requestDelete) actionDeleteSelection();
+  if (actions.requestPrecompose) actionPrecomposeSelection();
 }
 
 void EditorApp::drawInspectorPanel() {
@@ -1410,6 +1484,19 @@ void EditorApp::drawInspectorPanel() {
     }
   } else {
     ImGui::TextWrapped("Composition %d: %s", selectedCompIdx_, comp.displayName.c_str());
+    char compNameBuf[256]{};
+    std::snprintf(compNameBuf, sizeof(compNameBuf), "%s", comp.displayName.c_str());
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Composition Name");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputText("##CompName", compNameBuf, sizeof(compNameBuf))) {
+      comp.displayName = iota::core::sanitizeUtf8(compNameBuf);
+      actions.modified = true;
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+      actions.undoSnapshotNeeded = true;
+      actions.editLabel = "Rename Composition";
+    }
     if (selectedCompIdx_ == 0) {
       ImGui::TextDisabled("Pipeline: %s | Bloom: %s",
                           frameStats_.hdrPipelineActive ? "HDR16F Float" : "SDR8",
@@ -1706,8 +1793,7 @@ void EditorApp::drawAssetBrowserPanel() {
                           actions);
 
   if (actions.selectCompIdx >= 0) {
-    selectedCompIdx_ = actions.selectCompIdx;
-    selectedElemIdx_ = actions.selectElemIdx;
+    setSingleSelection(actions.selectCompIdx, actions.selectElemIdx);
   }
   if (actions.invalidateLocalAssets) {
     renderer_.invalidateLocalAssets();
@@ -1799,8 +1885,7 @@ void EditorApp::drawProjectManagerModal() {
     currentProjectPath_.clear();
     projectDirty_ = false;
     applyProjectMetadata(project_.metadata);
-    selectedCompIdx_ = 0;
-    selectedElemIdx_ = project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0;
+    setSingleSelection(0, project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0);
     renderer_.invalidateLocalAssets();
     renderer_.resetSimulation();
     undoStack_.clear(project_);
@@ -1888,8 +1973,7 @@ bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
   currentProjectPath_ = path;
   projectDirty_ = false;
   applyProjectMetadata(project_.metadata);
-  selectedCompIdx_ = 0;
-  selectedElemIdx_ = project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0;
+  setSingleSelection(0, project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0);
   renderer_.invalidateLocalAssets();
   renderer_.resetSimulation();
   undoStack_.clear(project_);
