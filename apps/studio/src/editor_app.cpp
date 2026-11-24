@@ -316,6 +316,7 @@ void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
   ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
   ImGui::DockBuilderDockWindow("Assets", dockLeftBottom);
   ImGui::DockBuilderDockWindow("Inspector", dockRight);
+  ImGui::DockBuilderDockWindow("Documentation", dockRight);
   ImGui::DockBuilderDockWindow("Audio & Timeline", dockBottom);
   ImGui::DockBuilderDockWindow("Sound Keys", dockBottom);
   ImGui::DockBuilderDockWindow("Viewport", dockMain);
@@ -381,6 +382,7 @@ int EditorApp::run() {
     drawHierarchyPanel();
     drawAssetBrowserPanel();
     drawInspectorPanel();
+    drawDocsPanel();
     drawAudioTimelinePanel();
     drawSoundKeysPanel();
     drawProjectManagerModal();
@@ -501,6 +503,11 @@ void EditorApp::handleShortcuts() {
     actionNudgeSelection(+1, false);
   } else if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
     actionDeleteSelection();
+  } else if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+    showDocsPanel_ = !showDocsPanel_;
+    if (showDocsPanel_) {
+      docsPanelState_.focusRequested = true;
+    }
   } else if (ImGui::IsKeyPressed(ImGuiKey_F2)) {
     hierarchyState_.beginRenameCurrent(project_);
   } else if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
@@ -805,6 +812,7 @@ void EditorApp::drawMenuBar() {
     }
     ImGui::Separator();
     ImGui::MenuItem("Show Advanced Hidden Properties", nullptr, &showHiddenProps_);
+    ImGui::MenuItem("Show Raw Property Keys", nullptr, &showRawPropertyKeys_);
     ImGui::MenuItem("Precise Numeric Inputs", nullptr, &preciseNumericInputs_);
     ImGui::EndMenu();
   }
@@ -868,10 +876,16 @@ void EditorApp::drawMenuBar() {
     ImGui::Separator();
     ImGui::MenuItem("Asset Browser", nullptr, &showAssetBrowserPanel_);
     ImGui::MenuItem("Sound Keys Panel", nullptr, &showSoundKeysPanel_);
+    ImGui::MenuItem("Documentation Panel\tF1", nullptr, &showDocsPanel_);
     ImGui::EndMenu();
   }
 
   if (ImGui::BeginMenu("Help")) {
+    if (ImGui::MenuItem("Documentation...\tF1")) {
+      showDocsPanel_ = true;
+      docsPanelState_.focusRequested = true;
+    }
+    ImGui::Separator();
     if (ImGui::MenuItem("Check for Updates...")) {
       updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
                                      iota::core::UpdateChecker::kDefaultRepoOwner,
@@ -980,11 +994,31 @@ void EditorApp::drawInspectorPanel() {
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
     ImGui::SetTooltip("Switch sliders to exact numeric text inputs (tip: Ctrl+Click any slider to type a value too)");
   }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("? Docs")) {
+    const iota::model::ElementType targetType =
+        (selectedElemIdx_ >= 0 && selectedElemIdx_ < static_cast<int>(comp.elements.size()))
+            ? comp.elements[static_cast<size_t>(selectedElemIdx_)].type
+            : iota::model::ElementType::Composition;
+    openDocsForElement(targetType);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+    ImGui::SetTooltip("Open Built-in Documentation for the selected layer or composition (F1)");
+  }
+
+  ImGui::SetNextItemWidth(std::max(100.0f, ImGui::GetContentRegionAvail().x - 28.0f));
+  ImGui::InputTextWithHint("##insp_filter", "Filter options...", inspectorFilterBuf_, sizeof(inspectorFilterBuf_));
+  ImGui::SameLine();
+  if (ImGui::SmallButton("X##clr_insp")) {
+    inspectorFilterBuf_[0] = '\0';
+  }
   ImGui::Separator();
 
   InspectorActions actions;
   actions.showHiddenProperties = showHiddenProps_;
+  actions.showRawPropertyKeys = showRawPropertyKeys_;
   actions.preciseNumericInputs = preciseNumericInputs_;
+  actions.propertyFilter = inspectorFilterBuf_;
 
   if (selectedElemIdx_ >= 0 && selectedElemIdx_ < static_cast<int>(comp.elements.size())) {
     auto& el = comp.elements[static_cast<size_t>(selectedElemIdx_)];
@@ -1492,7 +1526,7 @@ void EditorApp::drawInspectorPanel() {
 
     ImGui::Separator();
 
-    renderPropertyBagInspector(el.props, actions);
+    renderPropertyBagInspector(el.props, el.type, actions);
 
     if (!actions.addKeyframeProperty.empty()) {
       const double tSec = audio_.currentTimeSeconds();
@@ -1661,7 +1695,7 @@ void EditorApp::drawInspectorPanel() {
       });
     }
     ImGui::Separator();
-    renderPropertyBagInspector(comp.props, actions);
+    renderPropertyBagInspector(comp.props, iota::model::ElementType::Composition, actions);
   }
 
   if (actions.undoSnapshotNeeded) {
@@ -2012,6 +2046,19 @@ void EditorApp::drawUpdateModal() {
   if (actions.copiedLink) {
     statusBanner_ = "Copied release link to clipboard";
   }
+}
+
+void EditorApp::drawDocsPanel() {
+  DocsPanelActions actions;
+  renderDocsPanel(showDocsPanel_, docsPanelState_, actions);
+  if (!actions.copiedSnippet.empty()) {
+    statusBanner_ = "Copied to clipboard: " + actions.copiedSnippet;
+  }
+}
+
+void EditorApp::openDocsForElement(iota::model::ElementType type) {
+  showDocsPanel_ = true;
+  docsPanelState_.openElement(type);
 }
 
 void EditorApp::openExternalUrl(const std::string& url) {

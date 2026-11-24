@@ -10,6 +10,8 @@ add_executable(iota_studio
   src/sound_keys_panel.cpp
   src/asset_browser_panel.hpp
   src/asset_browser_panel.cpp
+  src/docs_panel.hpp
+  src/docs_panel.cpp
   src/project_manager_modal.hpp
   src/project_manager_modal.cpp
   src/update_modal.hpp

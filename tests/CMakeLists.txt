@@ -6,6 +6,7 @@ add_executable(iota_tests
   test_particles.cpp
   test_shake.cpp
   test_update_checker.cpp
+  test_property_docs.cpp
   test_engine_gl.cpp
 )
 

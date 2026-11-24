@@ -19,9 +19,12 @@ struct InspectorActions {
   std::string assetTargetPropName;
   bool showHiddenProperties = false;
   bool preciseNumericInputs = false;
+  bool showRawPropertyKeys = false;
+  std::string propertyFilter;
 };
 
 void renderPropertyBagInspector(iota::model::PropertyBag& bag,
+                                iota::model::ElementType ownerType,
                                 InspectorActions& actions,
                                 std::function<void()> onBeforeDiscreteEdit = {});
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "asset_browser_panel.hpp"
+#include "docs_panel.hpp"
 #include "hierarchy_panel.hpp"
 #include "project_manager_modal.hpp"
 #include "update_modal.hpp"
@@ -48,6 +49,8 @@ class EditorApp {
   void drawProjectManagerModal();
   void drawExportModal();
   void drawUpdateModal();
+  void drawDocsPanel();
+  void openDocsForElement(iota::model::ElementType type);
   void openExternalUrl(const std::string& url);
   void handleShortcuts();
 
@@ -95,7 +98,11 @@ class EditorApp {
   int selectedCompIdx_ = 0;
   int selectedElemIdx_ = -1;
   bool showHiddenProps_ = false;
+  bool showRawPropertyKeys_ = false;
   bool preciseNumericInputs_ = false;
+  char inspectorFilterBuf_[128]{};
+  bool showDocsPanel_ = false;
+  DocsPanelState docsPanelState_;
   bool showSoundKeysPanel_ = true;
   bool showAssetBrowserPanel_ = true;
   int activeSoundKeysRange_ = 0;
