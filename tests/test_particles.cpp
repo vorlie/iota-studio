@@ -188,4 +188,73 @@ TEST_CASE("ParticleSystem 3D curl noise, emitter shapes, physics, DoF, and Aux t
     CHECK(maxCoc > 0.10f);
     CHECK(maxAspectRatio > 1.3f);  // Velocity trail stretched quads longer along motion
   }
+
+  SUBCASE("Aux Continuously, AtBounce, and AtDeath survive large vector reallocations without dangling references") {
+    ParticleSystem sys;
+    ParticleSimConfig cfg;
+    cfg.emitterType = ParticleEmitterType::Point;
+    cfg.maxParticles = 20000;
+    cfg.particlesPerSec = 600.0f;
+    cfg.lifetime = 3.0f;
+    cfg.lifetimeRandom = 0.0f;
+    cfg.auxMode = ParticleAuxMode::Continuously;
+    cfg.auxParticlesPerSec = 120.0f;
+    cfg.auxLifetime = 1.5f;
+    cfg.opacityOverLife = ParticleCurvePreset::Constant;
+
+    for (int f = 0; f < 45; ++f) {
+      sys.step(cfg, emitterRect, kW, kH, 1.0f / 60.0f);
+    }
+    CHECK(sys.activeCount() > 5000);
+    CHECK(sys.activeCount() <= cfg.maxParticles);
+    CHECK(sys.auxCount() > 4000);
+    CHECK(sys.auxCount() <= sys.activeCount());
+
+    std::vector<iota::rhi::VertexPosColUv> verts;
+    std::vector<uint32_t> idx;
+    sys.buildGeometry(cfg, emitterRect, kW, kH, false, false, verts, idx);
+    REQUIRE(!verts.empty());
+    CHECK(std::isfinite(verts.front().x));
+    CHECK(std::isfinite(verts.front().y));
+
+    ParticleSystem bounceSys;
+    ParticleSimConfig bounceCfg;
+    bounceCfg.emitterType = ParticleEmitterType::HorizontalLine;
+    bounceCfg.maxParticles = 12000;
+    bounceCfg.particlesPerSec = 800.0f;
+    bounceCfg.lifetime = 3.0f;
+    bounceCfg.speedBase = 120.0f;
+    bounceCfg.vectorRelativeToCenter = false;
+    bounceCfg.vectorAngleRad = 1.5707963f;  // Downward toward bounce floor
+    bounceCfg.gravity = {0.0f, 1200.0f};
+    bounceCfg.bounceEnabled = true;
+    bounceCfg.bounceFloorY = 0.5f;
+    bounceCfg.bounceRestitution = 0.6f;
+    bounceCfg.auxMode = ParticleAuxMode::AtBounce;
+    bounceCfg.auxBurstCount = 24;
+    bounceCfg.auxLifetime = 1.5f;
+
+    for (int f = 0; f < 35; ++f) {
+      bounceSys.step(bounceCfg, emitterRect, kW, kH, 1.0f / 60.0f);
+    }
+    CHECK(bounceSys.auxCount() > 500);
+    CHECK(bounceSys.activeCount() <= bounceCfg.maxParticles);
+
+    ParticleSystem deathSys;
+    ParticleSimConfig deathCfg;
+    deathCfg.emitterType = ParticleEmitterType::Point;
+    deathCfg.maxParticles = 12000;
+    deathCfg.particlesPerSec = 800.0f;
+    deathCfg.lifetime = 0.08f;
+    deathCfg.lifetimeRandom = 0.0f;
+    deathCfg.auxMode = ParticleAuxMode::AtDeath;
+    deathCfg.auxBurstCount = 16;
+    deathCfg.auxLifetime = 1.0f;
+
+    for (int f = 0; f < 25; ++f) {
+      deathSys.step(deathCfg, emitterRect, kW, kH, 1.0f / 60.0f);
+    }
+    CHECK(deathSys.auxCount() > 500);
+    CHECK(deathSys.activeCount() <= deathCfg.maxParticles);
+  }
 }

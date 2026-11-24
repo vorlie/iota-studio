@@ -237,7 +237,11 @@ class ParticleSystem {
                     iota::core::Vec2 emitterVel,
                     std::span<const EmitterSamplePoint> layerSamples);
 
-  void spawnAuxFrom(const ParticleSimConfig& cfg, const Particle& parent, float extraJitterSpeed);
+  void spawnAuxFrom(const ParticleSimConfig& cfg,
+                    const Particle& parent,
+                    float extraJitterSpeed,
+                    int maxCap,
+                    std::vector<Particle>& outAux);
 
   uint32_t rng_ = 1337u;
   float spawnAccum_ = 0.0f;
@@ -248,6 +252,7 @@ class ParticleSystem {
   bool preRunDone_ = false;
   int auxCount_ = 0;
   std::vector<Particle> particles_;
+  std::vector<Particle> pendingAux_;
 };
 
 }  // namespace iota::engine

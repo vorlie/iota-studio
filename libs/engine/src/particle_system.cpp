@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
 
 namespace iota::engine {
@@ -268,6 +269,7 @@ void ParticleSystem::reset() noexcept {
   preRunDone_ = false;
   auxCount_ = 0;
   particles_.clear();
+  pendingAux_.clear();
 }
 
 void ParticleSystem::spawnPrimary(const ParticleSimConfig& cfg,
@@ -418,9 +420,10 @@ void ParticleSystem::spawnPrimary(const ParticleSimConfig& cfg,
 
 void ParticleSystem::spawnAuxFrom(const ParticleSimConfig& cfg,
                                   const Particle& parent,
-                                  float extraJitterSpeed) {
-  const int maxCap = std::clamp(cfg.maxParticles, 1, 50000);
-  if (parent.isAux || static_cast<int>(particles_.size()) >= maxCap) {
+                                  float extraJitterSpeed,
+                                  int maxCap,
+                                  std::vector<Particle>& outAux) {
+  if (parent.isAux || static_cast<int>(particles_.size() + outAux.size()) >= maxCap) {
     return;
   }
 
@@ -445,7 +448,7 @@ void ParticleSystem::spawnAuxFrom(const ParticleSimConfig& cfg,
   aux.vy = parent.vy * cfg.auxVelocityScale + rxy * std::sin(phi) * extraJitterSpeed;
   aux.vz = parent.vz * cfg.auxVelocityScale + cz * extraJitterSpeed;
 
-  particles_.push_back(aux);
+  outAux.push_back(aux);
 }
 
 void ParticleSystem::step(const ParticleSimConfig& cfg,
@@ -531,6 +534,7 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
   const float bounceFric = std::clamp(cfg.bounceFriction, 0.0f, 1.0f);
 
   auxCount_ = 0;
+  pendingAux_.clear();
   size_t i = 0;
   while (i < particles_.size()) {
     Particle& pt = particles_[i];
@@ -538,15 +542,19 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
     if (pt.age >= pt.maxAge) {
       if (!pt.isAux && cfg.auxMode == ParticleAuxMode::AtDeath) {
         const Particle copy = pt;
-        particles_[i] = particles_.back();
+        if (i + 1 < particles_.size()) {
+          particles_[i] = particles_.back();
+        }
         particles_.pop_back();
         const int burst = std::clamp(cfg.auxBurstCount, 1, 32);
         for (int b = 0; b < burst; ++b) {
-          spawnAuxFrom(cfg, copy, 45.0f);
+          spawnAuxFrom(cfg, copy, 45.0f, maxCap, pendingAux_);
         }
         continue;
       }
-      particles_[i] = particles_.back();
+      if (i + 1 < particles_.size()) {
+        particles_[i] = particles_.back();
+      }
       particles_.pop_back();
       continue;
     }
@@ -629,10 +637,9 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
         pt.vx *= (1.0f - bounceFric);
         pt.vz *= (1.0f - bounceFric);
         if (!pt.isAux && cfg.auxMode == ParticleAuxMode::AtBounce) {
-          const Particle copy = pt;
           const int burst = std::clamp(cfg.auxBurstCount, 1, 24);
           for (int b = 0; b < burst; ++b) {
-            spawnAuxFrom(cfg, copy, 35.0f);
+            spawnAuxFrom(cfg, pt, 35.0f, maxCap, pendingAux_);
           }
         }
       }
@@ -644,7 +651,10 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
       int auxBudget = 6;
       while (pt.auxAccum >= 1.0f && auxBudget-- > 0) {
         pt.auxAccum -= 1.0f;
-        spawnAuxFrom(cfg, pt, 12.0f);
+        spawnAuxFrom(cfg, pt, 12.0f, maxCap, pendingAux_);
+      }
+      if (pt.auxAccum > 6.0f) {
+        pt.auxAccum = 6.0f;
       }
     }
 
@@ -652,6 +662,20 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
       ++auxCount_;
     }
     ++i;
+  }
+
+  if (!pendingAux_.empty()) {
+    const size_t avail = (static_cast<int>(particles_.size()) < maxCap)
+                             ? static_cast<size_t>(maxCap - static_cast<int>(particles_.size()))
+                             : 0u;
+    const size_t toAppend = std::min(pendingAux_.size(), avail);
+    if (toAppend > 0) {
+      particles_.insert(particles_.end(),
+                        pendingAux_.begin(),
+                        pendingAux_.begin() + static_cast<std::ptrdiff_t>(toAppend));
+      auxCount_ += static_cast<int>(toAppend);
+    }
+    pendingAux_.clear();
   }
 }
 
