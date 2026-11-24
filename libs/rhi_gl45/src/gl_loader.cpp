@@ -37,48 +37,72 @@ bool loadFn(FnPtr& dst, const char* name, std::string* outError) {
   return true;
 }
 
+template <typename FnPtr>
+void loadOptionalFn(FnPtr& dst, const char* name) {
+  void* sym = resolveGlSymbol(name);
+  dst = reinterpret_cast<FnPtr>(sym);
+}
+
 }  // namespace
 
 bool loadGlProcs(GlProcs& p, std::string* outError) {
-  return loadFn(p.CreateShader, "glCreateShader", outError) &&
-         loadFn(p.ShaderSource, "glShaderSource", outError) &&
-         loadFn(p.CompileShader, "glCompileShader", outError) &&
-         loadFn(p.GetShaderiv, "glGetShaderiv", outError) &&
-         loadFn(p.GetShaderInfoLog, "glGetShaderInfoLog", outError) &&
-         loadFn(p.DeleteShader, "glDeleteShader", outError) &&
-         loadFn(p.CreateProgram, "glCreateProgram", outError) &&
-         loadFn(p.AttachShader, "glAttachShader", outError) &&
-         loadFn(p.LinkProgram, "glLinkProgram", outError) &&
-         loadFn(p.GetProgramiv, "glGetProgramiv", outError) &&
-         loadFn(p.GetProgramInfoLog, "glGetProgramInfoLog", outError) &&
-         loadFn(p.UseProgram, "glUseProgram", outError) &&
-         loadFn(p.DeleteProgram, "glDeleteProgram", outError) &&
-         loadFn(p.GetUniformLocation, "glGetUniformLocation", outError) &&
-         loadFn(p.Uniform1i, "glUniform1i", outError) &&
-         loadFn(p.Uniform1f, "glUniform1f", outError) &&
-         loadFn(p.Uniform2f, "glUniform2f", outError) &&
-         loadFn(p.Uniform3f, "glUniform3f", outError) &&
-         loadFn(p.Uniform4f, "glUniform4f", outError) &&
-         loadFn(p.UniformMatrix4fv, "glUniformMatrix4fv", outError) &&
-         loadFn(p.GenVertexArrays, "glGenVertexArrays", outError) &&
-         loadFn(p.DeleteVertexArrays, "glDeleteVertexArrays", outError) &&
-         loadFn(p.BindVertexArray, "glBindVertexArray", outError) &&
-         loadFn(p.GenBuffers, "glGenBuffers", outError) &&
-         loadFn(p.DeleteBuffers, "glDeleteBuffers", outError) &&
-         loadFn(p.BindBuffer, "glBindBuffer", outError) &&
-         loadFn(p.BufferData, "glBufferData", outError) &&
-         loadFn(p.BufferSubData, "glBufferSubData", outError) &&
-         loadFn(p.EnableVertexAttribArray, "glEnableVertexAttribArray", outError) &&
-         loadFn(p.VertexAttribPointer, "glVertexAttribPointer", outError) &&
-         loadFn(p.ActiveTexture, "glActiveTexture", outError) &&
-         loadFn(p.GenerateMipmap, "glGenerateMipmap", outError) &&
-         loadFn(p.GenFramebuffers, "glGenFramebuffers", outError) &&
-         loadFn(p.DeleteFramebuffers, "glDeleteFramebuffers", outError) &&
-         loadFn(p.BindFramebuffer, "glBindFramebuffer", outError) &&
-         loadFn(p.FramebufferTexture2D, "glFramebufferTexture2D", outError) &&
-         loadFn(p.CheckFramebufferStatus, "glCheckFramebufferStatus", outError) &&
-         loadFn(p.BlendFuncSeparate, "glBlendFuncSeparate", outError) &&
-         loadFn(p.BlendEquation, "glBlendEquation", outError);
+  const bool coreOk =
+      loadFn(p.CreateShader, "glCreateShader", outError) &&
+      loadFn(p.ShaderSource, "glShaderSource", outError) &&
+      loadFn(p.CompileShader, "glCompileShader", outError) &&
+      loadFn(p.GetShaderiv, "glGetShaderiv", outError) &&
+      loadFn(p.GetShaderInfoLog, "glGetShaderInfoLog", outError) &&
+      loadFn(p.DeleteShader, "glDeleteShader", outError) &&
+      loadFn(p.CreateProgram, "glCreateProgram", outError) &&
+      loadFn(p.AttachShader, "glAttachShader", outError) &&
+      loadFn(p.LinkProgram, "glLinkProgram", outError) &&
+      loadFn(p.GetProgramiv, "glGetProgramiv", outError) &&
+      loadFn(p.GetProgramInfoLog, "glGetProgramInfoLog", outError) &&
+      loadFn(p.UseProgram, "glUseProgram", outError) &&
+      loadFn(p.DeleteProgram, "glDeleteProgram", outError) &&
+      loadFn(p.GetUniformLocation, "glGetUniformLocation", outError) &&
+      loadFn(p.Uniform1i, "glUniform1i", outError) &&
+      loadFn(p.Uniform1f, "glUniform1f", outError) &&
+      loadFn(p.Uniform2f, "glUniform2f", outError) &&
+      loadFn(p.Uniform3f, "glUniform3f", outError) &&
+      loadFn(p.Uniform4f, "glUniform4f", outError) &&
+      loadFn(p.UniformMatrix4fv, "glUniformMatrix4fv", outError) &&
+      loadFn(p.GenVertexArrays, "glGenVertexArrays", outError) &&
+      loadFn(p.DeleteVertexArrays, "glDeleteVertexArrays", outError) &&
+      loadFn(p.BindVertexArray, "glBindVertexArray", outError) &&
+      loadFn(p.GenBuffers, "glGenBuffers", outError) &&
+      loadFn(p.DeleteBuffers, "glDeleteBuffers", outError) &&
+      loadFn(p.BindBuffer, "glBindBuffer", outError) &&
+      loadFn(p.BufferData, "glBufferData", outError) &&
+      loadFn(p.BufferSubData, "glBufferSubData", outError) &&
+      loadFn(p.BufferStorage, "glBufferStorage", outError) &&
+      loadFn(p.MapBufferRange, "glMapBufferRange", outError) &&
+      loadFn(p.UnmapBuffer, "glUnmapBuffer", outError) &&
+      loadFn(p.DrawElementsBaseVertex, "glDrawElementsBaseVertex", outError) &&
+      loadFn(p.FenceSync, "glFenceSync", outError) &&
+      loadFn(p.ClientWaitSync, "glClientWaitSync", outError) &&
+      loadFn(p.DeleteSync, "glDeleteSync", outError) &&
+      loadFn(p.EnableVertexAttribArray, "glEnableVertexAttribArray", outError) &&
+      loadFn(p.VertexAttribPointer, "glVertexAttribPointer", outError) &&
+      loadFn(p.ActiveTexture, "glActiveTexture", outError) &&
+      loadFn(p.GenerateMipmap, "glGenerateMipmap", outError) &&
+      loadFn(p.GenFramebuffers, "glGenFramebuffers", outError) &&
+      loadFn(p.DeleteFramebuffers, "glDeleteFramebuffers", outError) &&
+      loadFn(p.BindFramebuffer, "glBindFramebuffer", outError) &&
+      loadFn(p.FramebufferTexture2D, "glFramebufferTexture2D", outError) &&
+      loadFn(p.CheckFramebufferStatus, "glCheckFramebufferStatus", outError) &&
+      loadFn(p.BlendFuncSeparate, "glBlendFuncSeparate", outError) &&
+      loadFn(p.BlendEquation, "glBlendEquation", outError);
+
+  if (coreOk) {
+    loadOptionalFn(p.GenQueries, "glGenQueries");
+    loadOptionalFn(p.DeleteQueries, "glDeleteQueries");
+    loadOptionalFn(p.BeginQuery, "glBeginQuery");
+    loadOptionalFn(p.EndQuery, "glEndQuery");
+    loadOptionalFn(p.GetQueryObjectiv, "glGetQueryObjectiv");
+    loadOptionalFn(p.GetQueryObjectui64v, "glGetQueryObjectui64v");
+  }
+  return coreOk;
 }
 
 }  // namespace iota::rhi::gl

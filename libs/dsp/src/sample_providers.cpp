@@ -74,17 +74,10 @@ struct KissFftDeleter {
   }
 };
 
-struct BarLut {
-  float freqHz = 100.0f;
-  int periodSamples = 2;
-  float calibScale = 1.0f;
-  std::vector<float> cosTable;
-  std::vector<float> sinTable;
-};
-
 }  // namespace
 
 struct AudioAnalyzer::Impl {
+  bool configInitialized = false;
   int fftSize = 0;
   std::unique_ptr<kiss_fftr_state, KissFftDeleter> fftCfg;
   std::vector<float> windowedPcm;
@@ -92,17 +85,17 @@ struct AudioAnalyzer::Impl {
   std::vector<float> fftMagnitudes;
   std::vector<float> preSmoothedFftMags;
 
-  // Cached Spectrum2 DFT LUTs
+  // Cached Spectrum2 Goertzel filterbank parameters + cached bar frequencies & Hann window
+  std::vector<float> cachedBarFreqs;
+  std::vector<float> cachedHann;
+  int hannSize = 0;
   int lutSampleRate = 0;
-  int lutBarCount = 0;
-  float lutLowerHz = 0.0f;
-  float lutHigherHz = 0.0f;
-  float lutHzLinear = -1.0f;
-  float lutFreqShift = 0.0f;
-  int lutMirror = -1;
-  int lutRepeat = -1;
-  float lutGap = -1.0f;
-  std::vector<BarLut> dftLuts;
+  bool goertzelDirty = true;
+  std::vector<double> goertzelTwoCos;
+  std::vector<double> goertzelCos;
+  std::vector<double> goertzelSin;
+  std::vector<float> goertzelGainMul;
+  std::vector<uint8_t> goertzelActive;
 
   AgcEnvelope agc;
   BeatDetectorState beatState;
@@ -123,61 +116,56 @@ struct AudioAnalyzer::Impl {
     }
   }
 
-  void ensureDftLuts(const SpectrumConfig& cfg, int effectiveSampleRate, const std::vector<float>& freqs) {
-    const bool unchanged =
-        lutSampleRate == effectiveSampleRate &&
-        lutBarCount == static_cast<int>(freqs.size()) &&
-        lutLowerHz == cfg.lowerHz &&
-        lutHigherHz == cfg.higherHz &&
-        lutHzLinear == cfg.hzLinearFactor &&
-        lutFreqShift == cfg.freqShift &&
-        lutMirror == cfg.mirrorSamples &&
-        lutRepeat == cfg.repeatSamples &&
-        lutGap == cfg.starAndEndGap;
-    if (unchanged && !dftLuts.empty()) {
+  void ensureHannWindow(int n) {
+    if (n == hannSize && static_cast<int>(cachedHann.size()) == n) {
       return;
     }
+    hannSize = n;
+    cachedHann.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+      cachedHann[static_cast<size_t>(i)] = hannWindow(i, n);
+    }
+  }
 
+  void ensureGoertzelTables(const SpectrumConfig& cfg, int effectiveSampleRate) {
+    if (!goertzelDirty && lutSampleRate == effectiveSampleRate && !goertzelTwoCos.empty()) {
+      return;
+    }
+    if (cachedBarFreqs.empty()) {
+      cachedBarFreqs = computeBarFrequencies(cfg);
+    }
     lutSampleRate = effectiveSampleRate;
-    lutBarCount = static_cast<int>(freqs.size());
-    lutLowerHz = cfg.lowerHz;
-    lutHigherHz = cfg.higherHz;
-    lutHzLinear = cfg.hzLinearFactor;
-    lutFreqShift = cfg.freqShift;
-    lutMirror = cfg.mirrorSamples;
-    lutRepeat = cfg.repeatSamples;
-    lutGap = cfg.starAndEndGap;
+    goertzelDirty = false;
 
-    dftLuts.resize(freqs.size());
-    const float fs = static_cast<float>(std::max(effectiveSampleRate, 8000));
+    const size_t nBars = cachedBarFreqs.size();
+    goertzelTwoCos.resize(nBars);
+    goertzelCos.resize(nBars);
+    goertzelSin.resize(nBars);
+    goertzelGainMul.resize(nBars);
+    goertzelActive.resize(nBars);
 
-    for (size_t i = 0; i < freqs.size(); ++i) {
-      auto& lut = dftLuts[i];
-      if (freqs[i] < 1.0f) {
-        lut.freqHz = freqs[i];
-        lut.periodSamples = 0;
-        lut.cosTable.clear();
-        lut.sinTable.clear();
-        lut.calibScale = 1.0f;
+    const double fs = static_cast<double>(std::max(effectiveSampleRate, 8000));
+    const double twoPiOverFs = (2.0 * static_cast<double>(kPi)) / fs;
+
+    for (size_t i = 0; i < nBars; ++i) {
+      const float rawFreq = cachedBarFreqs[i];
+      if (rawFreq < 1.0f) {
+        goertzelTwoCos[i] = 2.0;
+        goertzelCos[i] = 1.0;
+        goertzelSin[i] = 0.0;
+        goertzelGainMul[i] = 0.0f;
+        goertzelActive[i] = 0;
         continue;
       }
-      lut.freqHz = std::clamp(freqs[i], 1.0f, fs * 0.49f);
-      const float samplesPerCycle = fs / lut.freqHz;
-      const int cycles = std::max(1, static_cast<int>(std::lround((fs / 400.0f) / std::max(samplesPerCycle, 1.0f))));
-      int period = static_cast<int>(std::lround(static_cast<float>(cycles) * samplesPerCycle));
-      period = std::clamp(period, 2, std::max(2, effectiveSampleRate));
-      lut.periodSamples = period;
-      lut.cosTable.resize(static_cast<size_t>(period));
-      lut.sinTable.resize(static_cast<size_t>(period));
-
-      const double phaseStep = (2.0 * static_cast<double>(kPi) * static_cast<double>(lut.freqHz)) /
-                               static_cast<double>(fs);
-      for (int n = 0; n < period; ++n) {
-        const double ang = phaseStep * static_cast<double>(n);
-        lut.cosTable[static_cast<size_t>(n)] = static_cast<float>(std::cos(ang));
-        lut.sinTable[static_cast<size_t>(n)] = static_cast<float>(std::sin(ang));
-      }
-      lut.calibScale = 1.0f;
+      const float clampedFreq = std::clamp(rawFreq, 1.0f, static_cast<float>(fs * 0.49));
+      const double omega = twoPiOverFs * static_cast<double>(clampedFreq);
+      const double cosW = std::cos(omega);
+      const double sinW = std::sin(omega);
+      goertzelTwoCos[i] = 2.0 * cosW;
+      goertzelCos[i] = cosW;
+      goertzelSin[i] = sinW;
+      goertzelGainMul[i] = spectrum2LowerFreqMultiplier(clampedFreq, cfg.lowerFreqMagnitude) * cfg.outputMultiplier;
+      goertzelActive[i] = 1;
     }
   }
 };
@@ -376,13 +364,26 @@ AudioAnalyzer::AudioAnalyzer(AudioAnalyzer&&) noexcept = default;
 AudioAnalyzer& AudioAnalyzer::operator=(AudioAnalyzer&&) noexcept = default;
 
 void AudioAnalyzer::setConfig(const SpectrumConfig& cfg) {
+  if (impl_->configInitialized && cfg == cfg_) {
+    return;
+  }
+  impl_->configInitialized = true;
   cfg_ = cfg;
+  impl_->cachedBarFreqs = computeBarFrequencies(cfg_);
+  impl_->goertzelDirty = true;
   if (cfg_.kind == SampleProviderKind::Spectrum) {
     impl_->sharpenKernel.configure(static_cast<int>(std::lround(cfg_.filterRadius)), cfg_.filterStrength);
   } else if (cfg_.kind == SampleProviderKind::Spectrum2) {
     impl_->gaussKernel.configure(cfg_.filterRadius, std::clamp(cfg_.filterStrength, 0.0f, 1.0f));
   }
   impl_->freqSmoother.configure(cfg_.freqSmoothMode, cfg_.freqSmoothRadius, cfg_.freqSmoothStrength);
+}
+
+const std::vector<float>& AudioAnalyzer::cachedBarFrequencies() const noexcept {
+  if (impl_->cachedBarFreqs.empty()) {
+    impl_->cachedBarFreqs = computeBarFrequencies(cfg_);
+  }
+  return impl_->cachedBarFreqs;
 }
 
 void AudioAnalyzer::reset() {
@@ -495,11 +496,11 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
     std::fill(impl_->windowedPcm.begin(), impl_->windowedPcm.end(), 0.0f);
 
     const int copyCount = std::min(fftN, availSamples);
-    const int srcStart = 0;
-    const int dstStart = 0;
+    impl_->ensureHannWindow(copyCount);
+    const float* hann = impl_->cachedHann.data();
     for (int i = 0; i < copyCount; ++i) {
-      impl_->windowedPcm[static_cast<size_t>(dstStart + i)] =
-          input.monoPcm[static_cast<size_t>(srcStart + i)] * preScale * hannWindow(i, copyCount);
+      impl_->windowedPcm[static_cast<size_t>(i)] =
+          input.monoPcm[static_cast<size_t>(i)] * preScale * hann[i];
     }
 
     kiss_fftr(impl_->fftCfg.get(), impl_->windowedPcm.data(), impl_->fftOut.data());
@@ -527,7 +528,7 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
       impl_->preSmoothedFftMags = impl_->fftMagnitudes;
     }
 
-    const std::vector<float> barFreqs = computeBarFrequencies(cfg_);
+    const std::vector<float>& barFreqs = cachedBarFrequencies();
     const float df = static_cast<float>(sampleRate) / static_cast<float>(fftN);
 
     impl_->workBars.assign(static_cast<size_t>(barCount), 0.0f);
@@ -572,67 +573,103 @@ const AudioAnalysisResult& AudioAnalyzer::process(const AudioFrameInput& input) 
       impl_->workBars[static_cast<size_t>(i)] = weighted;
     }
 
-    impl_->sharpenKernel.configure(static_cast<int>(std::lround(cfg_.filterRadius)), cfg_.filterStrength);
     impl_->sharpenKernel.apply(impl_->workBars, result_.rawBars);
   } else {
-    // Spectrum2: Direct-DFT filterbank tuned across per-bar frequency centers
-    const std::vector<float> barFreqs = computeBarFrequencies(cfg_);
-    impl_->ensureDftLuts(cfg_, effectiveRate, barFreqs);
+    // Spectrum2: Branchless 4-wide Goertzel filterbank across per-bar frequency centers
+    impl_->ensureGoertzelTables(cfg_, effectiveRate);
 
     const int targetSamples = std::clamp((cfg_.audioDurationMs * effectiveRate) / 1000, 64, 32768);
     const int availDecimated = availSamples / decimation;
     const int nSamples = std::min(targetSamples, std::max(1, availDecimated));
-    const int startSample = 0;
 
+    impl_->ensureHannWindow(nSamples);
     impl_->windowedPcm.resize(static_cast<size_t>(nSamples));
-    for (int n = 0; n < nSamples; ++n) {
-      float sample = 0.0f;
-      if (decimation == 2 && startSample + n * 2 + 1 < availSamples) {
-        sample = 0.5f * (input.monoPcm[static_cast<size_t>(startSample + n * 2)] +
-                         input.monoPcm[static_cast<size_t>(startSample + n * 2 + 1)]);
-      } else {
-        sample = input.monoPcm[static_cast<size_t>(startSample + n * decimation)];
+    const float* hann = impl_->cachedHann.data();
+    const float* pcmPtr = input.monoPcm.data();
+    if (decimation == 2) {
+      for (int n = 0; n < nSamples; ++n) {
+        const size_t idx0 = static_cast<size_t>(n * 2);
+        const float sample = (idx0 + 1 < static_cast<size_t>(availSamples))
+                                 ? (0.5f * (pcmPtr[idx0] + pcmPtr[idx0 + 1]))
+                                 : pcmPtr[idx0];
+        impl_->windowedPcm[static_cast<size_t>(n)] = sample * preScale * hann[n];
       }
-      impl_->windowedPcm[static_cast<size_t>(n)] = sample * preScale * hannWindow(n, nSamples);
+    } else {
+      for (int n = 0; n < nSamples; ++n) {
+        impl_->windowedPcm[static_cast<size_t>(n)] = pcmPtr[n] * preScale * hann[n];
+      }
     }
 
     impl_->workBars.assign(static_cast<size_t>(barCount), 0.0f);
-    const float invN = 1.0f / static_cast<float>(std::max(1, nSamples));
+    const double invNScale = 800.0 / static_cast<double>(std::max(1, nSamples));
     const float* xPtr = impl_->windowedPcm.data();
+    const double* twoCosPtr = impl_->goertzelTwoCos.data();
+    const double* cosPtr = impl_->goertzelCos.data();
+    const double* sinPtr = impl_->goertzelSin.data();
+    const float* gainPtr = impl_->goertzelGainMul.data();
+    const uint8_t* activePtr = impl_->goertzelActive.data();
+    float* outBars = impl_->workBars.data();
 
-    for (int b = 0; b < barCount; ++b) {
-      const auto& lut = impl_->dftLuts[static_cast<size_t>(b)];
-      const int period = lut.periodSamples;
-      if (period <= 0) {
-        impl_->workBars[static_cast<size_t>(b)] = 0.0f;
-        continue;
-      }
-      const float* cPtr = lut.cosTable.data();
-      const float* sPtr = lut.sinTable.data();
+    int b = 0;
+    for (; b + 4 <= barCount; b += 4) {
+      const double tc0 = twoCosPtr[b + 0];
+      const double tc1 = twoCosPtr[b + 1];
+      const double tc2 = twoCosPtr[b + 2];
+      const double tc3 = twoCosPtr[b + 3];
+      double s10 = 0.0, s20 = 0.0;
+      double s11 = 0.0, s21 = 0.0;
+      double s12 = 0.0, s22 = 0.0;
+      double s13 = 0.0, s23 = 0.0;
 
-      double sumCos = 0.0;
-      double sumSin = 0.0;
-      int phase = 0;
       for (int n = 0; n < nSamples; ++n) {
-        const float x = xPtr[n];
-        sumCos += static_cast<double>(x) * static_cast<double>(cPtr[phase]);
-        sumSin += static_cast<double>(x) * static_cast<double>(sPtr[phase]);
-        if (++phase == period) {
-          phase = 0;
-        }
+        const double x = static_cast<double>(xPtr[n]);
+        const double t0 = x + tc0 * s10 - s20;
+        const double t1 = x + tc1 * s11 - s21;
+        const double t2 = x + tc2 * s12 - s22;
+        const double t3 = x + tc3 * s13 - s23;
+        s20 = s10; s10 = t0;
+        s21 = s11; s11 = t1;
+        s22 = s12; s12 = t2;
+        s23 = s13; s13 = t3;
       }
 
-      const float mag = static_cast<float>(std::hypot(sumCos, sumSin)) * invN * 800.0f;
-      impl_->workBars[static_cast<size_t>(b)] =
-          mag * spectrum2LowerFreqMultiplier(lut.freqHz, cfg_.lowerFreqMagnitude) * cfg_.outputMultiplier;
+      const double s1Arr[4] = {s10, s11, s12, s13};
+      const double s2Arr[4] = {s20, s21, s22, s23};
+      for (int j = 0; j < 4; ++j) {
+        const int idx = b + j;
+        if (!activePtr[idx]) {
+          outBars[idx] = 0.0f;
+          continue;
+        }
+        const double re = cosPtr[idx] * s1Arr[j] - s2Arr[j];
+        const double im = sinPtr[idx] * s1Arr[j];
+        const float mag = static_cast<float>(std::sqrt(re * re + im * im) * invNScale);
+        outBars[idx] = mag * gainPtr[idx];
+      }
     }
 
-    impl_->gaussKernel.configure(cfg_.filterRadius, std::clamp(cfg_.filterStrength, 0.0f, 1.0f));
+    for (; b < barCount; ++b) {
+      if (!activePtr[b]) {
+        outBars[b] = 0.0f;
+        continue;
+      }
+      const double tc = twoCosPtr[b];
+      double s1 = 0.0, s2 = 0.0;
+      for (int n = 0; n < nSamples; ++n) {
+        const double t = static_cast<double>(xPtr[n]) + tc * s1 - s2;
+        s2 = s1;
+        s1 = t;
+      }
+      const double re = cosPtr[b] * s1 - s2;
+      const double im = sinPtr[b] * s1;
+      const float mag = static_cast<float>(std::sqrt(re * re + im * im) * invNScale);
+      outBars[b] = mag * gainPtr[b];
+    }
+
     impl_->gaussKernel.apply(impl_->workBars, result_.rawBars);
   }
 
   // Optional separate spatial frequency smoothing stage before temporal attack/release
-  impl_->freqSmoother.configure(cfg_.freqSmoothMode, cfg_.freqSmoothRadius, cfg_.freqSmoothStrength);
   const float* temporalTarget = result_.rawBars.data();
   if (cfg_.freqSmoothMode != FrequencySmoothMode::None) {
     impl_->freqSmoother.apply(result_.rawBars, impl_->filteredBars);

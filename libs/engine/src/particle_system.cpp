@@ -46,19 +46,53 @@ float smooth5(float t) noexcept {
   return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
 }
 
-float hashGrad3D(int ix, int iy, int iz, float fx, float fy, float fz) noexcept {
+float smooth5Deriv(float t) noexcept {
+  const float u = t - 1.0f;
+  return 30.0f * t * t * u * u;
+}
+
+struct GradSample3D {
+  float val = 0.0f;
+  float gx = 0.0f;
+  float gy = 0.0f;
+  float gz = 0.0f;
+};
+
+GradSample3D hashGrad3DWithDeriv(int ix, int iy, int iz, float fx, float fy, float fz) noexcept {
   uint32_t h = static_cast<uint32_t>(ix) * 374761393u +
                static_cast<uint32_t>(iy) * 668265263u +
                static_cast<uint32_t>(iz) * 2147483647u;
   h = (h ^ (h >> 13)) * 1274126177u;
   h ^= (h >> 16);
   const int g = static_cast<int>(h & 15u);
-  const float u = (g < 8) ? fx : fy;
-  const float v = (g < 4) ? fy : ((g == 12 || g == 14) ? fx : fz);
-  return (((g & 1) == 0) ? u : -u) + (((g & 2) == 0) ? v : -v);
+  const float su = ((g & 1) == 0) ? 1.0f : -1.0f;
+  const float sv = ((g & 2) == 0) ? 1.0f : -1.0f;
+
+  float gx = 0.0f;
+  float gy = 0.0f;
+  float gz = 0.0f;
+  if (g < 8) {
+    gx += su;
+  } else {
+    gy += su;
+  }
+  if (g < 4) {
+    gy += sv;
+  } else if (g == 12 || g == 14) {
+    gx += sv;
+  } else {
+    gz += sv;
+  }
+  return {gx * fx + gy * fy + gz * fz, gx, gy, gz};
 }
 
-float gradientNoise3D(float x, float y, float z) noexcept {
+struct NoiseDeriv3D {
+  float dx = 0.0f;
+  float dy = 0.0f;
+  float dz = 0.0f;
+};
+
+NoiseDeriv3D gradientNoise3DDeriv(float x, float y, float z) noexcept {
   const int ix = static_cast<int>(std::floor(x));
   const int iy = static_cast<int>(std::floor(y));
   const int iz = static_cast<int>(std::floor(z));
@@ -69,45 +103,56 @@ float gradientNoise3D(float x, float y, float z) noexcept {
   const float ux = smooth5(fx);
   const float uy = smooth5(fy);
   const float uz = smooth5(fz);
+  const float dux = smooth5Deriv(fx);
+  const float duy = smooth5Deriv(fy);
+  const float duz = smooth5Deriv(fz);
 
-  const float c000 = hashGrad3D(ix, iy, iz, fx, fy, fz);
-  const float c100 = hashGrad3D(ix + 1, iy, iz, fx - 1.0f, fy, fz);
-  const float c010 = hashGrad3D(ix, iy + 1, iz, fx, fy - 1.0f, fz);
-  const float c110 = hashGrad3D(ix + 1, iy + 1, iz, fx - 1.0f, fy - 1.0f, fz);
-  const float c001 = hashGrad3D(ix, iy, iz + 1, fx, fy, fz - 1.0f);
-  const float c101 = hashGrad3D(ix + 1, iy, iz + 1, fx - 1.0f, fy, fz - 1.0f);
-  const float c011 = hashGrad3D(ix, iy + 1, iz + 1, fx, fy - 1.0f, fz - 1.0f);
-  const float c111 = hashGrad3D(ix + 1, iy + 1, iz + 1, fx - 1.0f, fy - 1.0f, fz - 1.0f);
+  const auto c000 = hashGrad3DWithDeriv(ix, iy, iz, fx, fy, fz);
+  const auto c100 = hashGrad3DWithDeriv(ix + 1, iy, iz, fx - 1.0f, fy, fz);
+  const auto c010 = hashGrad3DWithDeriv(ix, iy + 1, iz, fx, fy - 1.0f, fz);
+  const auto c110 = hashGrad3DWithDeriv(ix + 1, iy + 1, iz, fx - 1.0f, fy - 1.0f, fz);
+  const auto c001 = hashGrad3DWithDeriv(ix, iy, iz + 1, fx, fy, fz - 1.0f);
+  const auto c101 = hashGrad3DWithDeriv(ix + 1, iy, iz + 1, fx - 1.0f, fy, fz - 1.0f);
+  const auto c011 = hashGrad3DWithDeriv(ix, iy + 1, iz + 1, fx, fy - 1.0f, fz - 1.0f);
+  const auto c111 = hashGrad3DWithDeriv(ix + 1, iy + 1, iz + 1, fx - 1.0f, fy - 1.0f, fz - 1.0f);
 
-  const float x00 = c000 + (c100 - c000) * ux;
-  const float x10 = c010 + (c110 - c010) * ux;
-  const float x01 = c001 + (c101 - c001) * ux;
-  const float x11 = c011 + (c111 - c011) * ux;
+  const float x00 = c000.val + (c100.val - c000.val) * ux;
+  const float x10 = c010.val + (c110.val - c010.val) * ux;
+  const float x01 = c001.val + (c101.val - c001.val) * ux;
+  const float x11 = c011.val + (c111.val - c011.val) * ux;
+
+  const float dx00_dx = c000.gx + (c100.gx - c000.gx) * ux + (c100.val - c000.val) * dux;
+  const float dx10_dx = c010.gx + (c110.gx - c010.gx) * ux + (c110.val - c010.val) * dux;
+  const float dx01_dx = c001.gx + (c101.gx - c001.gx) * ux + (c101.val - c001.val) * dux;
+  const float dx11_dx = c011.gx + (c111.gx - c011.gx) * ux + (c111.val - c011.val) * dux;
+
+  const float dx00_dy = c000.gy + (c100.gy - c000.gy) * ux;
+  const float dx10_dy = c010.gy + (c110.gy - c010.gy) * ux;
+  const float dx01_dy = c001.gy + (c101.gy - c001.gy) * ux;
+  const float dx11_dy = c011.gy + (c111.gy - c011.gy) * ux;
+
+  const float dx00_dz = c000.gz + (c100.gz - c000.gz) * ux;
+  const float dx10_dz = c010.gz + (c110.gz - c010.gz) * ux;
+  const float dx01_dz = c001.gz + (c101.gz - c001.gz) * ux;
+  const float dx11_dz = c011.gz + (c111.gz - c011.gz) * ux;
 
   const float y0 = x00 + (x10 - x00) * uy;
   const float y1 = x01 + (x11 - x01) * uy;
-  return y0 + (y1 - y0) * uz;
-}
 
-iota::core::Vec3 samplePotential3D(float x, float y, float z, int octaves) noexcept {
-  const int oct = std::clamp(octaves, 1, 3);
-  iota::core::Vec3 acc{};
-  float amp = 1.0f;
-  float freq = 1.0f;
-  float norm = 0.0f;
-  for (int o = 0; o < oct; ++o) {
-    const float px = x * freq;
-    const float py = y * freq;
-    const float pz = z * freq;
-    acc.x += gradientNoise3D(px, py, pz) * amp;
-    acc.y += gradientNoise3D(px + 31.416f, py - 17.321f, pz + 47.853f) * amp;
-    acc.z += gradientNoise3D(px - 19.732f, py + 53.197f, pz - 11.415f) * amp;
-    norm += amp;
-    amp *= 0.5f;
-    freq *= 2.03f;
-  }
-  const float inv = norm > 0.0f ? (1.0f / norm) : 1.0f;
-  return acc * inv;
+  const float dy0_dx = dx00_dx + (dx10_dx - dx00_dx) * uy;
+  const float dy1_dx = dx01_dx + (dx11_dx - dx01_dx) * uy;
+
+  const float dy0_dy = dx00_dy + (dx10_dy - dx00_dy) * uy + (x10 - x00) * duy;
+  const float dy1_dy = dx01_dy + (dx11_dy - dx01_dy) * uy + (x11 - x01) * duy;
+
+  const float dy0_dz = dx00_dz + (dx10_dz - dx00_dz) * uy;
+  const float dy1_dz = dx01_dz + (dx11_dz - dx01_dz) * uy;
+
+  return {
+      dy0_dx + (dy1_dx - dy0_dx) * uz,
+      dy0_dy + (dy1_dy - dy0_dy) * uz,
+      dy0_dz + (dy1_dz - dy0_dz) * uz + (y1 - y0) * duz,
+  };
 }
 
 iota::core::Vec3 normalizeSafe3(iota::core::Vec3 v, iota::core::Vec3 fallback = {0.0f, -1.0f, 0.0f}) noexcept {
@@ -235,28 +280,28 @@ float evaluateParticleCurve(ParticleCurvePreset preset, float lifeT, float fadeF
 }
 
 iota::core::Vec3 curlNoise3D(float x, float y, float z, int octaves) noexcept {
-  constexpr float kEps = 0.05f;
-  constexpr float kInvTwoEps = 1.0f / (2.0f * kEps);
-
-  const auto dxp = samplePotential3D(x + kEps, y, z, octaves);
-  const auto dxm = samplePotential3D(x - kEps, y, z, octaves);
-  const auto dyp = samplePotential3D(x, y + kEps, z, octaves);
-  const auto dym = samplePotential3D(x, y - kEps, z, octaves);
-  const auto dzp = samplePotential3D(x, y, z + kEps, octaves);
-  const auto dzm = samplePotential3D(x, y, z - kEps, octaves);
-
-  const float dPzDy = (dyp.z - dym.z) * kInvTwoEps;
-  const float dPyDz = (dzp.y - dzm.y) * kInvTwoEps;
-  const float dPxDz = (dzp.x - dzm.x) * kInvTwoEps;
-  const float dPzDx = (dxp.z - dxm.z) * kInvTwoEps;
-  const float dPyDx = (dxp.y - dxm.y) * kInvTwoEps;
-  const float dPxDy = (dyp.x - dym.x) * kInvTwoEps;
-
-  return {
-      dPzDy - dPyDz,
-      dPxDz - dPzDx,
-      dPyDx - dPxDy,
-  };
+  const int oct = std::clamp(octaves, 1, 3);
+  iota::core::Vec3 curlAcc{};
+  float amp = 1.0f;
+  float freq = 1.0f;
+  float norm = 0.0f;
+  for (int o = 0; o < oct; ++o) {
+    const float px = x * freq;
+    const float py = y * freq;
+    const float pz = z * freq;
+    const auto dPx = gradientNoise3DDeriv(px, py, pz);
+    const auto dPy = gradientNoise3DDeriv(px + 31.416f, py - 17.321f, pz + 47.853f);
+    const auto dPz = gradientNoise3DDeriv(px - 19.732f, py + 53.197f, pz - 11.415f);
+    const float scale = amp * freq;
+    curlAcc.x += (dPz.dy - dPy.dz) * scale;
+    curlAcc.y += (dPx.dz - dPz.dx) * scale;
+    curlAcc.z += (dPy.dx - dPx.dy) * scale;
+    norm += amp;
+    amp *= 0.5f;
+    freq *= 2.03f;
+  }
+  const float inv = norm > 0.0f ? (1.0f / norm) : 1.0f;
+  return curlAcc * inv;
 }
 
 void ParticleSystem::reset() noexcept {
@@ -563,7 +608,7 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
     if (cfg.forceField != ParticleForceFieldType::None) {
       const float rx = pt.x - curCenter.x;
       const float ry = pt.y - curCenter.y;
-      const float dist = std::hypot(rx, ry);
+      const float dist = std::sqrt(rx * rx + ry * ry);
       if (dist < fieldRadius) {
         const float falloff = 1.0f - (dist / fieldRadius);
         const float safeDist = std::max(12.0f, dist);
@@ -619,7 +664,7 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
     float waveDispY = 0.0f;
     if (std::abs(pt.waveMag) > 1e-4f) {
       const float lateral = std::sin(pt.age * pt.waveFreq * kTwoPi + pt.wavePhase) * pt.waveMag * 20.0f;
-      const float spdLen = std::max(1e-3f, std::hypot(pt.vx, pt.vy));
+      const float spdLen = std::max(1e-3f, std::sqrt(pt.vx * pt.vx + pt.vy * pt.vy));
       waveDispX = (-pt.vy / spdLen) * lateral;
       waveDispY = (pt.vx / spdLen) * lateral;
     }
@@ -699,7 +744,8 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
   const float aspect = std::max(0.1f, cfg.sizeAspectRatio);
 
   const float fovRad = std::clamp(cfg.perspectiveFov, 20.0f, 170.0f) * (kPi / 180.0f);
-  const float focalPx = (0.5f * minDim) / std::max(0.15f, std::tan(fovRad * 0.5f));
+  const float legacyFocalScale = 1.0f / std::max(0.15f, std::tan(fovRad * 0.5f));
+  const float focalPx = (0.5f * minDim) * legacyFocalScale;
   const float camDist = cfg.camera3DEnabled ? std::max(40.0f, cfg.cameraDistance) : focalPx;
   const float viewCx = static_cast<float>(viewW) * 0.5f;
   const float viewCy = static_cast<float>(viewH) * 0.5f;
@@ -716,21 +762,9 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
   const float vTop = (isPureSprite && spriteIsFbo) ? 1.0f : 0.0f;
   const float vBot = (isPureSprite && spriteIsFbo) ? 0.0f : 1.0f;
 
-  struct DrawItem {
-    float camZ = 0.0f;
-    float sx = 0.0f;
-    float sy = 0.0f;
-    float svx = 0.0f;
-    float svy = 0.0f;
-    float halfW = 1.0f;
-    float halfH = 1.0f;
-    float angle = 0.0f;
-    float coc = 0.0f;
-    uint32_t abgr = 0xFFFFFFFFu;
-  };
-
-  std::vector<DrawItem> items;
-  items.reserve(particles_.size());
+  scratchDrawItems_.clear();
+  scratchDrawItems_.reserve(particles_.size());
+  auto& items = scratchDrawItems_;
 
   for (const auto& pt : particles_) {
     const float lifeT = std::clamp(pt.age / pt.maxAge, 0.0f, 1.0f);
@@ -761,7 +795,6 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
       }
     } else if (cfg.perspectiveDepth > 0.0f) {
       // Legacy 2.5D depth scaling preserving anchored XY centers
-      const float legacyFocalScale = 1.0f / std::max(0.15f, std::tan(fovRad * 0.5f));
       camZ = std::max(10.0f, pt.z + 120.0f);
       perspFactor = std::clamp((legacyFocalScale * 180.0f) / camZ, 0.1f, 3.5f);
       if (camZ < nearFade) {
@@ -858,7 +891,7 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
     float halfW = std::max(0.75f, scalePx * szCurve * perspFactor * dofSizeExpand);
     float halfH = halfW * aspect;
     float angle = pt.rotation;
-    const float speed2D = std::hypot(svx, svy);
+    const float speed2D = std::sqrt(svx * svx + svy * svy);
 
     if (cfg.trailLength > 0.001f && speed2D > 1.0f) {
       angle = std::atan2(svy, svx);

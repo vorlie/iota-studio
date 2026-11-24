@@ -1493,6 +1493,132 @@ TEST_CASE("GL45 HDR additive alpha clamp, CustomShader error persistence, and GL
     CHECK(static_cast<int>(px[rightIdx + 0]) > 200);
   }
 
+  SUBCASE("Streaming ring buffer, R11G11B10F bloom, FXAA toggle, and opaque ShakeEffect FBO swap stay coherent") {
+    iota::model::Project proj;
+    proj.compositions.push_back(iota::model::createDefaultComposition(0));
+    proj.compositions.push_back(iota::model::createDefaultComposition(1));
+    proj.compositions[0].props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+    proj.compositions[0].props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+
+    auto bg = iota::model::createDefaultElement(iota::model::ElementType::Image);
+    bg.props.setString("customImage", "internalres:white", "img", "1_image");
+    bg.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+    bg.props.setColorHsla("Color", {0.50f, 1.0f, 0.50f, 1.0f}, "2_color");  // Cyan
+    proj.compositions[0].elements.push_back(std::move(bg));
+
+    auto shake = iota::model::createDefaultElement(iota::model::ElementType::ShakeEffect);
+    shake.props.setString("TargetImage", "composition:0", "img", "1_appearance");
+    shake.props.setString("blendMode", "Opaque", "_child Add Alpha Darken PreMul Screen Replace", "0_general");
+    shake.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+    shake.props.setFloat("amplitude", 0.03f, 0.0f, 5.0f, "2_shakeMaster");
+    shake.props.setFloat("rgbPhase", 0.05f, 0.0f, 1.0f, "4_motionAndRgb");
+    proj.compositions[0].elements.push_back(std::move(shake));
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st;
+    for (int f = 0; f < 10; ++f) {
+      const bool useFxaa = (f % 2) == 0;
+      REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, useFxaa, 60.0f},
+                                   kW, kH, {}, &st));
+      CHECK(st.lastError.empty());
+      CHECK(st.hdrPipelineActive);
+      CHECK(st.bloomActive);
+      CHECK(st.cpuDspMs >= 0.0f);
+      CHECK(st.cpuRenderMs >= 0.0f);
+    }
+    const auto px = readRgba();
+    const size_t c = (static_cast<size_t>(kH / 2) * kW + static_cast<size_t>(kW / 2)) * 4u;
+    CHECK(static_cast<int>(px[c + 1]) > 140);
+    CHECK(static_cast<int>(px[c + 2]) > 140);
+    CHECK(static_cast<int>(px[c + 0]) + 20 < static_cast<int>(px[c + 1]));
+  }
+
+  SUBCASE("Live async PBO LayerMask particle path renders cleanly across warmup frames") {
+    iota::model::Project lm;
+    lm.version = "10";
+    auto comp0 = iota::model::createDefaultComposition(0);
+    auto pt = iota::model::createDefaultElement(iota::model::ElementType::Particles);
+    pt.props.getOrAdd("SpawnArea").value = std::string("LayerMask");
+    pt.props.setString("emitterLayer", "composition:1", "img composition:0", "1_overall");
+    pt.props.setString("particleShape", "Sphere", "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+    pt.props.setFloat("particlesPerSec", 500.0f, 0.0f, 5000.0f, "1_overall");
+    pt.props.setFloat("preRunSec", 0.5f, 0.0f, 10.0f, "1_overall");
+    pt.props.setFloat("particleScale", 5.0f, 0.25f, 16.0f, "appearance");
+    pt.props.setColorHsla("ColorFrom", {0.5f, 1.0f, 0.5f, 1.0f}, "appearance");
+    pt.props.setColorHsla("ColorTo", {0.5f, 1.0f, 0.5f, 1.0f}, "appearance");
+    comp0.elements.push_back(std::move(pt));
+
+    auto comp1 = iota::model::createDefaultComposition(1);
+    auto mask = iota::model::createDefaultElement(iota::model::ElementType::Image);
+    mask.props.setString("customImage", "internalres:white", "img", "1_image");
+    mask.props.setVec2("position", {0.75f, 0.5f}, -1.0f, 1.0f, "0_general");
+    mask.props.setVec2("scale", {0.4f, 0.8f}, 0.0f, 2.0f, "0_general");
+    comp1.elements.push_back(std::move(mask));
+
+    lm.compositions.push_back(std::move(comp0));
+    lm.compositions.push_back(std::move(comp1));
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st;
+    for (int f = 0; f < 6; ++f) {
+      REQUIRE(renderer.renderFrame(lm, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, false, 0.0f, true, 60.0f},
+                                   kW, kH, {}, &st));
+      CHECK(st.lastError.empty());
+    }
+    CHECK(st.activeParticles > 5);
+    const auto px = readRgba();
+    uint64_t rightBlueSum = 0;
+    for (int y = 0; y < kH; ++y) {
+      for (int x = kW / 2; x < kW; ++x) {
+        rightBlueSum += px[static_cast<size_t>((y * kW + x) * 4) + 2];
+      }
+    }
+    CHECK(rightBlueSum > 5000);
+  }
+
+  SUBCASE("FontAtlasCache shaped layout cache hits, bounds eviction, and invalidates cleanly") {
+    iota::engine::FontAtlasCache atlas;
+    atlas.setDevice(&device);
+
+    iota::engine::TextStyle style;
+    style.outlineWidthPx = 1.5f;
+    style.shadowOffsetPx = {2.0f, 2.0f};
+    const iota::core::RectF bounds{0.0f, 0.0f, 240.0f, 64.0f};
+    const iota::core::ColorRgba white{255, 255, 255, 255};
+
+    std::vector<iota::rhi::VertexPosColUv> v0, v1;
+    std::vector<uint32_t> i0, i1;
+    const auto t0 = atlas.buildTextQuads("internal_2", "Iota Perf Cache", 24.0f, bounds, white, style, v0, i0);
+    const auto t1 = atlas.buildTextQuads("internal_2", "Iota Perf Cache", 24.0f, bounds, white, style, v1, i1);
+    REQUIRE(t0);
+    REQUIRE(t1);
+    REQUIRE(v0.size() == v1.size());
+    REQUIRE(i0 == i1);
+    CHECK(!v0.empty());
+    for (size_t vi = 0; vi < v0.size(); ++vi) {
+      CHECK(v0[vi].x == doctest::Approx(v1[vi].x));
+      CHECK(v0[vi].y == doctest::Approx(v1[vi].y));
+    }
+
+#ifdef _WIN32
+    const auto stHit = atlas.stats();
+    if (stHit.usingDirectWrite) {
+      CHECK(stHit.cachedShapedLayouts == 1);
+      CHECK(stHit.shapedLayoutHits >= 1);
+      for (int n = 0; n < 70; ++n) {
+        std::vector<iota::rhi::VertexPosColUv> vn;
+        std::vector<uint32_t> in;
+        const std::string msg = "EvictMsg_" + std::to_string(n);
+        atlas.buildTextQuads("internal_2", msg, 24.0f, bounds, white, style, vn, in);
+      }
+      CHECK(atlas.stats().cachedShapedLayouts <= 64);
+      atlas.invalidateCustomFonts();
+      CHECK(atlas.stats().cachedShapedLayouts == 0);
+    }
+#endif
+    atlas.shutdown();
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

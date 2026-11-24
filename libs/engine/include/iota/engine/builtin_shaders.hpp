@@ -357,6 +357,10 @@ void main() {
 
   float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
   float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+  if ((lumaMax - lumaMin) < max(0.0312, lumaMax * 0.125)) {
+    fragColor = texM;
+    return;
+  }
 
   vec2 dir;
   dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
@@ -424,12 +428,19 @@ void main() {
                          ? (1.0 - smoothstep(max(0.0, 1.0 - f), 1.0, r))
                          : 1.0;
     float a = clamp(v_color.a * tex.a * softMask, 0.0, 1.0);
+    if (a <= 0.002) {
+      discard;
+    }
     vec3 rgb = v_color.rgb * tex.rgb;
     if (u_premulRgb > 0.5) {
       rgb *= a;
     }
     fragColor = vec4(rgb * u_hdrGain, a);
     return;
+  }
+
+  if (u_particleShape != 5 && r >= 1.0) {
+    discard;
   }
 
   float shapeA = 0.0;
@@ -463,6 +474,9 @@ void main() {
   }
 
   float a = clamp(v_color.a * shapeA, 0.0, 1.0);
+  if (a <= 0.002) {
+    discard;
+  }
   vec3 rgb = (u_premulRgb > 0.5) ? (v_color.rgb * a) : v_color.rgb;
   fragColor = vec4(rgb * u_hdrGain, a);
 }
@@ -802,37 +816,29 @@ float wrapCoord(float c, int mode) {
   return c;
 }
 
-vec4 sampleShakePose(vec4 pose) {
-  float aspect = max(u_aspect, 0.01);
-  vec2 p = v_uv - vec2(0.5);
+vec4 sampleShakePose(vec4 pose, vec2 baseP, float aspect, float invAspect, vec4 cropRect, vec2 span) {
+  vec2 p = baseP;
 
   if (abs(pose.w) > 1e-5) {
     float cs = cos(pose.w);
     float sn = sin(pose.w);
     vec2 q = vec2(p.x * aspect, p.y);
     vec2 rq = vec2(q.x * cs - q.y * sn, q.x * sn + q.y * cs);
-    p = vec2(rq.x / aspect, rq.y);
+    p = vec2(rq.x * invAspect, rq.y);
   }
 
   p *= max(pose.z, 0.05);
   vec2 uv = p + vec2(0.5) - pose.xy;
 
-  float xMin = clamp(u_crop.x, 0.0, 0.48);
-  float xMax = max(xMin + 1e-4, 1.0 - clamp(u_crop.y, 0.0, 0.48));
-  float yMin = clamp(u_crop.z, 0.0, 0.48);
-  float yMax = max(yMin + 1e-4, 1.0 - clamp(u_crop.w, 0.0, 0.48));
-
-  if ((u_wrapX == 0 && (uv.x < xMin || uv.x > xMax)) ||
-      (u_wrapY == 0 && (uv.y < yMin || uv.y > yMax))) {
+  if ((u_wrapX == 0 && (uv.x < cropRect.x || uv.x > cropRect.y)) ||
+      (u_wrapY == 0 && (uv.y < cropRect.z || uv.y > cropRect.w))) {
     return vec4(0.0);
   }
   if (u_wrapX != 0) {
-    float spanX = xMax - xMin;
-    uv.x = xMin + wrapCoord((uv.x - xMin) / spanX, u_wrapX) * spanX;
+    uv.x = cropRect.x + wrapCoord((uv.x - cropRect.x) / span.x, u_wrapX) * span.x;
   }
   if (u_wrapY != 0) {
-    float spanY = yMax - yMin;
-    uv.y = yMin + wrapCoord((uv.y - yMin) / spanY, u_wrapY) * spanY;
+    uv.y = cropRect.z + wrapCoord((uv.y - cropRect.z) / span.y, u_wrapY) * span.y;
   }
   return texture(u_texture, uv);
 }
@@ -844,27 +850,37 @@ vec4 evalCurve(vec4 p0, vec4 p1, vec4 p2, float s) {
   return p0 * w0 + p1 * w1 + p2 * w2;
 }
 
-vec4 sampleAtS(float s) {
+vec4 sampleAtS(float s, vec2 baseP, float aspect, float invAspect, vec4 cropRect, vec2 span) {
   if (u_splitChannels == 0) {
-    return sampleShakePose(evalCurve(u_pose0, u_pose1, u_pose2, s));
+    return sampleShakePose(evalCurve(u_pose0, u_pose1, u_pose2, s), baseP, aspect, invAspect, cropRect, span);
   }
-  vec4 cR = sampleShakePose(evalCurve(u_poseR0, u_poseR1, u_poseR2, s));
-  vec4 cG = sampleShakePose(evalCurve(u_pose0, u_pose1, u_pose2, s));
-  vec4 cB = sampleShakePose(evalCurve(u_poseB0, u_poseB1, u_poseB2, s));
+  vec4 cR = sampleShakePose(evalCurve(u_poseR0, u_poseR1, u_poseR2, s), baseP, aspect, invAspect, cropRect, span);
+  vec4 cG = sampleShakePose(evalCurve(u_pose0, u_pose1, u_pose2, s), baseP, aspect, invAspect, cropRect, span);
+  vec4 cB = sampleShakePose(evalCurve(u_poseB0, u_poseB1, u_poseB2, s), baseP, aspect, invAspect, cropRect, span);
   return vec4(cR.r, cG.g, cB.b, (cR.a + cG.a + cB.a) / 3.0);
 }
 
 void main() {
+  float aspect = max(u_aspect, 0.01);
+  float invAspect = 1.0 / aspect;
+  vec2 baseP = v_uv - vec2(0.5);
+  float xMin = clamp(u_crop.x, 0.0, 0.48);
+  float xMax = max(xMin + 1e-4, 1.0 - clamp(u_crop.y, 0.0, 0.48));
+  float yMin = clamp(u_crop.z, 0.0, 0.48);
+  float yMax = max(yMin + 1e-4, 1.0 - clamp(u_crop.w, 0.0, 0.48));
+  vec4 cropRect = vec4(xMin, xMax, yMin, yMax);
+  vec2 span = vec2(xMax - xMin, yMax - yMin);
+
   vec4 acc;
   if (u_samples <= 1) {
-    acc = sampleAtS(0.5);
+    acc = sampleAtS(0.5, baseP, aspect, invAspect, cropRect, span);
   } else {
     int count = clamp(u_samples, 2, 48);
     float jitter = ign(gl_FragCoord.xy) - 0.5;
     acc = vec4(0.0);
     for (int i = 0; i < count; ++i) {
       float s = clamp((float(i) + 0.5 + jitter) / float(count), 0.0, 1.0);
-      acc += sampleAtS(s);
+      acc += sampleAtS(s, baseP, aspect, invAspect, cropRect, span);
     }
     acc /= float(count);
   }

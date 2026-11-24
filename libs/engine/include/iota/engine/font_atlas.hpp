@@ -47,6 +47,8 @@ struct FontAtlasStats {
   int atlasWidth = 0;
   int atlasHeight = 0;
   bool usingDirectWrite = false;
+  int cachedShapedLayouts = 0;
+  uint64_t shapedLayoutHits = 0;
 };
 
 [[nodiscard]] TextAlignment textAlignmentFromString(std::string_view s) noexcept;

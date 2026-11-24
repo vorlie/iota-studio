@@ -257,4 +257,38 @@ TEST_CASE("ParticleSystem 3D curl noise, emitter shapes, physics, DoF, and Aux t
     CHECK(deathSys.auxCount() > 500);
     CHECK(deathSys.activeCount() <= deathCfg.maxParticles);
   }
+
+  SUBCASE("Analytical curlNoise3D is numerically divergence-free and smooth across cell boundaries") {
+    constexpr float kEps = 0.002f;
+    auto checkPoint = [&](float x, float y, float z) {
+      const auto cxp = curlNoise3D(x + kEps, y, z, 3);
+      const auto cxm = curlNoise3D(x - kEps, y, z, 3);
+      const auto cyp = curlNoise3D(x, y + kEps, z, 3);
+      const auto cym = curlNoise3D(x, y - kEps, z, 3);
+      const auto czp = curlNoise3D(x, y, z + kEps, 3);
+      const auto czm = curlNoise3D(x, y, z - kEps, 3);
+      const float div = ((cxp.x - cxm.x) + (cyp.y - cym.y) + (czp.z - czm.z)) / (2.0f * kEps);
+      CHECK(std::isfinite(div));
+      CHECK(std::abs(div) < 0.08f);
+    };
+    checkPoint(1.25f, -0.75f, 0.50f);
+    checkPoint(1.0f, 0.0f, -1.0f);
+
+    ParticleSystem sys;
+    ParticleSimConfig cfg;
+    cfg.emitterType = ParticleEmitterType::Point;
+    cfg.maxParticles = 200;
+    cfg.particlesPerSec = 180.0f;
+    cfg.lifetime = 2.0f;
+    cfg.turbulenceAffectPos = 35.0f;
+    cfg.turbulenceOctaves = 3;
+    std::vector<iota::rhi::VertexPosColUv> verts;
+    std::vector<uint32_t> idx;
+    for (int f = 0; f < 10; ++f) {
+      sys.step(cfg, emitterRect, kW, kH, 1.0f / 60.0f);
+      sys.buildGeometry(cfg, emitterRect, kW, kH, false, true, verts, idx);
+      CHECK(idx.size() == static_cast<size_t>(verts.size() / 4u) * 6u);
+    }
+    CHECK(sys.activeCount() > 10);
+  }
 }

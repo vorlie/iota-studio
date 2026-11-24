@@ -336,6 +336,19 @@ void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
 
 int EditorApp::run() {
   while (!glfwWindowShouldClose(window_)) {
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window_, &fbW, &fbH);
+    const bool isMinimized = (glfwGetWindowAttrib(window_, GLFW_ICONIFIED) != 0) || fbW <= 0 || fbH <= 0;
+    if (isMinimized && !exportSession_.isActive()) {
+      glfwWaitEventsTimeout(0.05);
+      handleShortcuts();
+      lastWallTimeSec_ = glfwGetTime();
+#ifdef IOTA_ENABLE_MCP
+      pollMcpLiveBridge();
+#endif
+      continue;
+    }
+
     glfwPollEvents();
     handleShortcuts();
 
@@ -382,6 +395,20 @@ int EditorApp::run() {
 #ifdef IOTA_ENABLE_MCP
       pollMcpLiveBridge();
 #endif
+      float previewScale = 1.0f;
+      if (previewScaleMode_ == PreviewScaleMode::Scale75) {
+        previewScale = 0.75f;
+      } else if (previewScaleMode_ == PreviewScaleMode::Scale50) {
+        previewScale = 0.50f;
+      } else if (previewScaleMode_ == PreviewScaleMode::AutoFitViewport &&
+                 lastViewportAvailW_ > 8.0f && lastViewportAvailH_ > 8.0f) {
+        const float fitScale = std::min(lastViewportAvailW_ / static_cast<float>(std::max(1, previewWidth_)),
+                                        lastViewportAvailH_ / static_cast<float>(std::max(1, previewHeight_)));
+        previewScale = std::clamp(fitScale, 0.25f, 1.0f);
+      }
+      lastLiveRenderW_ = std::max(64, (static_cast<int>(std::lround(static_cast<float>(previewWidth_) * previewScale)) + 1) & ~1);
+      lastLiveRenderH_ = std::max(64, (static_cast<int>(std::lround(static_cast<float>(previewHeight_) * previewScale)) + 1) & ~1);
+
       iota::engine::FrameTiming timing;
       timing.dt = dt;
       timing.totalTimeSec = totalTimeSec_;
@@ -390,7 +417,7 @@ int EditorApp::run() {
       timing.visOffsetMs = visOffsetMs_;
       timing.fxaaEnabled = fxaaEnabled_;
       timing.fpsStat = ImGui::GetIO().Framerate;
-      renderer_.renderFrame(project_, audio_, timing, previewWidth_, previewHeight_, {}, &frameStats_);
+      renderer_.renderFrame(project_, audio_, timing, lastLiveRenderW_, lastLiveRenderH_, {}, &frameStats_);
     }
 
     ImGui_ImplOpenGL3_NewFrame();
@@ -417,13 +444,13 @@ int EditorApp::run() {
 
     ImGui::Render();
 
-    int fbW = 0, fbH = 0;
     glfwGetFramebufferSize(window_, &fbW, &fbH);
-    device_.bindRenderTarget({}, fbW, fbH);
-    device_.clear(0.05f, 0.055f, 0.07f, 1.0f);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-    glfwSwapBuffers(window_);
+    if (fbW > 0 && fbH > 0) {
+      device_.bindRenderTarget({}, fbW, fbH);
+      device_.clear(0.05f, 0.055f, 0.07f, 1.0f);
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+      glfwSwapBuffers(window_);
+    }
   }
   return 0;
 }
@@ -856,8 +883,39 @@ void EditorApp::drawMenuBar() {
     if (ImGui::MenuItem("Square 1:1 (1080x1080)", nullptr, previewWidth_ == 1080 && previewHeight_ == 1080)) {
       previewWidth_ = 1080; previewHeight_ = 1080;
     }
+    if (ImGui::BeginMenu("Preview Resolution Scale")) {
+      if (ImGui::MenuItem("100% (Native)", nullptr, previewScaleMode_ == PreviewScaleMode::Full100)) {
+        previewScaleMode_ = PreviewScaleMode::Full100;
+      }
+      if (ImGui::MenuItem("75%", nullptr, previewScaleMode_ == PreviewScaleMode::Scale75)) {
+        previewScaleMode_ = PreviewScaleMode::Scale75;
+      }
+      if (ImGui::MenuItem("50%", nullptr, previewScaleMode_ == PreviewScaleMode::Scale50)) {
+        previewScaleMode_ = PreviewScaleMode::Scale50;
+      }
+      if (ImGui::MenuItem("Auto Fit Viewport Panel", nullptr, previewScaleMode_ == PreviewScaleMode::AutoFitViewport)) {
+        previewScaleMode_ = PreviewScaleMode::AutoFitViewport;
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("VSync")) {
+      if (ImGui::MenuItem("On (VSync)", nullptr, vsyncMode_ == VSyncMode::On)) {
+        vsyncMode_ = VSyncMode::On;
+        glfwSwapInterval(1);
+      }
+      if (ImGui::MenuItem("Adaptive (-1)", nullptr, vsyncMode_ == VSyncMode::Adaptive)) {
+        vsyncMode_ = VSyncMode::Adaptive;
+        glfwSwapInterval(-1);
+      }
+      if (ImGui::MenuItem("Off (Uncapped)", nullptr, vsyncMode_ == VSyncMode::Off)) {
+        vsyncMode_ = VSyncMode::Off;
+        glfwSwapInterval(0);
+      }
+      ImGui::EndMenu();
+    }
     ImGui::Separator();
     ImGui::MenuItem("FXAA Anti-Aliasing", nullptr, &fxaaEnabled_);
+    ImGui::MenuItem("Performance Stats Overlay", nullptr, &showPerfOverlay_);
     if (!project_.compositions.empty()) {
       auto ensureComp0HdrProps = [&]() {
         const auto defComp = iota::model::createDefaultComposition(0);
@@ -1027,10 +1085,15 @@ void EditorApp::drawMenuBar() {
 
 void EditorApp::drawViewportPanel() {
   ImGui::Begin("Viewport");
+  const ImVec2 winPos = ImGui::GetWindowPos();
+  const ImVec2 contentMin = ImGui::GetWindowContentRegionMin();
+  const ImVec2 contentStart(winPos.x + contentMin.x, winPos.y + contentMin.y);
   const ImVec2 avail = ImGui::GetContentRegionAvail();
+  lastViewportAvailW_ = avail.x;
+  lastViewportAvailH_ = avail.y;
   const auto tex = renderer_.finalOutputTexture();
   if (tex && avail.x > 8.0f && avail.y > 8.0f) {
-    const float srcAspect = static_cast<float>(previewWidth_) / static_cast<float>(previewHeight_);
+    const float srcAspect = static_cast<float>(std::max(1, previewWidth_)) / static_cast<float>(std::max(1, previewHeight_));
     float drawW = avail.x;
     float drawH = drawW / srcAspect;
     if (drawH > avail.y) {
@@ -1046,6 +1109,36 @@ void EditorApp::drawViewportPanel() {
     ImGui::Image(glId, ImVec2(drawW, drawH), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
   } else {
     ImGui::TextDisabled("No active render target.");
+  }
+  if (showPerfOverlay_) {
+    char overlayBuf[256];
+    const float fps = ImGui::GetIO().Framerate;
+    const float frameMs = fps > 0.01f ? (1000.0f / fps) : 0.0f;
+    std::snprintf(overlayBuf, sizeof(overlayBuf),
+                  "FPS: %.1f (%.2f ms)\n"
+                  "Render: %dx%d\n"
+                  "DSP: %.2f ms | CPU: %.2f ms | GPU: %.2f ms\n"
+                  "Draws: %d | Particles: %d",
+                  fps,
+                  frameMs,
+                  lastLiveRenderW_,
+                  lastLiveRenderH_,
+                  frameStats_.cpuDspMs,
+                  frameStats_.cpuRenderMs,
+                  frameStats_.gpuRenderMs,
+                  frameStats_.drawCalls,
+                  frameStats_.activeParticles + frameStats_.activeAuxParticles);
+    const ImVec2 pad(8.0f, 6.0f);
+    const ImVec2 boxPos(contentStart.x + 8.0f, contentStart.y + 8.0f);
+    const ImVec2 textSz = ImGui::CalcTextSize(overlayBuf);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(boxPos,
+                      ImVec2(boxPos.x + textSz.x + pad.x * 2.0f, boxPos.y + textSz.y + pad.y * 2.0f),
+                      IM_COL32(12, 14, 20, 196), 4.0f);
+    dl->AddRect(boxPos,
+                ImVec2(boxPos.x + textSz.x + pad.x * 2.0f, boxPos.y + textSz.y + pad.y * 2.0f),
+                IM_COL32(90, 110, 145, 160), 4.0f);
+    dl->AddText(ImVec2(boxPos.x + pad.x, boxPos.y + pad.y), IM_COL32(235, 240, 248, 255), overlayBuf);
   }
   ImGui::End();
 }

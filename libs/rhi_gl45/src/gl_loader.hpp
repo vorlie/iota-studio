@@ -55,8 +55,71 @@
 #ifndef GL_RGBA16F
 #define GL_RGBA16F 0x881A
 #endif
+#ifndef GL_R11F_G11F_B10F
+#define GL_R11F_G11F_B10F 0x8C3A
+#endif
+#ifndef GL_UNSIGNED_INT_10F_11F_11F_REV
+#define GL_UNSIGNED_INT_10F_11F_11F_REV 0x8C3B
+#endif
 #ifndef GL_HALF_FLOAT
 #define GL_HALF_FLOAT 0x140B
+#endif
+#ifndef GL_STATIC_DRAW
+#define GL_STATIC_DRAW 0x88E4
+#endif
+#ifndef GL_STREAM_DRAW
+#define GL_STREAM_DRAW 0x88E0
+#endif
+#ifndef GL_STREAM_READ
+#define GL_STREAM_READ 0x88E1
+#endif
+#ifndef GL_PIXEL_PACK_BUFFER
+#define GL_PIXEL_PACK_BUFFER 0x88EB
+#endif
+#ifndef GL_MAP_READ_BIT
+#define GL_MAP_READ_BIT 0x0001
+#endif
+#ifndef GL_MAP_WRITE_BIT
+#define GL_MAP_WRITE_BIT 0x0002
+#endif
+#ifndef GL_MAP_INVALIDATE_BUFFER_BIT
+#define GL_MAP_INVALIDATE_BUFFER_BIT 0x0008
+#endif
+#ifndef GL_MAP_UNSYNCHRONIZED_BIT
+#define GL_MAP_UNSYNCHRONIZED_BIT 0x0020
+#endif
+#ifndef GL_MAP_PERSISTENT_BIT
+#define GL_MAP_PERSISTENT_BIT 0x0040
+#endif
+#ifndef GL_MAP_COHERENT_BIT
+#define GL_MAP_COHERENT_BIT 0x0080
+#endif
+#ifndef GL_SYNC_GPU_COMMANDS_COMPLETE
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+#endif
+#ifndef GL_SYNC_FLUSH_COMMANDS_BIT
+#define GL_SYNC_FLUSH_COMMANDS_BIT 0x0001
+#endif
+#ifndef GL_ALREADY_SIGNALED
+#define GL_ALREADY_SIGNALED 0x911A
+#endif
+#ifndef GL_TIMEOUT_EXPIRED
+#define GL_TIMEOUT_EXPIRED 0x911B
+#endif
+#ifndef GL_CONDITION_SATISFIED
+#define GL_CONDITION_SATISFIED 0x911C
+#endif
+#ifndef GL_WAIT_FAILED
+#define GL_WAIT_FAILED 0x911D
+#endif
+#ifndef GL_TIME_ELAPSED
+#define GL_TIME_ELAPSED 0x88BF
+#endif
+#ifndef GL_QUERY_RESULT
+#define GL_QUERY_RESULT 0x8866
+#endif
+#ifndef GL_QUERY_RESULT_AVAILABLE
+#define GL_QUERY_RESULT_AVAILABLE 0x8867
 #endif
 #ifndef GL_FUNC_ADD
 #define GL_FUNC_ADD 0x8006
@@ -66,6 +129,8 @@ namespace iota::rhi::gl {
 
 using GLchar = char;
 using GLsizeiptr = std::ptrdiff_t;
+using GLsync = struct __GLsync*;
+using GLuint64 = uint64_t;
 
 struct GlProcs {
   GLuint(APIENTRY* CreateShader)(GLenum type) = nullptr;
@@ -100,6 +165,20 @@ struct GlProcs {
   void(APIENTRY* BindBuffer)(GLenum target, GLuint buffer) = nullptr;
   void(APIENTRY* BufferData)(GLenum target, GLsizeiptr size, const void* data, GLenum usage) = nullptr;
   void(APIENTRY* BufferSubData)(GLenum target, GLsizeiptr offset, GLsizeiptr size, const void* data) = nullptr;
+  void(APIENTRY* BufferStorage)(GLenum target, GLsizeiptr size, const void* data, GLbitfield flags) = nullptr;
+  void*(APIENTRY* MapBufferRange)(GLenum target, GLsizeiptr offset, GLsizeiptr length, GLbitfield access) = nullptr;
+  GLboolean(APIENTRY* UnmapBuffer)(GLenum target) = nullptr;
+  void(APIENTRY* DrawElementsBaseVertex)(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex) = nullptr;
+  GLsync(APIENTRY* FenceSync)(GLenum condition, GLbitfield flags) = nullptr;
+  GLenum(APIENTRY* ClientWaitSync)(GLsync sync, GLbitfield flags, GLuint64 timeout) = nullptr;
+  void(APIENTRY* DeleteSync)(GLsync sync) = nullptr;
+
+  void(APIENTRY* GenQueries)(GLsizei n, GLuint* ids) = nullptr;
+  void(APIENTRY* DeleteQueries)(GLsizei n, const GLuint* ids) = nullptr;
+  void(APIENTRY* BeginQuery)(GLenum target, GLuint id) = nullptr;
+  void(APIENTRY* EndQuery)(GLenum target) = nullptr;
+  void(APIENTRY* GetQueryObjectiv)(GLuint id, GLenum pname, GLint* params) = nullptr;
+  void(APIENTRY* GetQueryObjectui64v)(GLuint id, GLenum pname, GLuint64* params) = nullptr;
   void(APIENTRY* EnableVertexAttribArray)(GLuint index) = nullptr;
   void(APIENTRY* VertexAttribPointer)(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void* pointer) = nullptr;
 

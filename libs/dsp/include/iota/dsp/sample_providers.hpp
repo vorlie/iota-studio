@@ -56,6 +56,8 @@ struct SpectrumConfig {
   float beatRangeValueHigher = 35.0f;
   float beatSmooth = 0.4f;
   bool strictCompatBeatQuirk = false;
+
+  bool operator==(const SpectrumConfig&) const = default;
 };
 
 /// Builds a SpectrumConfig from an AudioProvider Element's property bag.
@@ -124,6 +126,7 @@ class AudioAnalyzer {
 
   void setConfig(const SpectrumConfig& cfg);
   [[nodiscard]] const SpectrumConfig& config() const noexcept { return cfg_; }
+  [[nodiscard]] const std::vector<float>& cachedBarFrequencies() const noexcept;
 
   void reset();
 

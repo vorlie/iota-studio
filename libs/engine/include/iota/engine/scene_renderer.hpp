@@ -51,6 +51,9 @@ struct RenderFrameStats {
   bool fontUsingDirectWrite = false;
   bool hdrPipelineActive = false;
   bool bloomActive = false;
+  float cpuDspMs = 0.0f;
+  float cpuRenderMs = 0.0f;
+  float gpuRenderMs = 0.0f;
   std::string lastError;
 };
 

@@ -237,6 +237,119 @@ struct ShapedGlyph {
   float y = 0.0f;
 };
 
+struct ShapedLayoutKeyView {
+  std::string_view typeFaceKey;
+  std::string_view text;
+  uintptr_t localAssetsPtr = 0;
+  uint64_t customFontGen = 0;
+  uint16_t bucketPx = 0;
+  FontWeight weight = FontWeight::Default;
+  bool italic = false;
+  TextAlignment alignment = TextAlignment::Center;
+  bool wordWrap = false;
+  float layoutW = 0.0f;
+  float letterSpacingDip = 0.0f;
+  float lineSpacingNorm = 1.0f;
+};
+
+struct ShapedLayoutKey {
+  std::string typeFaceKey;
+  std::string text;
+  uintptr_t localAssetsPtr = 0;
+  uint64_t customFontGen = 0;
+  uint16_t bucketPx = 0;
+  FontWeight weight = FontWeight::Default;
+  bool italic = false;
+  TextAlignment alignment = TextAlignment::Center;
+  bool wordWrap = false;
+  float layoutW = 0.0f;
+  float letterSpacingDip = 0.0f;
+  float lineSpacingNorm = 1.0f;
+
+  ShapedLayoutKeyView view() const noexcept {
+    return {
+        typeFaceKey,
+        text,
+        localAssetsPtr,
+        customFontGen,
+        bucketPx,
+        weight,
+        italic,
+        alignment,
+        wordWrap,
+        layoutW,
+        letterSpacingDip,
+        lineSpacingNorm,
+    };
+  }
+};
+
+struct ShapedLayoutKeyHash {
+  using is_transparent = void;
+
+  static void hashCombine(size_t& h, size_t v) noexcept {
+    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+  }
+
+  size_t operator()(const ShapedLayoutKeyView& k) const noexcept {
+    size_t h = std::hash<std::string_view>{}(k.typeFaceKey);
+    hashCombine(h, std::hash<std::string_view>{}(k.text));
+    hashCombine(h, std::hash<uintptr_t>{}(k.localAssetsPtr));
+    hashCombine(h, std::hash<uint64_t>{}(k.customFontGen));
+    hashCombine(h, std::hash<uint16_t>{}(k.bucketPx));
+    hashCombine(h, static_cast<size_t>(k.weight));
+    hashCombine(h, k.italic ? 1u : 0u);
+    hashCombine(h, static_cast<size_t>(k.alignment));
+    hashCombine(h, k.wordWrap ? 1u : 0u);
+    hashCombine(h, std::hash<float>{}(k.layoutW));
+    hashCombine(h, std::hash<float>{}(k.letterSpacingDip));
+    hashCombine(h, std::hash<float>{}(k.lineSpacingNorm));
+    return h;
+  }
+
+  size_t operator()(const ShapedLayoutKey& k) const noexcept {
+    return (*this)(k.view());
+  }
+};
+
+struct ShapedLayoutKeyEq {
+  using is_transparent = void;
+
+  static bool eq(const ShapedLayoutKeyView& a, const ShapedLayoutKeyView& b) noexcept {
+    return a.bucketPx == b.bucketPx &&
+           a.weight == b.weight &&
+           a.italic == b.italic &&
+           a.alignment == b.alignment &&
+           a.wordWrap == b.wordWrap &&
+           a.localAssetsPtr == b.localAssetsPtr &&
+           a.customFontGen == b.customFontGen &&
+           a.layoutW == b.layoutW &&
+           a.letterSpacingDip == b.letterSpacingDip &&
+           a.lineSpacingNorm == b.lineSpacingNorm &&
+           a.typeFaceKey == b.typeFaceKey &&
+           a.text == b.text;
+  }
+
+  bool operator()(const ShapedLayoutKey& a, const ShapedLayoutKey& b) const noexcept {
+    return eq(a.view(), b.view());
+  }
+  bool operator()(const ShapedLayoutKeyView& a, const ShapedLayoutKey& b) const noexcept {
+    return eq(a, b.view());
+  }
+  bool operator()(const ShapedLayoutKey& a, const ShapedLayoutKeyView& b) const noexcept {
+    return eq(a.view(), b);
+  }
+};
+
+struct ShapedLayoutEntry {
+  std::vector<ShapedGlyph> glyphs;
+  std::vector<ComPtr<IDWriteFontFace>> heldFaces;
+  float layoutW = 0.0f;
+  float metricsTop = 0.0f;
+  float metricsHeight = 0.0f;
+  uint64_t lastUseStamp = 0;
+};
+
 class ShapingCollector final : public IDWriteTextRenderer {
  public:
   explicit ShapingCollector(std::vector<ShapedGlyph>& outGlyphs,
@@ -453,6 +566,7 @@ struct FontAtlasCache::Impl {
   std::vector<uint8_t> rgbaScratch;
 
 #ifdef _WIN32
+  static constexpr size_t kMaxShapedLayouts = 64;
   bool dwriteInitAttempted = false;
   bool dwriteReady = false;
   ComPtr<IDWriteFactory> dwFactory;
@@ -464,6 +578,10 @@ struct FontAtlasCache::Impl {
   std::unordered_map<std::string, CustomFontCollectionEntry> customFonts;
   std::unordered_map<uintptr_t, ComPtr<IDWriteFontFace>> pinnedFontFaces;
   std::vector<ShapedGlyph> scratchShaped;
+  uint64_t customFontGen = 0;
+  uint64_t shapedLruCounter = 0;
+  uint64_t shapedLayoutHits = 0;
+  std::unordered_map<ShapedLayoutKey, ShapedLayoutEntry, ShapedLayoutKeyHash, ShapedLayoutKeyEq> shapedLayoutCache;
 #endif
 
   iota::rhi::TextureHandle fallbackTex{};
@@ -500,6 +618,7 @@ struct FontAtlasCache::Impl {
   }
 
   void shutdownDirectWrite() {
+    shapedLayoutCache.clear();
     pinnedFontFaces.clear();
     customFonts.clear();
     if (dwFactory && inMemoryLoader) {
@@ -951,6 +1070,8 @@ void FontAtlasCache::shutdown() {
 void FontAtlasCache::invalidateCustomFonts() {
   if (!impl_) return;
 #ifdef _WIN32
+  impl_->shapedLayoutCache.clear();
+  ++impl_->customFontGen;
   impl_->customFonts.clear();
 #endif
   impl_->resetAtlas();
@@ -965,6 +1086,8 @@ FontAtlasStats FontAtlasCache::stats() const noexcept {
   st.atlasHeight = impl_->atlasH;
 #ifdef _WIN32
   st.usingDirectWrite = impl_->dwriteReady;
+  st.cachedShapedLayouts = static_cast<int>(impl_->shapedLayoutCache.size());
+  st.shapedLayoutHits = impl_->shapedLayoutHits;
 #endif
   return st;
 }
@@ -1002,126 +1125,210 @@ iota::rhi::TextureHandle FontAtlasCache::buildTextQuads(std::string_view typeFac
     const float clampedSize = std::max(8.0f, fontSizePx);
     const uint16_t bucketPx = quantizeFontBucketPx(clampedSize);
     const float renderScale = clampedSize / static_cast<float>(bucketPx);
+    const float safeScale = std::max(renderScale, 0.05f);
 
-    const std::wstring wText = utf8ToWide(text);
-    if (wText.empty()) {
-      return {};
-    }
+    const float layoutW = style.wordWrap
+                              ? std::max(bounds.width() / safeScale, 16.0f)
+                              : std::max(16384.0f, (bounds.width() / safeScale) * 2.0f);
+    const float layoutWKey = std::round(layoutW * 4.0f) * 0.25f;
+    const bool hasCharSpacing = std::abs(style.letterSpacingPx) > 1e-3f;
+    const float letterSpacingDip = hasCharSpacing ? (style.letterSpacingPx / safeScale) : 0.0f;
+    const bool hasLineSpacing = std::abs(style.lineSpacing - 1.0f) > 1e-3f;
+    const float lineSpacingNorm = hasLineSpacing ? std::clamp(style.lineSpacing, 0.4f, 4.0f) : 1.0f;
 
-    FamilyPresetSpec famSpec = resolveSystemFamilyPreset(typeFaceKey);
-    IDWriteFontCollection* customCol = nullptr;
-    std::wstring customFam;
-    impl_->resolveCustomCollection(typeFaceKey, style, customFam, customCol);
-    if (customCol && !customFam.empty()) {
-      famSpec.familyName = std::move(customFam);
-    }
+    const ShapedLayoutKeyView lookupKey{
+        typeFaceKey,
+        text,
+        reinterpret_cast<uintptr_t>(style.localAssets),
+        impl_->customFontGen,
+        bucketPx,
+        style.weight,
+        style.italic,
+        style.alignment,
+        style.wordWrap,
+        layoutWKey,
+        letterSpacingDip,
+        lineSpacingNorm,
+    };
 
-    const DWRITE_FONT_WEIGHT dwWeight = toDWriteWeight(style.weight, famSpec.defaultWeight);
-    const DWRITE_FONT_STYLE dwStyle = style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    const std::vector<ShapedGlyph>* shapedGlyphs = nullptr;
+    float usedLayoutW = layoutW;
+    float metricsTop = 0.0f;
+    float metricsHeight = 0.0f;
 
-    ComPtr<IDWriteTextFormat> textFormat;
-    HRESULT hr = impl_->dwFactory->CreateTextFormat(
-        famSpec.familyName.c_str(),
-        customCol,
-        dwWeight,
-        dwStyle,
-        DWRITE_FONT_STRETCH_NORMAL,
-        static_cast<FLOAT>(bucketPx),
-        L"",
-        textFormat.put());
-    if ((FAILED(hr) || !textFormat) && customCol != nullptr) {
-      hr = impl_->dwFactory->CreateTextFormat(
-          L"Segoe UI",
-          nullptr,
+    if (const auto hit = impl_->shapedLayoutCache.find(lookupKey); hit != impl_->shapedLayoutCache.end()) {
+      hit->second.lastUseStamp = ++impl_->shapedLruCounter;
+      ++impl_->shapedLayoutHits;
+      shapedGlyphs = &hit->second.glyphs;
+      usedLayoutW = hit->second.layoutW;
+      metricsTop = hit->second.metricsTop;
+      metricsHeight = hit->second.metricsHeight;
+    } else {
+      const std::wstring wText = utf8ToWide(text);
+      if (wText.empty()) {
+        return {};
+      }
+
+      FamilyPresetSpec famSpec = resolveSystemFamilyPreset(typeFaceKey);
+      IDWriteFontCollection* customCol = nullptr;
+      std::wstring customFam;
+      impl_->resolveCustomCollection(typeFaceKey, style, customFam, customCol);
+      if (customCol && !customFam.empty()) {
+        famSpec.familyName = std::move(customFam);
+      }
+
+      const DWRITE_FONT_WEIGHT dwWeight = toDWriteWeight(style.weight, famSpec.defaultWeight);
+      const DWRITE_FONT_STYLE dwStyle = style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+
+      ComPtr<IDWriteTextFormat> textFormat;
+      HRESULT hr = impl_->dwFactory->CreateTextFormat(
+          famSpec.familyName.c_str(),
+          customCol,
           dwWeight,
           dwStyle,
           DWRITE_FONT_STRETCH_NORMAL,
           static_cast<FLOAT>(bucketPx),
           L"",
           textFormat.put());
-    }
-    if (FAILED(hr) || !textFormat) {
-      return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
-    }
-
-    DWRITE_TEXT_ALIGNMENT dwAlign = DWRITE_TEXT_ALIGNMENT_CENTER;
-    if (style.alignment == TextAlignment::Left) dwAlign = DWRITE_TEXT_ALIGNMENT_LEADING;
-    else if (style.alignment == TextAlignment::Right) dwAlign = DWRITE_TEXT_ALIGNMENT_TRAILING;
-    textFormat->SetTextAlignment(dwAlign);
-    textFormat->SetWordWrapping(style.wordWrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
-
-    const float layoutW = style.wordWrap
-                              ? std::max(bounds.width() / std::max(renderScale, 0.05f), 16.0f)
-                              : std::max(16384.0f, (bounds.width() / std::max(renderScale, 0.05f)) * 2.0f);
-    const float layoutH = 65536.0f;
-
-    ComPtr<IDWriteTextLayout> textLayout;
-    hr = impl_->dwFactory->CreateTextLayout(
-        wText.c_str(),
-        static_cast<UINT32>(wText.size()),
-        textFormat.get(),
-        layoutW,
-        layoutH,
-        textLayout.put());
-    if (FAILED(hr) || !textLayout) {
-      return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
-    }
-
-    if (impl_->systemFallback) {
-      ComPtr<IDWriteTextLayout2> layout2;
-      if (SUCCEEDED(textLayout->QueryInterface(__uuidof(IDWriteTextLayout2),
-                                               reinterpret_cast<void**>(layout2.put()))) &&
-          layout2) {
-        layout2->SetFontFallback(impl_->systemFallback.get());
+      if ((FAILED(hr) || !textFormat) && customCol != nullptr) {
+        hr = impl_->dwFactory->CreateTextFormat(
+            L"Segoe UI",
+            nullptr,
+            dwWeight,
+            dwStyle,
+            DWRITE_FONT_STRETCH_NORMAL,
+            static_cast<FLOAT>(bucketPx),
+            L"",
+            textFormat.put());
       }
-    }
-
-    if (std::abs(style.letterSpacingPx) > 1e-3f) {
-      ComPtr<IDWriteTextLayout1> layout1;
-      if (SUCCEEDED(textLayout->QueryInterface(__uuidof(IDWriteTextLayout1),
-                                               reinterpret_cast<void**>(layout1.put()))) &&
-          layout1) {
-        const DWRITE_TEXT_RANGE fullRange{0, static_cast<UINT32>(wText.size())};
-        layout1->SetCharacterSpacing(
-            0.0f,
-            style.letterSpacingPx / std::max(renderScale, 0.05f),
-            0.0f,
-            fullRange);
+      if (FAILED(hr) || !textFormat) {
+        return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
       }
+
+      DWRITE_TEXT_ALIGNMENT dwAlign = DWRITE_TEXT_ALIGNMENT_CENTER;
+      if (style.alignment == TextAlignment::Left) dwAlign = DWRITE_TEXT_ALIGNMENT_LEADING;
+      else if (style.alignment == TextAlignment::Right) dwAlign = DWRITE_TEXT_ALIGNMENT_TRAILING;
+      textFormat->SetTextAlignment(dwAlign);
+      textFormat->SetWordWrapping(style.wordWrap ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
+
+      const float layoutH = 65536.0f;
+      ComPtr<IDWriteTextLayout> textLayout;
+      hr = impl_->dwFactory->CreateTextLayout(
+          wText.c_str(),
+          static_cast<UINT32>(wText.size()),
+          textFormat.get(),
+          layoutW,
+          layoutH,
+          textLayout.put());
+      if (FAILED(hr) || !textLayout) {
+        return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
+      }
+
+      if (impl_->systemFallback) {
+        ComPtr<IDWriteTextLayout2> layout2;
+        if (SUCCEEDED(textLayout->QueryInterface(__uuidof(IDWriteTextLayout2),
+                                                 reinterpret_cast<void**>(layout2.put()))) &&
+            layout2) {
+          layout2->SetFontFallback(impl_->systemFallback.get());
+        }
+      }
+
+      if (hasCharSpacing) {
+        ComPtr<IDWriteTextLayout1> layout1;
+        if (SUCCEEDED(textLayout->QueryInterface(__uuidof(IDWriteTextLayout1),
+                                                 reinterpret_cast<void**>(layout1.put()))) &&
+            layout1) {
+          const DWRITE_TEXT_RANGE fullRange{0, static_cast<UINT32>(wText.size())};
+          layout1->SetCharacterSpacing(0.0f, letterSpacingDip, 0.0f, fullRange);
+        }
+      }
+
+      if (hasLineSpacing) {
+        const float spacingDip = static_cast<float>(bucketPx) * 1.2f * lineSpacingNorm;
+        const float baselineDip = spacingDip * 0.78f;
+        textLayout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, spacingDip, baselineDip);
+      }
+
+      DWRITE_TEXT_METRICS metrics{};
+      textLayout->GetMetrics(&metrics);
+
+      impl_->scratchShaped.clear();
+      ShapingCollector collector(impl_->scratchShaped, impl_->pinnedFontFaces);
+      if (FAILED(textLayout->Draw(nullptr, &collector, 0.0f, 0.0f))) {
+        return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
+      }
+
+      metricsTop = metrics.top;
+      metricsHeight = metrics.height;
+
+      if (impl_->shapedLayoutCache.size() >= Impl::kMaxShapedLayouts) {
+        auto oldest = impl_->shapedLayoutCache.begin();
+        for (auto it = std::next(oldest); it != impl_->shapedLayoutCache.end(); ++it) {
+          if (it->second.lastUseStamp < oldest->second.lastUseStamp) {
+            oldest = it;
+          }
+        }
+        impl_->shapedLayoutCache.erase(oldest);
+      }
+
+      ShapedLayoutKey ownedKey;
+      ownedKey.typeFaceKey.assign(typeFaceKey);
+      ownedKey.text.assign(text);
+      ownedKey.localAssetsPtr = lookupKey.localAssetsPtr;
+      ownedKey.customFontGen = lookupKey.customFontGen;
+      ownedKey.bucketPx = bucketPx;
+      ownedKey.weight = style.weight;
+      ownedKey.italic = style.italic;
+      ownedKey.alignment = style.alignment;
+      ownedKey.wordWrap = style.wordWrap;
+      ownedKey.layoutW = layoutWKey;
+      ownedKey.letterSpacingDip = letterSpacingDip;
+      ownedKey.lineSpacingNorm = lineSpacingNorm;
+
+      ShapedLayoutEntry newEntry;
+      newEntry.layoutW = layoutW;
+      newEntry.metricsTop = metricsTop;
+      newEntry.metricsHeight = metricsHeight;
+      newEntry.lastUseStamp = ++impl_->shapedLruCounter;
+      newEntry.glyphs = impl_->scratchShaped;
+      for (const auto& sg : newEntry.glyphs) {
+        if (!sg.face) continue;
+        bool seen = false;
+        for (const auto& f : newEntry.heldFaces) {
+          if (f.get() == sg.face) {
+            seen = true;
+            break;
+          }
+        }
+        if (!seen) {
+          sg.face->AddRef();
+          ComPtr<IDWriteFontFace> holder;
+          holder.attach(sg.face);
+          newEntry.heldFaces.push_back(std::move(holder));
+        }
+      }
+      auto [insertedIt, inserted] = impl_->shapedLayoutCache.emplace(std::move(ownedKey), std::move(newEntry));
+      (void)inserted;
+      shapedGlyphs = &insertedIt->second.glyphs;
     }
 
-    if (std::abs(style.lineSpacing - 1.0f) > 1e-3f) {
-      const float spacingDip = static_cast<float>(bucketPx) * 1.2f * std::clamp(style.lineSpacing, 0.4f, 4.0f);
-      const float baselineDip = spacingDip * 0.78f;
-      textLayout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, spacingDip, baselineDip);
-    }
-
-    DWRITE_TEXT_METRICS metrics{};
-    textLayout->GetMetrics(&metrics);
-
-    float originScreenX = bounds.centerX() - (layoutW * 0.5f) * renderScale;
+    float originScreenX = bounds.centerX() - (usedLayoutW * 0.5f) * renderScale;
     if (style.alignment == TextAlignment::Left) {
       originScreenX = bounds.left;
     } else if (style.alignment == TextAlignment::Right) {
-      originScreenX = bounds.right - layoutW * renderScale;
+      originScreenX = bounds.right - usedLayoutW * renderScale;
     }
-    const float originScreenY = bounds.centerY() - (metrics.top + metrics.height * 0.5f) * renderScale;
-
-    impl_->scratchShaped.clear();
-    ShapingCollector collector(impl_->scratchShaped, impl_->pinnedFontFaces);
-    if (FAILED(textLayout->Draw(nullptr, &collector, 0.0f, 0.0f))) {
-      return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);
-    }
+    const float originScreenY = bounds.centerY() - (metricsTop + metricsHeight * 0.5f) * renderScale;
 
     const int outlineRad = (style.outlineWidthPx > 0.05f)
-                               ? std::clamp(static_cast<int>(std::lround(style.outlineWidthPx / std::max(renderScale, 0.05f))), 1, 10)
+                               ? std::clamp(static_cast<int>(std::lround(style.outlineWidthPx / safeScale)), 1, 10)
                                : 0;
     const uint8_t outlineKey = static_cast<uint8_t>(outlineRad);
 
     // Pass 1: Ensure every glyph (and outline mask if enabled) fits in the GPU atlas; re-ensure once if reset occurred.
     for (int attempt = 0; attempt < 2; ++attempt) {
       bool anyReset = false;
-      for (const auto& sg : impl_->scratchShaped) {
+      for (const auto& sg : *shapedGlyphs) {
         if (outlineKey > 0) {
           impl_->ensureGlyph(sg.face, sg.glyphIndex, bucketPx, outlineKey, anyReset);
           if (anyReset) break;
@@ -1142,7 +1349,7 @@ iota::rhi::TextureHandle FontAtlasCache::buildTextQuads(std::string_view typeFac
                               uint32_t abgrCol,
                               float shiftX,
                               float shiftY) {
-      for (const auto& sg : impl_->scratchShaped) {
+      for (const auto& sg : *shapedGlyphs) {
         const GlyphKey gk{reinterpret_cast<uintptr_t>(sg.face), sg.glyphIndex, bucketPx, glyphOutlineKey};
         const auto it = impl_->glyphCache.find(gk);
         if (it == impl_->glyphCache.end() || !it->second.visible) {

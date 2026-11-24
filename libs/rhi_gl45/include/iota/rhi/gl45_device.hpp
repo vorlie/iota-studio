@@ -22,6 +22,9 @@ class Gl45RenderDevice final : public IRenderDevice {
 
   [[nodiscard]] std::string_view backendName() const noexcept override { return "OpenGL 4.5 Core"; }
 
+  void beginFrame() override;
+  void endFrame() override;
+
   TextureHandle createTexture2D(const TextureDesc& desc, std::string* outError = nullptr) override;
   void updateTexture2D(TextureHandle tex, int width, int height, const uint8_t* rgbaPixels) override;
   void updateTexture2DRegion(TextureHandle tex,
@@ -70,17 +73,24 @@ class Gl45RenderDevice final : public IRenderDevice {
                    std::span<const uint32_t> indices) override;
   void drawVertices(PrimitiveTopology topology,
                     std::span<const VertexPosColUv> vertices) override;
+  void drawFullscreenQuad() override;
 
   bool readRenderTargetRgba(RenderTargetHandle rt,
                             int& outWidth,
                             int& outHeight,
                             std::vector<uint8_t>& outRgba,
                             bool flipVertical = true) override;
+  bool readRenderTargetRgbaAsync(RenderTargetHandle rt,
+                                 int& outWidth,
+                                 int& outHeight,
+                                 std::vector<uint8_t>& outRgba,
+                                 bool flipVertical = true) override;
   bool readRenderTargetRgbaFloat(RenderTargetHandle rt,
                                  int& outWidth,
                                  int& outHeight,
                                  std::vector<float>& outRgbaFloat,
                                  bool flipVertical = true) override;
+  [[nodiscard]] float lastGpuFrameTimeMs() const noexcept override;
 
  private:
   struct Impl;

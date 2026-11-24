@@ -903,3 +903,61 @@ TEST_CASE("Forward audio window alignment and high smooth preserve stacked Spect
     CHECK(p144 == doctest::Approx(p60).epsilon(0.06));
   }
 }
+
+TEST_CASE("Goertzel Spectrum2 filterbank localizes frequencies and invalidates cached config") {
+  using namespace iota::dsp;
+
+  SpectrumConfig cfg;
+  cfg.kind = SampleProviderKind::Spectrum2;
+  cfg.sampleOutCount = 128;
+  cfg.useAttackRelease = false;
+  cfg.smooth = 0.0f;
+
+  AudioAnalyzer az;
+  az.setConfig(cfg);
+
+  const auto& freqs = az.cachedBarFrequencies();
+  REQUIRE(freqs.size() == 128);
+  for (size_t i = 0; i < freqs.size(); ++i) {
+    CHECK(std::isfinite(freqs[i]));
+    CHECK(freqs[i] > 0.0f);
+    if (i > 0) {
+      CHECK(freqs[i] > freqs[i - 1]);
+    }
+  }
+
+  for (size_t targetIdx : {size_t{16}, size_t{64}, size_t{108}}) {
+    const float targetHz = freqs[targetIdx];
+    const auto tone = makeSine(targetHz, 44100, 4096, 0.8f);
+    // Test deterministic repeat with matching config across an independent analyzer and redundant setConfig()
+    AudioAnalyzer azRef;
+    azRef.setConfig(cfg);
+    azRef.setConfig(cfg);
+    const auto rRef = azRef.process({tone, 44100, 1.0f / 60.0f, 0.1, 0.1, 5.0, true, false});
+
+    AudioAnalyzer azCmp;
+    azCmp.setConfig(cfg);
+    const auto rCmp = azCmp.process({tone, 44100, 1.0f / 60.0f, 0.1, 0.1, 5.0, true, false});
+
+    REQUIRE(rRef.rawBars.size() == 128);
+    REQUIRE(rCmp.rawBars.size() == 128);
+
+    size_t bestIdx = 0;
+    float bestVal = -1.0f;
+    for (size_t b = 0; b < rRef.rawBars.size(); ++b) {
+      CHECK(std::isfinite(rRef.rawBars[b]));
+      CHECK(rRef.rawBars[b] == doctest::Approx(rCmp.rawBars[b]).epsilon(1e-5));
+      if (rRef.rawBars[b] > bestVal) {
+        bestVal = rRef.rawBars[b];
+        bestIdx = b;
+      }
+    }
+    const int diff = std::abs(static_cast<int>(bestIdx) - static_cast<int>(targetIdx));
+    CHECK(diff <= 1);
+    CHECK(bestVal > 0.01f);
+  }
+
+  cfg.sampleOutCount = 256;
+  az.setConfig(cfg);
+  CHECK(az.cachedBarFrequencies().size() == 256);
+}

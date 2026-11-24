@@ -121,8 +121,26 @@ class EditorApp {
   bool showAssetBrowserPanel_ = true;
   int activeSoundKeysRange_ = 0;
   bool fxaaEnabled_ = true;
+  enum class PreviewScaleMode {
+    Full100 = 0,
+    Scale75 = 1,
+    Scale50 = 2,
+    AutoFitViewport = 3,
+  };
+  enum class VSyncMode {
+    On = 0,
+    Adaptive = 1,
+    Off = 2,
+  };
+  PreviewScaleMode previewScaleMode_ = PreviewScaleMode::Full100;
+  VSyncMode vsyncMode_ = VSyncMode::On;
+  bool showPerfOverlay_ = false;
   int previewWidth_ = 1280;
   int previewHeight_ = 720;
+  int lastLiveRenderW_ = 1280;
+  int lastLiveRenderH_ = 720;
+  float lastViewportAvailW_ = 0.0f;
+  float lastViewportAvailH_ = 0.0f;
   float visOffsetMs_ = 0.0f;
 
   double totalTimeSec_ = 0.0;

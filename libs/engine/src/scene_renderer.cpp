@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -32,6 +33,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace iota::engine {
@@ -573,12 +575,14 @@ struct SceneRenderer::Impl {
   iota::rhi::TextureHandle texBlack{};
   std::unordered_map<std::string, iota::rhi::TextureHandle> internalTexCache;
   std::unordered_map<std::string, iota::rhi::TextureHandle> localTexCache;
+  std::unordered_set<std::string> missingDiskPaths;
 
   FontAtlasCache fontCache;
   iota::dsp::MVarEvaluator mvarEval;
   iota::dsp::SoundKeysProcessor soundKeysProc;
   std::vector<iota::dsp::AudioAnalyzer> analyzers{1};
   std::unordered_map<int, ParticleSystem> particleSystems;
+  std::unordered_map<int, std::vector<EmitterSamplePoint>> cachedEmitterSamples;
 
   struct MotionBlurPrevTransform {
     float centerX = 0.0f;
@@ -601,6 +605,8 @@ struct SceneRenderer::Impl {
   iota::rhi::RenderTargetHandle tonemapRt{};
   std::array<iota::rhi::RenderTargetHandle, 6> blurDownRts{};
   std::array<iota::rhi::RenderTargetHandle, 5> blurUpRts{};
+  std::array<iota::rhi::RenderTargetHandle, 6> bloomDownRts{};
+  std::array<iota::rhi::RenderTargetHandle, 5> bloomUpRts{};
   iota::rhi::RenderTargetHandle blurFullA{};
   iota::rhi::RenderTargetHandle blurFullB{};
   iota::rhi::RenderTargetHandle canvasSnapshotRt{};
@@ -613,6 +619,7 @@ struct SceneRenderer::Impl {
   std::vector<uint32_t> scratchIndices;
   std::vector<float> scratchPcm;
   std::vector<float> scratchLayerBars;
+  std::vector<float> scratchHeightsPx;
   std::vector<float> scratchInterpHeights;
   std::vector<ShapePoint> scratchShape;
   std::vector<uint8_t> emitterSampleRgba;
@@ -760,55 +767,58 @@ struct SceneRenderer::Impl {
     }
 
     // Desktop fallback: allow direct filesystem image path (wide Unicode-safe via pathFromUtf8)
-    const std::filesystem::path diskPath = iota::core::pathFromUtf8(uri);
-    if (iota::core::pathExistsNoThrow(diskPath)) {
-      std::string key(uri);
-      auto cached = localTexCache.find(key);
-      if (cached != localTexCache.end()) {
-        out.tex = cached->second;
-        device->textureSize(out.tex, out.texW, out.texH);
-        return out;
-      }
-      std::vector<uint8_t> imgBytes;
-      {
-        std::ifstream f(diskPath, std::ios::binary | std::ios::ate);
-        if (f.is_open()) {
-          const auto sz = f.tellg();
-          if (sz > 0 &&
-              static_cast<uint64_t>(sz) <= static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-            imgBytes.resize(static_cast<size_t>(sz));
-            f.seekg(0, std::ios::beg);
-            if (!f.read(reinterpret_cast<char*>(imgBytes.data()), sz)) {
-              imgBytes.clear();
+    std::string key(uri);
+    if (auto cached = localTexCache.find(key); cached != localTexCache.end()) {
+      out.tex = cached->second;
+      device->textureSize(out.tex, out.texW, out.texH);
+      return out;
+    }
+    if (missingDiskPaths.find(key) == missingDiskPaths.end()) {
+      const std::filesystem::path diskPath = iota::core::pathFromUtf8(uri);
+      if (iota::core::pathExistsNoThrow(diskPath)) {
+        std::vector<uint8_t> imgBytes;
+        {
+          std::ifstream f(diskPath, std::ios::binary | std::ios::ate);
+          if (f.is_open()) {
+            const auto sz = f.tellg();
+            if (sz > 0 &&
+                static_cast<uint64_t>(sz) <= static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+              imgBytes.resize(static_cast<size_t>(sz));
+              f.seekg(0, std::ios::beg);
+              if (!f.read(reinterpret_cast<char*>(imgBytes.data()), sz)) {
+                imgBytes.clear();
+              }
             }
           }
         }
-      }
-      if (!imgBytes.empty()) {
-        int iw = 0, ih = 0, ch = 0;
-        uint8_t* decoded = stbi_load_from_memory(imgBytes.data(),
-                                                 static_cast<int>(imgBytes.size()),
-                                                 &iw,
-                                                 &ih,
-                                                 &ch,
-                                                 4);
-        if (decoded && iw > 0 && ih > 0) {
-          iota::rhi::TextureDesc td;
-          td.width = iw;
-          td.height = ih;
-          td.rgbaPixels = decoded;
-          iota::rhi::TextureHandle th = device->createTexture2D(td);
-          stbi_image_free(decoded);
-          if (th) {
-            localTexCache.emplace(std::move(key), th);
-            out.tex = th;
-            out.texW = iw;
-            out.texH = ih;
-            return out;
+        if (!imgBytes.empty()) {
+          int iw = 0, ih = 0, ch = 0;
+          uint8_t* decoded = stbi_load_from_memory(imgBytes.data(),
+                                                   static_cast<int>(imgBytes.size()),
+                                                   &iw,
+                                                   &ih,
+                                                   &ch,
+                                                   4);
+          if (decoded && iw > 0 && ih > 0) {
+            iota::rhi::TextureDesc td;
+            td.width = iw;
+            td.height = ih;
+            td.rgbaPixels = decoded;
+            iota::rhi::TextureHandle th = device->createTexture2D(td);
+            stbi_image_free(decoded);
+            if (th) {
+              localTexCache.emplace(std::move(key), th);
+              out.tex = th;
+              out.texW = iw;
+              out.texH = ih;
+              return out;
+            }
+          } else if (decoded) {
+            stbi_image_free(decoded);
           }
-        } else if (decoded) {
-          stbi_image_free(decoded);
         }
+      } else {
+        missingDiskPaths.insert(std::move(key));
       }
     }
 
@@ -886,17 +896,6 @@ struct SceneRenderer::Impl {
       emitterSampleRt = device->createRenderTarget(64, 64, iota::rhi::TextureFilter::Linear, iota::rhi::PixelFormat::Rgba8);
     }
 
-    int pw = width;
-    int ph = height;
-    for (size_t i = 0; i < blurDownRts.size(); ++i) {
-      pw = std::max(2, pw / 2);
-      ph = std::max(2, ph / 2);
-      ensureRt(blurDownRts[i], pw, ph, workingFormat);
-      if (i < blurUpRts.size()) {
-        ensureRt(blurUpRts[i], pw, ph, workingFormat);
-      }
-    }
-
     if (sizeChanged && !formatChanged) {
       for (auto& [id, hist] : temporalBlurHistories) {
         for (int k = 0; k < 2; ++k) {
@@ -905,6 +904,29 @@ struct SceneRenderer::Impl {
           }
         }
         hist.initialized = false;
+      }
+    }
+  }
+
+  void ensurePyramidTargets(std::array<iota::rhi::RenderTargetHandle, 6>& downRts,
+                            std::array<iota::rhi::RenderTargetHandle, 5>& upRts,
+                            iota::rhi::PixelFormat fmt) {
+    int pw = width;
+    int ph = height;
+    for (size_t i = 0; i < downRts.size(); ++i) {
+      pw = std::max(2, pw / 2);
+      ph = std::max(2, ph / 2);
+      if (!downRts[i]) {
+        downRts[i] = device->createRenderTarget(pw, ph, iota::rhi::TextureFilter::Linear, fmt);
+      } else {
+        device->resizeRenderTarget(downRts[i], pw, ph);
+      }
+      if (i < upRts.size()) {
+        if (!upRts[i]) {
+          upRts[i] = device->createRenderTarget(pw, ph, iota::rhi::TextureFilter::Linear, fmt);
+        } else {
+          device->resizeRenderTarget(upRts[i], pw, ph);
+        }
       }
     }
   }
@@ -997,14 +1019,13 @@ struct SceneRenderer::Impl {
                                             float scatter,
                                             float anamorphic,
                                             RenderFrameStats* stats) {
-    const auto& clipQuad = fullClipQuad();
-    const auto& clipIdx = fullClipIdx();
+    ensurePyramidTargets(bloomDownRts, bloomUpRts, iota::rhi::PixelFormat::R11G11B10F);
 
-    // Pass 0: Prefilter from full-res comp0Tex -> blurDownRts[0] (1/2 res)
+    // Pass 0: Prefilter from full-res comp0Tex -> bloomDownRts[0] (1/2 res)
     {
       int dstW = 2, dstH = 2;
-      device->renderTargetSize(blurDownRts[0], dstW, dstH);
-      device->bindRenderTarget(blurDownRts[0], dstW, dstH);
+      device->renderTargetSize(bloomDownRts[0], dstW, dstH);
+      device->bindRenderTarget(bloomDownRts[0], dstW, dstH);
       device->setBlendMode(iota::core::BlendMode::Opaque);
       device->useShader(shBloomPrefilter);
       device->bindTexture(0, comp0Tex);
@@ -1017,44 +1038,44 @@ struct SceneRenderer::Impl {
       device->setUniformFloat(shBloomPrefilter, "u_threshold", threshold);
       device->setUniformFloat(shBloomPrefilter, "u_softKnee", softKnee);
       device->setUniformFloat(shBloomPrefilter, "u_anamorphic", anamorphic);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
     }
 
-    // Passes 1..5: Progressive Jimenez 13-tap downsample blurDownRts[i-1] -> blurDownRts[i]
-    for (size_t i = 1; i < blurDownRts.size(); ++i) {
+    // Passes 1..5: Progressive Jimenez 13-tap downsample bloomDownRts[i-1] -> bloomDownRts[i]
+    for (size_t i = 1; i < bloomDownRts.size(); ++i) {
       int srcW = 2, srcH = 2;
       int dstW = 2, dstH = 2;
-      device->renderTargetSize(blurDownRts[i - 1], srcW, srcH);
-      device->renderTargetSize(blurDownRts[i], dstW, dstH);
-      device->bindRenderTarget(blurDownRts[i], dstW, dstH);
+      device->renderTargetSize(bloomDownRts[i - 1], srcW, srcH);
+      device->renderTargetSize(bloomDownRts[i], dstW, dstH);
+      device->bindRenderTarget(bloomDownRts[i], dstW, dstH);
       device->setBlendMode(iota::core::BlendMode::Opaque);
       device->useShader(shBloomDown);
-      device->bindTexture(0, device->renderTargetColorTexture(blurDownRts[i - 1]));
+      device->bindTexture(0, device->renderTargetColorTexture(bloomDownRts[i - 1]));
       device->setUniformInt(shBloomDown, "u_texture", 0);
       device->setUniformVec2(shBloomDown,
                              "u_texelSize",
                              1.0f / static_cast<float>(std::max(1, srcW)),
                              1.0f / static_cast<float>(std::max(1, srcH)));
       device->setUniformFloat(shBloomDown, "u_anamorphic", anamorphic);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
     }
 
     // Upsample pyramid: i = 4 down to 0
-    for (int i = static_cast<int>(blurUpRts.size()) - 1; i >= 0; --i) {
+    for (int i = static_cast<int>(bloomUpRts.size()) - 1; i >= 0; --i) {
       const auto coarseRt =
-          (i == static_cast<int>(blurUpRts.size()) - 1) ? blurDownRts[5] : blurUpRts[static_cast<size_t>(i + 1)];
+          (i == static_cast<int>(bloomUpRts.size()) - 1) ? bloomDownRts[5] : bloomUpRts[static_cast<size_t>(i + 1)];
       int coarseW = 2, coarseH = 2;
       int dstW = 2, dstH = 2;
       device->renderTargetSize(coarseRt, coarseW, coarseH);
-      device->renderTargetSize(blurUpRts[static_cast<size_t>(i)], dstW, dstH);
-      device->bindRenderTarget(blurUpRts[static_cast<size_t>(i)], dstW, dstH);
+      device->renderTargetSize(bloomUpRts[static_cast<size_t>(i)], dstW, dstH);
+      device->bindRenderTarget(bloomUpRts[static_cast<size_t>(i)], dstW, dstH);
       device->setBlendMode(iota::core::BlendMode::Opaque);
       device->useShader(shBloomUp);
       device->bindTexture(0, device->renderTargetColorTexture(coarseRt));
       device->setUniformInt(shBloomUp, "u_coarseTex", 0);
-      device->bindTexture(1, device->renderTargetColorTexture(blurDownRts[static_cast<size_t>(i)]));
+      device->bindTexture(1, device->renderTargetColorTexture(bloomDownRts[static_cast<size_t>(i)]));
       device->setUniformInt(shBloomUp, "u_fineTex", 1);
       device->setUniformVec2(shBloomUp,
                              "u_texelSize",
@@ -1062,26 +1083,11 @@ struct SceneRenderer::Impl {
                              1.0f / static_cast<float>(std::max(1, coarseH)));
       device->setUniformFloat(shBloomUp, "u_scatter", scatter);
       device->setUniformFloat(shBloomUp, "u_anamorphic", anamorphic);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
     }
 
-    return device->renderTargetColorTexture(blurUpRts[0]);
-  }
-
-  static const std::array<iota::rhi::VertexPosColUv, 4>& fullClipQuad() noexcept {
-    static const std::array<iota::rhi::VertexPosColUv, 4> kQuad = {{
-        {-1.0f, -1.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 0.0f},
-        {+1.0f, -1.0f, 0.0f, 0xFFFFFFFFu, 1.0f, 0.0f},
-        {+1.0f, +1.0f, 0.0f, 0xFFFFFFFFu, 1.0f, 1.0f},
-        {-1.0f, +1.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 1.0f},
-    }};
-    return kQuad;
-  }
-
-  static const std::array<uint32_t, 6>& fullClipIdx() noexcept {
-    static const std::array<uint32_t, 6> kIdx = {0, 1, 2, 0, 2, 3};
-    return kIdx;
+    return device->renderTargetColorTexture(bloomUpRts[0]);
   }
 
   static float wrapAngleDiffPi(float d) noexcept {
@@ -1115,9 +1121,6 @@ struct SceneRenderer::Impl {
       return {srcTex, srcIsFbo};
     }
 
-    const auto& clipQuad = fullClipQuad();
-    const auto& clipIdx = fullClipIdx();
-
     iota::rhi::TextureHandle workSrc = srcTex;
     bool workIsInFullB = false;
     if (!srcIsFbo) {
@@ -1149,7 +1152,7 @@ struct SceneRenderer::Impl {
       device->setUniformVec2(shGaussianSep, "u_stepUv", stepX, stepY);
       device->setUniformFloat(shGaussianSep, "u_radiusPx", rPx);
       device->setUniformInt(shGaussianSep, "u_halfTaps", halfTaps);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
     };
 
@@ -1167,7 +1170,7 @@ struct SceneRenderer::Impl {
                              0.5f / static_cast<float>(std::max(1, dstW)),
                              0.5f / static_cast<float>(std::max(1, dstH)));
       device->setUniformFloat(shKawaseDown, "u_offset", offset);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
     };
 
@@ -1190,7 +1193,7 @@ struct SceneRenderer::Impl {
                              0.5f / static_cast<float>(std::max(1, dstH)));
       device->setUniformFloat(shKawaseUp, "u_offset", offset);
       device->setUniformFloat(shKawaseUp, "u_blend", blend);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
     };
 
@@ -1204,6 +1207,7 @@ struct SceneRenderer::Impl {
         return {device->renderTargetColorTexture(rtV), true};
       }
 
+      ensurePyramidTargets(blurDownRts, blurUpRts, workingFormat);
       const int dsLevels = (radiusPx > 48.0f) ? 2 : 1;
       iota::rhi::TextureHandle cur = workSrc;
       for (int i = 0; i < dsLevels; ++i) {
@@ -1252,12 +1256,13 @@ struct SceneRenderer::Impl {
                              std::clamp(centerUv.x, 0.0f, 1.0f),
                              std::clamp(1.0f - centerUv.y, 0.0f, 1.0f));
       device->setUniformFloat(shRadialBlur, "u_strength", strength);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, clipQuad, clipIdx);
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
       return {device->renderTargetColorTexture(blurFullA), true};
     }
 
     // DualKawase (default): continuous multi-octave downsample + tent upsample pyramid
+    ensurePyramidTargets(blurDownRts, blurUpRts, workingFormat);
     const float contLevel = std::clamp(std::log2(1.0f + radiusPx * 0.75f), 0.0f, 6.0f);
     const int deepest = std::clamp(static_cast<int>(std::ceil(contLevel)), 1, 6);
     const float frac = std::clamp(contLevel - static_cast<float>(deepest - 1), 0.0f, 1.0f);
@@ -1583,11 +1588,11 @@ struct SceneRenderer::Impl {
     const float hFactorAbs = std::abs(hFactor);
 
     const int barCount = static_cast<int>(scratchLayerBars.size());
-    std::vector<float> heightsPx(static_cast<size_t>(barCount));
+    scratchHeightsPx.resize(static_cast<size_t>(barCount));
     for (int i = 0; i < barCount; ++i) {
       const int srcIdx = flipInput ? (barCount - 1 - i) : i;
       const float rawSample = std::max(0.0f, scratchLayerBars[static_cast<size_t>(srcIdx)]);
-      heightsPx[static_cast<size_t>(i)] = (std::min(rawSample * hFactorAbs, maxH) * hSign) + minH;
+      scratchHeightsPx[static_cast<size_t>(i)] = (std::min(rawSample * hFactorAbs, maxH) * hSign) + minH;
     }
 
     const auto* shapeProp = findPropCI(p, "ShapePath");
@@ -1611,7 +1616,7 @@ struct SceneRenderer::Impl {
     const auto curveMode =
         iota::dsp::curveInterpolationModeFromString(getStringCI(p, "curveInterpolation", "None"));
     const int curveSubs = std::clamp(getIntCI(p, "curveSubdivisions", 4), 1, 8);
-    iota::dsp::interpolateBarCurve(heightsPx, curveMode, curveSubs, closedCurve, scratchInterpHeights);
+    iota::dsp::interpolateBarCurve(scratchHeightsPx, curveMode, curveSubs, closedCurve, scratchInterpHeights);
 
     const int renderCount = static_cast<int>(scratchInterpHeights.size());
     buildShapePathPoints(shapeProp, rect, renderCount, scratchShape);
@@ -1787,8 +1792,9 @@ struct SceneRenderer::Impl {
     cfg.dofMaxBlur = std::clamp(getFloatCI(p, "dofMaxBlur", 0.85f), 0.0f, 1.0f);
 
     // Optional LayerMask GPU-to-64x64 sampling when emitterType == LayerMask
-    scratchEmitterSamples.clear();
+    std::span<const EmitterSamplePoint> layerSamplesSpan{};
     if (cfg.emitterType == ParticleEmitterType::LayerMask && emitterSampleRt) {
+      auto& cachedSamples = cachedEmitterSamples[rid];
       const std::string layerUri = getStringCI(p, "emitterLayer", "");
       const auto layerRef = parseCompositionRef(layerUri);
       const bool sampleCanvasBelow = layerUri.empty() ||
@@ -1814,8 +1820,11 @@ struct SceneRenderer::Impl {
                                  srcLayerIsFbo,
                                  stats);
         int sw = 0, sh = 0;
-        if (device->readRenderTargetRgba(emitterSampleRt, sw, sh, emitterSampleRgba, true) &&
-            sw == 64 && sh == 64 && emitterSampleRgba.size() == 64u * 64u * 4u) {
+        const bool gotPixels = mctx.isExporting
+            ? device->readRenderTargetRgba(emitterSampleRt, sw, sh, emitterSampleRgba, true)
+            : device->readRenderTargetRgbaAsync(emitterSampleRt, sw, sh, emitterSampleRgba, true);
+        if (gotPixels && sw == 64 && sh == 64 && emitterSampleRgba.size() == 64u * 64u * 4u) {
+          cachedSamples.clear();
           for (int sy = 0; sy < 64; ++sy) {
             for (int sx = 0; sx < 64; ++sx) {
               const size_t idx = static_cast<size_t>((sy * 64 + sx) * 4);
@@ -1824,7 +1833,7 @@ struct SceneRenderer::Impl {
               const uint8_t cb = emitterSampleRgba[idx + 2];
               const uint8_t ca = emitterSampleRgba[idx + 3];
               if (ca > 24 && (static_cast<int>(cr) + cg + cb) > 36) {
-                scratchEmitterSamples.push_back({
+                cachedSamples.push_back({
                     (static_cast<float>(sx) + 0.5f) / 64.0f,
                     (static_cast<float>(sy) + 0.5f) / 64.0f,
                     cr, cg, cb, ca,
@@ -1835,9 +1844,10 @@ struct SceneRenderer::Impl {
         }
         device->bindRenderTarget(currentTargetRt, width, height);
       }
+      layerSamplesSpan = cachedSamples;
     }
 
-    ps.step(cfg, rect, width, height, mctx.dt, scratchEmitterSamples);
+    ps.step(cfg, rect, width, height, mctx.dt, layerSamplesSpan);
     if (stats) {
       stats->activeParticles += ps.activeCount();
       stats->activeAuxParticles += ps.auxCount();
@@ -2271,7 +2281,7 @@ struct SceneRenderer::Impl {
       device->setUniformFloat(shTemporalBlur, "u_keepFactor", keepFactor);
       device->setUniformFloat(shTemporalBlur, "u_currFlipY", target.isFbo ? 0.0f : 1.0f);
       device->setUniformInt(shTemporalBlur, "u_trailBlend", trailBlendInt);
-      device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, fullClipQuad(), fullClipIdx());
+      device->drawFullscreenQuad();
       if (stats) stats->drawCalls += 1;
 
       hist.readIdx = writeIdx;
@@ -2323,9 +2333,29 @@ struct SceneRenderer::Impl {
     const bool useCanvasBelow = targetUri.empty() ||
         (compRef && (*compRef <= 0 || *compRef >= static_cast<int>(compTargets.size()) || *compRef == compIdx));
 
+    const LayoutSpec layout = extractLayoutSpec(project, compIdx, elemIdx, el, mvarEval, mctx);
+    const iota::core::RectF rect = computeElementRect(layout, width, height);
+    const float angleRad = computeTotalRotationRadians(layout);
+    const glm::mat4 projView = makeRotatedOrthoProjView(
+        width, height, rect.centerX(), rect.centerY(), angleRad);
+    const auto mainCol = getColorArgbCI(p, "color", {255, 255, 255, 255});
+    const auto elemBlend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Opaque"));
+
+    const bool fullCoverage =
+        (std::abs(angleRad) < 1e-4f && rect.left <= 0.5f && rect.top <= 0.5f &&
+         rect.right >= static_cast<float>(width) - 0.5f &&
+         rect.bottom >= static_cast<float>(height) - 0.5f);
+
     ResolvedTexture target{};
     if (useCanvasBelow) {
-      target.tex = captureCanvasSnapshot(currentTargetRt, stats);
+      if (elemBlend == iota::core::BlendMode::Opaque && fullCoverage && canvasSnapshotRt &&
+          compIdx >= 0 && compIdx < static_cast<int>(compTargets.size())) {
+        std::swap(compTargets[static_cast<size_t>(compIdx)], canvasSnapshotRt);
+        currentTargetRt = compTargets[static_cast<size_t>(compIdx)];
+        target.tex = device->renderTargetColorTexture(canvasSnapshotRt);
+      } else {
+        target.tex = captureCanvasSnapshot(currentTargetRt, stats);
+      }
       target.texW = width;
       target.texH = height;
       target.isFbo = true;
@@ -2333,13 +2363,6 @@ struct SceneRenderer::Impl {
     } else {
       target = resolveTextureUri(project, targetUri);
     }
-
-    const LayoutSpec layout = extractLayoutSpec(project, compIdx, elemIdx, el, mvarEval, mctx);
-    const iota::core::RectF rect = computeElementRect(layout, width, height);
-    const glm::mat4 projView = makeRotatedOrthoProjView(
-        width, height, rect.centerX(), rect.centerY(), computeTotalRotationRadians(layout));
-    const auto mainCol = getColorArgbCI(p, "color", {255, 255, 255, 255});
-    const auto elemBlend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Opaque"));
 
     ShakeConfig cfg;
     cfg.style = shakeStyleFromString(getStringCI(p, "style", "Normal"));
@@ -2636,6 +2659,18 @@ void SceneRenderer::shutdown() {
       rt = {};
     }
   }
+  for (auto& rt : impl_->bloomDownRts) {
+    if (rt) {
+      impl_->device->destroyRenderTarget(rt);
+      rt = {};
+    }
+  }
+  for (auto& rt : impl_->bloomUpRts) {
+    if (rt) {
+      impl_->device->destroyRenderTarget(rt);
+      rt = {};
+    }
+  }
   for (auto& [id, hist] : impl_->temporalBlurHistories) {
     for (int k = 0; k < 2; ++k) {
       if (hist.rt[k]) {
@@ -2685,6 +2720,7 @@ void SceneRenderer::resetSimulation() {
     a.reset();
   }
   impl_->particleSystems.clear();
+  impl_->cachedEmitterSamples.clear();
   impl_->motionBlurPrevTransforms.clear();
   for (auto& [id, hist] : impl_->temporalBlurHistories) {
     hist.initialized = false;
@@ -2697,6 +2733,7 @@ void SceneRenderer::invalidateLocalAssets() {
     impl_->device->destroyTexture(t);
   }
   impl_->localTexCache.clear();
+  impl_->missingDiskPaths.clear();
   impl_->fontCache.invalidateCustomFonts();
 }
 
@@ -2722,6 +2759,8 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
   if (outStats) {
     *outStats = RenderFrameStats{};
   }
+  const auto frameCpuStart = std::chrono::steady_clock::now();
+  impl_->device->beginFrame();
 
   const int compCount = static_cast<int>(project.compositions.size());
   const bool hdrEnabled = getBoolCI(project.compositions[0].props, "hdrPipeline", true);
@@ -2817,7 +2856,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
       outStats->soundKeysOutputs = skRes.outputs;
       outStats->soundKeysRaw = skRes.rawNormalized;
       outStats->soundKeysSpectrum = skBars;
-      outStats->soundKeysBarFreqsHz = iota::dsp::computeBarFrequencies(skAnalyzer.config());
+      outStats->soundKeysBarFreqsHz = skAnalyzer.cachedBarFrequencies();
       outStats->soundKeysCeiling = skRes.effectiveCeiling;
       outStats->soundKeysPeak = skRes.spectrumPeak;
     }
@@ -2825,7 +2864,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     outStats->soundKeysOutputs = {};
     outStats->soundKeysRaw = {};
     outStats->soundKeysSpectrum = impl_->analyzers[0].lastResult().smoothedBars;
-    outStats->soundKeysBarFreqsHz = iota::dsp::computeBarFrequencies(impl_->analyzers[0].config());
+    outStats->soundKeysBarFreqsHz = impl_->analyzers[0].cachedBarFrequencies();
     float peak = 0.0f;
     for (float v : outStats->soundKeysSpectrum) {
       peak = std::max(peak, v);
@@ -2833,6 +2872,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     outStats->soundKeysPeak = peak;
     outStats->soundKeysCeiling = std::max(50.0f, peak * 1.25f);
   }
+  const auto dspCpuEnd = std::chrono::steady_clock::now();
 
   iota::dsp::MVarEvalContext mctx;
   mctx.dt = timing.dt;
@@ -2850,7 +2890,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
   const std::vector<int> compOrder = impl_->computeCompositionOrder(project);
   for (int compIdx : compOrder) {
     const auto& comp = project.compositions[static_cast<size_t>(compIdx)];
-    const auto rt = impl_->compTargets[static_cast<size_t>(compIdx)];
+    auto rt = impl_->compTargets[static_cast<size_t>(compIdx)];
     impl_->device->bindRenderTarget(rt, impl_->width, impl_->height);
     if (compIdx == 0) {
       impl_->device->clear(0.03f, 0.03f, 0.045f, 1.0f);
@@ -2891,6 +2931,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
           break;
         case iota::model::ElementType::ShakeEffect:
           impl_->renderShakeEffect(project, compIdx, elemIdx, el, rt, mctx, outStats);
+          rt = impl_->compTargets[static_cast<size_t>(compIdx)];
           break;
         case iota::model::ElementType::MirrorEffect:
           impl_->renderMirrorEffect(project, compIdx, elemIdx, el, mctx, outStats);
@@ -2982,9 +3023,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     impl_->device->setUniformInt(impl_->shFxaa, "u_texture", 0);
     impl_->device->setUniformFloat(impl_->shFxaa, "resolutionW", static_cast<float>(impl_->width));
     impl_->device->setUniformFloat(impl_->shFxaa, "resolutionH", static_cast<float>(impl_->height));
-    impl_->device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles,
-                               Impl::fullClipQuad(),
-                               Impl::fullClipIdx());
+    impl_->device->drawFullscreenQuad();
     if (outStats) outStats->drawCalls += 1;
   };
 
@@ -3021,9 +3060,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     impl_->device->setUniformFloat(impl_->shTonemap, "u_gamma", gamma);
     impl_->device->setUniformFloat(impl_->shTonemap, "u_vignette", vignette);
     impl_->device->setUniformFloat(impl_->shTonemap, "u_dither", timing.fxaaEnabled ? 0.0f : 1.0f);
-    impl_->device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles,
-                               Impl::fullClipQuad(),
-                               Impl::fullClipIdx());
+    impl_->device->drawFullscreenQuad();
     if (outStats) outStats->drawCalls += 1;
 
     if (timing.fxaaEnabled) {
@@ -3049,13 +3086,18 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     impl_->activeFinalRt = comp0Rt;
   }
 
+  impl_->device->bindRenderTarget({}, 0, 0);
+  impl_->device->endFrame();
+
   if (outStats) {
     const auto fStats = impl_->fontCache.stats();
     outStats->cachedGlyphs = fStats.cachedGlyphs;
     outStats->fontUsingDirectWrite = fStats.usingDirectWrite;
+    outStats->cpuDspMs = std::chrono::duration<float, std::milli>(dspCpuEnd - frameCpuStart).count();
+    outStats->cpuRenderMs =
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - frameCpuStart).count();
+    outStats->gpuRenderMs = impl_->device->lastGpuFrameTimeMs();
   }
-
-  impl_->device->bindRenderTarget({}, 0, 0);
   return impl_->activeFinalRt;
 }
 

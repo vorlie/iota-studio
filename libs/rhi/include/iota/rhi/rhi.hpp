@@ -47,6 +47,7 @@ enum class TextureFilter {
 enum class PixelFormat {
   Rgba8 = 0,
   Rgba16F = 1,
+  R11G11B10F = 2,
 };
 
 enum class TextureWrap {
@@ -77,6 +78,9 @@ class IRenderDevice {
   virtual ~IRenderDevice() = default;
 
   [[nodiscard]] virtual std::string_view backendName() const noexcept = 0;
+
+  virtual void beginFrame() {}
+  virtual void endFrame() {}
 
   virtual TextureHandle createTexture2D(const TextureDesc& desc, std::string* outError = nullptr) = 0;
   virtual void updateTexture2D(TextureHandle tex, int width, int height, const uint8_t* rgbaPixels) = 0;
@@ -126,17 +130,35 @@ class IRenderDevice {
                            std::span<const uint32_t> indices) = 0;
   virtual void drawVertices(PrimitiveTopology topology,
                             std::span<const VertexPosColUv> vertices) = 0;
+  virtual void drawFullscreenQuad() {
+    static constexpr VertexPosColUv kClipQuad[4] = {
+        {-1.0f, -1.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 0.0f},
+        {+1.0f, -1.0f, 0.0f, 0xFFFFFFFFu, 1.0f, 0.0f},
+        {+1.0f, +1.0f, 0.0f, 0xFFFFFFFFu, 1.0f, 1.0f},
+        {-1.0f, +1.0f, 0.0f, 0xFFFFFFFFu, 0.0f, 1.0f},
+    };
+    static constexpr uint32_t kClipIdx[6] = {0, 1, 2, 0, 2, 3};
+    drawIndexed(PrimitiveTopology::Triangles, kClipQuad, kClipIdx);
+  }
 
   virtual bool readRenderTargetRgba(RenderTargetHandle rt,
                                     int& outWidth,
                                     int& outHeight,
                                     std::vector<uint8_t>& outRgba,
                                     bool flipVertical = true) = 0;
+  virtual bool readRenderTargetRgbaAsync(RenderTargetHandle rt,
+                                         int& outWidth,
+                                         int& outHeight,
+                                         std::vector<uint8_t>& outRgba,
+                                         bool flipVertical = true) {
+    return readRenderTargetRgba(rt, outWidth, outHeight, outRgba, flipVertical);
+  }
   virtual bool readRenderTargetRgbaFloat(RenderTargetHandle rt,
                                          int& outWidth,
                                          int& outHeight,
                                          std::vector<float>& outRgbaFloat,
                                          bool flipVertical = true) = 0;
+  [[nodiscard]] virtual float lastGpuFrameTimeMs() const noexcept { return 0.0f; }
 };
 
 }  // namespace iota::rhi

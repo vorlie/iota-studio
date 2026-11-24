@@ -243,6 +243,19 @@ class ParticleSystem {
                     int maxCap,
                     std::vector<Particle>& outAux);
 
+  struct DrawItem {
+    float camZ = 0.0f;
+    float sx = 0.0f;
+    float sy = 0.0f;
+    float svx = 0.0f;
+    float svy = 0.0f;
+    float halfW = 1.0f;
+    float halfH = 1.0f;
+    float angle = 0.0f;
+    float coc = 0.0f;
+    uint32_t abgr = 0xFFFFFFFFu;
+  };
+
   uint32_t rng_ = 1337u;
   float spawnAccum_ = 0.0f;
   float simTime_ = 0.0f;
@@ -253,6 +266,7 @@ class ParticleSystem {
   int auxCount_ = 0;
   std::vector<Particle> particles_;
   std::vector<Particle> pendingAux_;
+  mutable std::vector<DrawItem> scratchDrawItems_;
 };
 
 }  // namespace iota::engine

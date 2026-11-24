@@ -44,6 +44,12 @@ class SharpenKernel {
  public:
   void configure(int radius, float strength) {
     const int r = std::clamp(radius, 0, 16);
+    if (configured_ && r == rawRadius_ && std::abs(strength - rawStrength_) < 1e-6f) {
+      return;
+    }
+    configured_ = true;
+    rawRadius_ = r;
+    rawStrength_ = strength;
     if (r == 0 || strength <= 0.0001f) {
       radius_ = 0;
       weights_ = {1.0f};
@@ -89,6 +95,9 @@ class SharpenKernel {
   }
 
  private:
+  bool configured_ = false;
+  int rawRadius_ = -1;
+  float rawStrength_ = -1.0f;
   int radius_ = 0;
   std::vector<float> weights_{1.0f};
 };
@@ -97,8 +106,14 @@ class SharpenKernel {
 class GaussianImpulseKernel {
  public:
   void configure(float radius, float blendStrength) {
-    const int half = std::clamp(static_cast<int>(std::ceil(2.57f * std::max(0.0f, radius))), 0, 32);
     const float f = std::clamp(blendStrength, 0.0f, 1.0f);
+    if (configured_ && std::abs(radius - rawRadius_) < 1e-6f && std::abs(f - rawBlend_) < 1e-6f) {
+      return;
+    }
+    configured_ = true;
+    rawRadius_ = radius;
+    rawBlend_ = f;
+    const int half = std::clamp(static_cast<int>(std::ceil(2.57f * std::max(0.0f, radius))), 0, 32);
     if (half <= 0 || radius <= 0.01f || f <= 0.0001f) {
       halfWidth_ = 0;
       weights_ = {1.0f};
@@ -153,6 +168,9 @@ class GaussianImpulseKernel {
   }
 
  private:
+  bool configured_ = false;
+  float rawRadius_ = -1.0f;
+  float rawBlend_ = -1.0f;
   int halfWidth_ = 0;
   std::vector<float> weights_{1.0f};
 };
