@@ -3,8 +3,10 @@
 #include "asset_browser_panel.hpp"
 #include "hierarchy_panel.hpp"
 #include "project_manager_modal.hpp"
+#include "update_modal.hpp"
 
 #include "iota/audio/audio_engine.hpp"
+#include "iota/core/update_checker.hpp"
 #include "iota/engine/scene_renderer.hpp"
 #include "iota/export/video_exporter.hpp"
 #include "iota/model/command_stack.hpp"
@@ -45,6 +47,8 @@ class EditorApp {
   void drawSoundKeysPanel();
   void drawProjectManagerModal();
   void drawExportModal();
+  void drawUpdateModal();
+  void openExternalUrl(const std::string& url);
   void handleShortcuts();
 
   void pushUndoState(std::string label);
@@ -114,6 +118,9 @@ class EditorApp {
 
   iota::export_video::ExportSettings exportCfg_;
   bool openExportModal_ = false;
+  iota::core::UpdateChecker updateChecker_;
+  bool openUpdateModal_ = false;
+  bool updateBannerNotified_ = false;
   std::string statusBanner_ = "Ready";
 };
 

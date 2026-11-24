@@ -12,6 +12,8 @@ add_executable(iota_studio
   src/asset_browser_panel.cpp
   src/project_manager_modal.hpp
   src/project_manager_modal.cpp
+  src/update_modal.hpp
+  src/update_modal.cpp
 )
 
 target_link_libraries(iota_studio
@@ -28,6 +30,7 @@ target_link_libraries(iota_studio
     glfw
     imgui_docking
     comdlg32
+    shell32
 )
 
 iota_configure_target(iota_studio)

@@ -8,6 +8,7 @@
 
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -216,6 +217,10 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   undoStack_.clear(project_);
   if (!isSmokeTest_) {
     projectLibrary_.load(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+    updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
+                                   iota::core::UpdateChecker::kDefaultRepoOwner,
+                                   iota::core::UpdateChecker::kDefaultRepoName,
+                                   false);
   }
   updateWindowTitle();
 
@@ -226,6 +231,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
 
 void EditorApp::shutdown() {
   exportSession_.cancel();
+  updateChecker_.cancel();
   renderer_.shutdown();
   device_.shutdown();
 
@@ -353,6 +359,7 @@ int EditorApp::run() {
     drawSoundKeysPanel();
     drawProjectManagerModal();
     drawExportModal();
+    drawUpdateModal();
 
     ImGui::Render();
 
@@ -836,6 +843,42 @@ void EditorApp::drawMenuBar() {
     ImGui::MenuItem("Asset Browser", nullptr, &showAssetBrowserPanel_);
     ImGui::MenuItem("Sound Keys Panel", nullptr, &showSoundKeysPanel_);
     ImGui::EndMenu();
+  }
+
+  if (ImGui::BeginMenu("Help")) {
+    if (ImGui::MenuItem("Check for Updates...")) {
+      updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
+                                     iota::core::UpdateChecker::kDefaultRepoOwner,
+                                     iota::core::UpdateChecker::kDefaultRepoName,
+                                     true);
+      openUpdateModal_ = true;
+    }
+    if (ImGui::MenuItem("Open Releases Page")) {
+      openExternalUrl(iota::core::UpdateChecker::kReleasesPageUrl);
+    }
+    ImGui::Separator();
+    const std::string verLabel = std::string("Iota Studio v") + IOTA_STUDIO_VERSION;
+    ImGui::MenuItem(verLabel.c_str(), nullptr, false, false);
+    ImGui::EndMenu();
+  }
+
+  const auto updSnap = updateChecker_.snapshot();
+  if (updSnap.status == iota::core::UpdateCheckStatus::UpdateAvailable) {
+    if (!updateBannerNotified_) {
+      updateBannerNotified_ = true;
+      statusBanner_ = "Update available: " + updSnap.latestRelease.tagName;
+    }
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.52f, 0.28f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.65f, 0.36f, 1.0f));
+    const std::string badgeLabel = "Update Available (" + updSnap.latestRelease.tagName + ")";
+    if (ImGui::SmallButton(badgeLabel.c_str())) {
+      openUpdateModal_ = true;
+    }
+    ImGui::PopStyleColor(2);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+      ImGui::SetTooltip("Click to view release notes and open the GitHub release link.");
+    }
   }
 
   ImGui::Separator();
@@ -1924,6 +1967,49 @@ void EditorApp::drawProjectManagerModal() {
   if (actions.requestSaveAsIota) saveProjectAsDialog("iota");
   if (actions.requestExportViz) saveProjectAsDialog("viz");
   if (actions.requestExportJson) saveProjectAsDialog("json");
+}
+
+void EditorApp::drawUpdateModal() {
+  const auto snap = updateChecker_.snapshot();
+  UpdateModalActions actions;
+  renderUpdateModal(openUpdateModal_, snap, actions);
+
+  if (actions.requestRecheck) {
+    updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
+                                   iota::core::UpdateChecker::kDefaultRepoOwner,
+                                   iota::core::UpdateChecker::kDefaultRepoName,
+                                   true);
+  }
+  if (actions.requestOpenUrl && !actions.urlToOpen.empty()) {
+    openExternalUrl(actions.urlToOpen);
+  }
+  if (actions.copiedLink) {
+    statusBanner_ = "Copied release link to clipboard";
+  }
+}
+
+void EditorApp::openExternalUrl(const std::string& url) {
+  if (!iota::core::isSafeHttpsUrl(url)) {
+    statusBanner_ = "Blocked unsafe release URL";
+    return;
+  }
+  const int needed = MultiByteToWideChar(
+      CP_UTF8, 0, url.data(), static_cast<int>(url.size()), nullptr, 0);
+  if (needed <= 0) {
+    statusBanner_ = "Failed to encode URL";
+    return;
+  }
+  std::wstring wurl(static_cast<size_t>(needed), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()), wurl.data(), needed);
+
+  HWND owner = window_ ? glfwGetWin32Window(window_) : nullptr;
+  const INT_PTR rc = reinterpret_cast<INT_PTR>(
+      ShellExecuteW(owner, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+  if (rc <= 32) {
+    statusBanner_ = "Failed to open browser for release link";
+  } else {
+    statusBanner_ = "Opened release page in browser";
+  }
 }
 
 void EditorApp::updateWindowTitle() {
