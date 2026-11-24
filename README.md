@@ -94,6 +94,20 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 
 Third-party C/C++ libraries are fetched automatically at configure time via CMake `FetchContent`.
 
+## System Requirements
+
+| Component | Minimum (720p/1080p SDR, standard templates) | Recommended (1080p–4K, HDR16F + Bloom, heavy templates & fast export) |
+|---|---|---|
+| **OS** | Windows 10 / 11 (64-bit) | Windows 10 / 11 (64-bit) |
+| **CPU** | 64-bit dual/quad-core CPU (e.g., Intel Core i3 6th-gen+ / AMD Ryzen 3) | 6+ core modern CPU (e.g., Intel Core i5 10th-gen+ / AMD Ryzen 5 3600+) for stacked multi-provider `Spectrum2` DFTs, high particle counts, and FFmpeg encoding |
+| **GPU** | **OpenGL 4.5**-capable GPU with 1 GB VRAM (e.g., Intel HD 520 / UHD 620+, NVIDIA GTX 650 / 750 Ti+, AMD R7 260 / Vega iGPU+) | Dedicated **OpenGL 4.5+** GPU with 4 GB+ VRAM (e.g., NVIDIA GTX 1060 / 1650+, AMD RX 570 / 5500 XT+) for multi-composition `RGBA16F` HDR, 6-mip Bloom, and motion/shake effects |
+| **RAM** | 4 GB | 8 GB+ (16 GB for large 4K projects with high-resolution assets) |
+| **Storage** | ~50 MB for the application + space for audio/video exports | SSD with free space for project assets and exported MP4s |
+| **Runtime** | Microsoft Visual C++ 2015–2022 Redistributable (x64); optional `ffmpeg.exe` & `ffprobe.exe` on `PATH` | Same (`ffmpeg.exe` & `ffprobe.exe` on `PATH` for broad audio decoding and MP4 export) |
+
+> [!NOTE]
+> Older integrated GPUs capped at OpenGL 4.0–4.3 on Windows (such as Intel HD 4000 / 4th-gen Haswell) are not supported because Iota Studio requires an OpenGL 4.5 Core Profile context.
+
 ## Building & Running (Windows x64)
 
 ### Prerequisites
