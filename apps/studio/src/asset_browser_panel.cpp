@@ -32,6 +32,28 @@ bool matchesSearch(std::string_view haystack, const char* needleBuf) {
   return toLowerCopy(haystack).find(toLowerCopy(needleBuf)) != std::string::npos;
 }
 
+bool hasSuffixCI(std::string_view text, std::string_view suffix) noexcept {
+  if (text.size() < suffix.size()) return false;
+  const size_t offset = text.size() - suffix.size();
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(text[offset + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isShaderAssetName(std::string_view name) noexcept {
+  return hasSuffixCI(name, ".glsl") ||
+         hasSuffixCI(name, ".frag") ||
+         hasSuffixCI(name, ".vert") ||
+         hasSuffixCI(name, ".fsh") ||
+         hasSuffixCI(name, ".vsh") ||
+         hasSuffixCI(name, ".fs") ||
+         hasSuffixCI(name, ".vs");
+}
+
 std::string formatBytesShort(size_t bytes) {
   char buf[32]{};
   if (bytes >= 1024u * 1024u) {
@@ -49,7 +71,9 @@ void drawFittedThumbnailBox(iota::rhi::IRenderDevice& device,
                             const iota::model::Project& project,
                             std::string_view uri,
                             float boxSize,
-                            bool validVisual) {
+                            bool validVisual,
+                            const char* fallbackTag = "AUD",
+                            ImU32 fallbackCol = IM_COL32(95, 205, 250, 255)) {
   const ImVec2 p0 = ImGui::GetCursorScreenPos();
   const ImVec2 p1(p0.x + boxSize, p0.y + boxSize);
   ImGui::Dummy(ImVec2(boxSize, boxSize));
@@ -73,11 +97,10 @@ void drawFittedThumbnailBox(iota::rhi::IRenderDevice& device,
       const auto texId = static_cast<ImTextureID>(device.nativeTextureId(thumb.texture));
       dl->AddImage(texId, ImVec2(ox, oy), ImVec2(ox + dw, oy + dh), uv0, uv1);
     }
-  } else if (!validVisual) {
-    const char* tag = "AUD";
-    const ImVec2 ts = ImGui::CalcTextSize(tag);
+  } else if (!validVisual && fallbackTag != nullptr) {
+    const ImVec2 ts = ImGui::CalcTextSize(fallbackTag);
     dl->AddText(ImVec2(p0.x + (boxSize - ts.x) * 0.5f, p0.y + (boxSize - ts.y) * 0.5f),
-                IM_COL32(95, 205, 250, 255), tag);
+                fallbackCol, fallbackTag);
   }
   dl->AddRect(p0, p1, IM_COL32(66, 78, 98, 220), 3.0f);
 }
@@ -91,7 +114,10 @@ void pushAssetDragSource(std::string_view uri,
   if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
     std::string payload(uri);
     ImGui::SetDragDropPayload(kAssetDragDropPayload, payload.c_str(), payload.size() + 1);
-    drawFittedThumbnailBox(device, renderer, project, uri, 32.0f, true);
+    const bool isShader = isShaderAssetName(label);
+    drawFittedThumbnailBox(device, renderer, project, uri, 32.0f, !isShader,
+                           isShader ? "GLSL" : "AUD",
+                           isShader ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 205, 250, 255));
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(std::string(label).c_str());
@@ -116,6 +142,25 @@ void addImageLayerWithAsset(iota::model::Project& project,
   actions.modified = true;
   actions.undoSnapshotNeeded = true;
   actions.editLabel = "Add Image from Asset";
+}
+
+void addCustomShaderLayerWithAsset(iota::model::Project& project,
+                                   int selectedCompIdx,
+                                   std::string_view uri,
+                                   std::string_view label,
+                                   AssetBrowserActions& actions) {
+  if (project.compositions.empty()) return;
+  const int compIdx = std::clamp(selectedCompIdx, 0, static_cast<int>(project.compositions.size()) - 1);
+  auto el = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+  el.displayName = label.empty() ? "Custom Shader" : std::string(label);
+  iota::model::assignAssetToElement(el, uri, false);
+  auto& elems = project.compositions[static_cast<size_t>(compIdx)].elements;
+  elems.push_back(std::move(el));
+  actions.selectCompIdx = compIdx;
+  actions.selectElemIdx = static_cast<int>(elems.size()) - 1;
+  actions.modified = true;
+  actions.undoSnapshotNeeded = true;
+  actions.editLabel = "Add CustomShader from Asset";
 }
 
 void applyAssetToSelectedElement(iota::model::Project& project,
@@ -192,21 +237,33 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       (selectedEl->type == iota::model::ElementType::Image ||
        selectedEl->type == iota::model::ElementType::BlurEffect);
 
+  const bool canAssignShader =
+      selectedEl != nullptr && selectedEl->type == iota::model::ElementType::CustomShader;
+
   // --- After Effects-style Top Preview Header ---
   if (state.selectedKind != BrowserItemKind::None) {
-    const bool isVisual = (state.selectedKind == BrowserItemKind::LocalImage ||
-                           state.selectedKind == BrowserItemKind::InternalTexture ||
-                           state.selectedKind == BrowserItemKind::CompositionRef);
+    const bool selectedIsShader =
+        (state.selectedKind == BrowserItemKind::LocalImage && isShaderAssetName(state.selectedLabel));
+    const bool isVisual = (state.selectedKind == BrowserItemKind::LocalImage && !selectedIsShader) ||
+                          state.selectedKind == BrowserItemKind::InternalTexture ||
+                          state.selectedKind == BrowserItemKind::CompositionRef;
     const bool validPreviewUri =
         (state.selectedKind != BrowserItemKind::CompositionRef || state.selectedUri != "composition:0");
 
     drawFittedThumbnailBox(device, renderer, project, state.selectedUri, 56.0f,
-                           isVisual && validPreviewUri);
+                           isVisual && validPreviewUri,
+                           selectedIsShader ? "GLSL" : "AUD",
+                           selectedIsShader ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 205, 250, 255));
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::TextUnformatted(state.selectedLabel.c_str());
 
-    if (state.selectedKind == BrowserItemKind::LocalImage) {
+    if (selectedIsShader) {
+      const auto assetIt = project.localAssets.find(state.selectedLabel);
+      const size_t bytes = (assetIt != project.localAssets.end()) ? assetIt->second.size() : 0;
+      const int refs = iota::model::countAssetReferences(project, state.selectedUri);
+      ImGui::TextDisabled("GLSL Shader  %s  Used:%d", formatBytesShort(bytes).c_str(), refs);
+    } else if (state.selectedKind == BrowserItemKind::LocalImage) {
       const auto thumb = renderer.resolveAssetPreview(project, state.selectedUri);
       const auto assetIt = project.localAssets.find(state.selectedLabel);
       const size_t bytes = (assetIt != project.localAssets.end()) ? assetIt->second.size() : 0;
@@ -224,7 +281,22 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       ImGui::TextDisabled("%s", audioName.c_str());
     }
 
-    if (isVisual && validPreviewUri) {
+    if (selectedIsShader) {
+      if (ImGui::SmallButton("Edit")) {
+        actions.requestEditShader = true;
+        actions.editShaderAssetName = state.selectedLabel;
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("+ Shader")) {
+        addCustomShaderLayerWithAsset(project, selectedCompIdx, state.selectedUri, state.selectedLabel, actions);
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!canAssignShader);
+      if (ImGui::SmallButton("Apply")) {
+        applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, state.selectedUri, false, actions);
+      }
+      ImGui::EndDisabled();
+    } else if (isVisual && validPreviewUri) {
       if (ImGui::SmallButton("+ Layer")) {
         addImageLayerWithAsset(project, selectedCompIdx, state.selectedUri, state.selectedLabel, actions);
       }
@@ -265,6 +337,9 @@ void renderAssetBrowserPanel(iota::model::Project& project,
   if (ImGui::BeginPopup("ImportAssetPopup")) {
     if (ImGui::MenuItem("Import Images...")) {
       actions.requestImportImages = true;
+    }
+    if (ImGui::MenuItem("Import Shaders (.glsl)...")) {
+      actions.requestImportShaders = true;
     }
     if (ImGui::MenuItem("Import Audio...")) {
       actions.requestImportAudio = true;
@@ -388,14 +463,28 @@ void renderAssetBrowserPanel(iota::model::Project& project,
 
   auto drawLocalAssetContextMenu = [&](const std::string& assetName, const std::string& uri) {
     if (!ImGui::BeginPopupContextItem()) return;
-    if (ImGui::MenuItem("Add as Image Layer")) {
-      addImageLayerWithAsset(project, selectedCompIdx, uri, assetName, actions);
-    }
-    if (ImGui::MenuItem("Assign to Selected Layer", nullptr, false, canAssignVisual)) {
-      applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, uri, false, actions);
-    }
-    if (ImGui::MenuItem("Assign as Mask", nullptr, false, canAssignMask)) {
-      applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, uri, true, actions);
+    const bool isShader = isShaderAssetName(assetName);
+    if (isShader) {
+      if (ImGui::MenuItem("Edit in Shader Editor")) {
+        actions.requestEditShader = true;
+        actions.editShaderAssetName = assetName;
+      }
+      if (ImGui::MenuItem("Add as CustomShader Layer")) {
+        addCustomShaderLayerWithAsset(project, selectedCompIdx, uri, assetName, actions);
+      }
+      if (ImGui::MenuItem("Assign to Selected CustomShader", nullptr, false, canAssignShader)) {
+        applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, uri, false, actions);
+      }
+    } else {
+      if (ImGui::MenuItem("Add as Image Layer")) {
+        addImageLayerWithAsset(project, selectedCompIdx, uri, assetName, actions);
+      }
+      if (ImGui::MenuItem("Assign to Selected Layer", nullptr, false, canAssignVisual)) {
+        applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, uri, false, actions);
+      }
+      if (ImGui::MenuItem("Assign as Mask", nullptr, false, canAssignMask)) {
+        applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, uri, true, actions);
+      }
     }
     if (ImGui::BeginMenu("Move to Bin")) {
       if (ImGui::MenuItem("(Root)")) {
@@ -457,7 +546,7 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       for (const auto& [name, bytes] : project.localAssets) {
         (void)bytes;
         if (!matchesSearch(name, state.searchFilter)) continue;
-        gridItems.push_back({BrowserItemKind::LocalImage, name, "local:" + name, true, true});
+        gridItems.push_back({BrowserItemKind::LocalImage, name, "local:" + name, true, !isShaderAssetName(name)});
       }
     }
     if (showAudio) {
@@ -494,7 +583,10 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       ImGui::BeginGroup();
       const bool selected = (state.selectedKind == gi.kind && state.selectedUri == gi.uri);
       const ImVec2 tileOrigin = ImGui::GetCursorScreenPos();
-      drawFittedThumbnailBox(device, renderer, project, gi.uri, cellW, gi.validThumb);
+      const bool giIsShader = (gi.kind == BrowserItemKind::LocalImage && isShaderAssetName(gi.label));
+      drawFittedThumbnailBox(device, renderer, project, gi.uri, cellW, gi.validThumb,
+                             giIsShader ? "GLSL" : "AUD",
+                             giIsShader ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 205, 250, 255));
       if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         state.selectedKind = gi.kind;
         state.selectedUri = gi.uri;
@@ -507,6 +599,9 @@ void renderAssetBrowserPanel(iota::model::Project& project,
         } else if (gi.kind == BrowserItemKind::CompositionRef) {
           actions.selectCompIdx = std::atoi(gi.uri.c_str() + 12);
           actions.selectElemIdx = -1;
+        } else if (giIsShader) {
+          actions.requestEditShader = true;
+          actions.editShaderAssetName = gi.label;
         } else if (canAssignVisual) {
           applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, gi.uri, false, actions);
         } else {
@@ -564,9 +659,12 @@ void renderAssetBrowserPanel(iota::model::Project& project,
     if (showLocal && ImGui::TreeNodeEx("Project Assets", ImGuiTreeNodeFlags_DefaultOpen)) {
       auto renderLocalRow = [&](const std::string& name) {
         const std::string uri = "local:" + name;
+        const bool isShader = isShaderAssetName(name);
         const int refs = iota::model::countAssetReferences(project, uri);
         ImGui::PushID(name.c_str());
-        drawFittedThumbnailBox(device, renderer, project, uri, 18.0f, true);
+        drawFittedThumbnailBox(device, renderer, project, uri, 18.0f, !isShader,
+                               isShader ? "GLSL" : "AUD",
+                               isShader ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 205, 250, 255));
         ImGui::SameLine();
         const bool selected = (state.selectedKind == BrowserItemKind::LocalImage && state.selectedUri == uri);
         const std::string lbl = name + (refs > 0 ? (" [" + std::to_string(refs) + "]") : "");
@@ -575,7 +673,10 @@ void renderAssetBrowserPanel(iota::model::Project& project,
           state.selectedUri = uri;
           state.selectedLabel = name;
           if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-            if (canAssignVisual) {
+            if (isShader) {
+              actions.requestEditShader = true;
+              actions.editShaderAssetName = name;
+            } else if (canAssignVisual) {
               applyAssetToSelectedElement(project, selectedCompIdx, selectedElemIdx, uri, false, actions);
             } else {
               addImageLayerWithAsset(project, selectedCompIdx, uri, name, actions);
@@ -612,7 +713,7 @@ void renderAssetBrowserPanel(iota::model::Project& project,
         renderLocalRow(name);
       }
       if (!anyRoot && allFolders.empty()) {
-        ImGui::TextDisabled("(Empty — click + Import to add images)");
+        ImGui::TextDisabled("(Empty — click + Import to add images or shaders)");
       }
       ImGui::TreePop();
     }

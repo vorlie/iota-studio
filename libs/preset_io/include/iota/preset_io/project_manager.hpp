@@ -52,9 +52,12 @@ class ProjectLibrary {
   void clear() noexcept { entries_.clear(); }
 
   [[nodiscard]] const std::vector<RecentProjectEntry>& entries() const noexcept { return entries_; }
+  [[nodiscard]] bool suppressVizImportNotice() const noexcept { return suppressVizImportNotice_; }
+  void setSuppressVizImportNotice(bool suppress) noexcept { suppressVizImportNotice_ = suppress; }
 
  private:
   std::vector<RecentProjectEntry> entries_;
+  bool suppressVizImportNotice_ = false;
 };
 
 /// Saves a Project in .json (if extension is .json/.txt) or zipped archive (.iota/.viz/.zip).

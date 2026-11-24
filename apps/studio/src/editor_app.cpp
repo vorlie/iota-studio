@@ -223,6 +223,13 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
         }
       }
     }
+    for (const char* monoName : {"consola.ttf", "CascadiaMono.ttf", "lucon.ttf"}) {
+      const auto monoPath = winFonts / monoName;
+      if (iota::core::pathExistsNoThrow(monoPath)) {
+        codeFont_ = io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(monoPath).c_str(), 15.0f);
+        if (codeFont_ != nullptr) break;
+      }
+    }
   }
 
   if (!ImGui_ImplGlfw_InitForOpenGL(window_, true) ||
@@ -327,6 +334,7 @@ void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
   ImGui::DockBuilderDockWindow("Hierarchy", dockLeft);
   ImGui::DockBuilderDockWindow("Assets", dockLeftBottom);
   ImGui::DockBuilderDockWindow("Inspector", dockRight);
+  ImGui::DockBuilderDockWindow("Shader Editor", dockRight);
   ImGui::DockBuilderDockWindow("Documentation", dockRight);
   ImGui::DockBuilderDockWindow("Audio & Timeline", dockBottom);
   ImGui::DockBuilderDockWindow("Sound Keys", dockBottom);
@@ -435,12 +443,14 @@ int EditorApp::run() {
     drawHierarchyPanel();
     drawAssetBrowserPanel();
     drawInspectorPanel();
+    drawShaderEditorPanel();
     drawDocsPanel();
     drawAudioTimelinePanel();
     drawSoundKeysPanel();
     drawProjectManagerModal();
     drawExportModal();
     drawUpdateModal();
+    drawVizImportNoticeModal();
 
     ImGui::Render();
 
@@ -513,7 +523,7 @@ int EditorApp::runSmokeTest() {
 
 void EditorApp::handleShortcuts() {
   ImGuiIO& io = ImGui::GetIO();
-  if (io.WantTextInput) return;
+  if (io.WantTextInput || shaderEditor_.isFocused()) return;
 
   if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S)) {
     saveProjectAsDialog("iota");
@@ -960,6 +970,7 @@ void EditorApp::drawMenuBar() {
     ImGui::Separator();
     ImGui::MenuItem("Asset Browser", nullptr, &showAssetBrowserPanel_);
     ImGui::MenuItem("Sound Keys Panel", nullptr, &showSoundKeysPanel_);
+    ImGui::MenuItem("Shader Editor", nullptr, &showShaderEditorPanel_);
     ImGui::MenuItem("Documentation Panel\tF1", nullptr, &showDocsPanel_);
     ImGui::EndMenu();
   }
@@ -1200,6 +1211,7 @@ void EditorApp::drawInspectorPanel() {
   actions.showRawPropertyKeys = showRawPropertyKeys_;
   actions.preciseNumericInputs = preciseNumericInputs_;
   actions.propertyFilter = inspectorFilterBuf_;
+  actions.availableLocalAssets = &project_.localAssets;
 
   if (selectedElemIdx_ >= 0 && selectedElemIdx_ < static_cast<int>(comp.elements.size())) {
     auto& el = comp.elements[static_cast<size_t>(selectedElemIdx_)];
@@ -1768,6 +1780,79 @@ void EditorApp::drawInspectorPanel() {
         }
       }
     }
+
+    if (actions.requestLocalShaderImport && !actions.assetTargetPropName.empty() && window_) {
+      HWND hwnd = glfwGetWin32Window(window_);
+      if (auto chosen = showOpenFileDialog(
+              hwnd,
+              L"Import GLSL Shader Asset into Project",
+              L"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0")) {
+        auto bytes = readAllBytes(*chosen);
+        if (!bytes.empty()) {
+          const std::string fname = iota::core::pathFilenameUtf8(*chosen);
+          project_.localAssets[fname] = std::move(bytes);
+          el.props.setString(actions.assetTargetPropName, "local:" + fname, "etxt", "shader");
+          renderer_.invalidateLocalAssets();
+          pushUndoState("Import Shader Asset");
+          statusBanner_ = "Bundled shader local:" + fname;
+        }
+      }
+    }
+
+    if (actions.requestOpenShaderEditor && !actions.editShaderTargetProp.empty()) {
+      std::string curVal = el.props.getString(actions.editShaderTargetProp, "");
+      while (!curVal.empty() && std::isspace(static_cast<unsigned char>(curVal.front()))) curVal.erase(curVal.begin());
+      while (!curVal.empty() && std::isspace(static_cast<unsigned char>(curVal.back()))) curVal.pop_back();
+      if (curVal.rfind("local:", 0) == 0) {
+        const std::string fname = curVal.substr(6);
+        if (project_.localAssets.find(fname) != project_.localAssets.end()) {
+          openShaderInEditor(fname);
+        } else {
+          statusBanner_ = "Shader asset not found: " + curVal;
+        }
+      } else {
+        const bool isVert = (actions.editShaderTargetProp == "shaderVertex");
+        const std::string base = isVert ? "custom_vert" : "custom_frag";
+        const std::string ext = isVert ? ".vert" : ".glsl";
+        std::string fname = base + ext;
+        for (int idx = 2; project_.localAssets.find(fname) != project_.localAssets.end(); ++idx) {
+          fname = base + "_" + std::to_string(idx) + ext;
+        }
+        std::string seedSrc = curVal;
+        if (seedSrc.empty()) {
+          seedSrc = isVert
+                        ? "#version 450 core\n"
+                          "layout(location = 0) in vec3 a_pos;\n"
+                          "layout(location = 1) in vec4 a_color;\n"
+                          "layout(location = 2) in vec2 a_uv;\n"
+                          "uniform mat4 u_projView;\n"
+                          "out vec4 v_color;\n"
+                          "out vec2 v_uv;\n"
+                          "void main() {\n"
+                          "  v_color = a_color;\n"
+                          "  v_uv = a_uv;\n"
+                          "  gl_Position = u_projView * vec4(a_pos, 1.0);\n"
+                          "}\n"
+                        : "#version 450 core\n"
+                          "in vec2 v_uv;\n"
+                          "in vec4 v_color;\n"
+                          "out vec4 iota_FragColor;\n"
+                          "uniform sampler2D u_texture;\n"
+                          "uniform float u_time;\n"
+                          "uniform vec2 u_resolution;\n"
+                          "uniform float u_beat;\n"
+                          "uniform vec4 u_soundKeys;\n"
+                          "void main() {\n"
+                          "  iota_FragColor = texture(u_texture, v_uv) * v_color;\n"
+                          "}\n";
+        }
+        project_.localAssets[fname] = std::vector<uint8_t>(seedSrc.begin(), seedSrc.end());
+        el.props.setString(actions.editShaderTargetProp, "local:" + fname, "etxt", "shader");
+        pushUndoState("Extract Shader to Asset");
+        openShaderInEditor(fname);
+        statusBanner_ = "Opened local:" + fname + " in Shader Editor";
+      }
+    }
   } else {
     ImGui::TextWrapped("Composition %d: %s", selectedCompIdx_, comp.displayName.c_str());
     char compNameBuf[256]{};
@@ -2296,11 +2381,34 @@ void EditorApp::drawAssetBrowserPanel() {
       statusBanner_ = "Imported " + std::to_string(imported) + " asset(s)";
     }
   }
+  if (actions.requestImportShaders && window_) {
+    const auto chosen = showOpenFilesDialog(
+        glfwGetWin32Window(window_),
+        L"Import GLSL Shader Assets into Project",
+        L"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0");
+    int imported = 0;
+    for (const auto& path : chosen) {
+      auto bytes = readAllBytes(path);
+      if (!bytes.empty()) {
+        const std::string fname = iota::core::pathFilenameUtf8(path);
+        project_.localAssets[fname] = std::move(bytes);
+        assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
+        assetBrowserState_.selectedLabel = fname;
+        assetBrowserState_.selectedUri = "local:" + fname;
+        ++imported;
+      }
+    }
+    if (imported > 0) {
+      renderer_.invalidateLocalAssets();
+      pushUndoState(imported == 1 ? "Import Shader Asset" : "Import Shader Assets");
+      statusBanner_ = "Imported " + std::to_string(imported) + " shader(s)";
+    }
+  }
   if (actions.requestReplaceLocalAsset && !actions.replaceTargetName.empty() && window_) {
     if (auto chosen = showOpenFileDialog(
             glfwGetWin32Window(window_),
             L"Replace Local Asset File",
-            L"Images (*.png;*.jpg;*.jpeg;*.bmp;*.tga)\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files (*.*)\0*.*\0")) {
+            L"Supported Assets (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0")) {
       auto bytes = readAllBytes(*chosen);
       if (!bytes.empty()) {
         project_.localAssets[actions.replaceTargetName] = std::move(bytes);
@@ -2328,6 +2436,9 @@ void EditorApp::drawAssetBrowserPanel() {
   }
   if (actions.undoSnapshotNeeded) {
     pushUndoState(actions.editLabel.empty() ? "Modify Assets" : actions.editLabel);
+  }
+  if (actions.requestEditShader && !actions.editShaderAssetName.empty()) {
+    openShaderInEditor(actions.editShaderAssetName);
   }
 }
 
@@ -2416,6 +2527,115 @@ void EditorApp::drawUpdateModal() {
   }
   if (actions.copiedLink) {
     statusBanner_ = "Copied release link to clipboard";
+  }
+}
+
+void EditorApp::drawVizImportNoticeModal() {
+  if (openVizImportNoticeModal_) {
+    ImGui::OpenPopup("Preset compatibility notice");
+    openVizImportNoticeModal_ = false;
+  }
+
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
+
+  if (!ImGui::BeginPopupModal("Preset compatibility notice", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  if (!lastImportedVizName_.empty()) {
+    ImGui::TextDisabled("Imported preset: %s", lastImportedVizName_.c_str());
+    ImGui::Spacing();
+  }
+
+  ImGui::TextWrapped("When importing an Avee Player preset (.viz), some settings may require manual adjustment.");
+  ImGui::Spacing();
+  ImGui::TextWrapped(
+      "Iota Studio uses a different rendering engine, audio analysis pipeline, and effect implementation. "
+      "Consequently, certain visual properties and audio-reactive behaviors may differ from the original preset.");
+  ImGui::Spacing();
+  ImGui::TextUnformatted("You may need to adjust:");
+  ImGui::BulletText("Effect intensity and blending");
+  ImGui::BulletText("Audio sensitivity and smoothing");
+  ImGui::BulletText("Spectrum and frequency ranges");
+  ImGui::BulletText("Particle behavior and animation");
+  ImGui::BulletText("Shader parameters and colors");
+  ImGui::Spacing();
+  ImGui::TextWrapped("Your imported preset will remain editable.");
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+
+  ImGui::Checkbox("Don't show this notice again", &vizNoticeDontShowAgain_);
+
+  ImGui::Spacing();
+  const bool okClicked = ImGui::Button("OK", ImVec2(120.0f, 0.0f));
+  ImGui::SetItemDefaultFocus();
+  if (okClicked || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+    if (vizNoticeDontShowAgain_) {
+      projectLibrary_.setSuppressVizImportNotice(true);
+      projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+    }
+    ImGui::CloseCurrentPopup();
+  }
+
+  ImGui::EndPopup();
+}
+
+void EditorApp::openShaderInEditor(std::string_view assetName) {
+  showShaderEditorPanel_ = true;
+  shaderEditor_.openAsset(project_, assetName);
+}
+
+void EditorApp::drawShaderEditorPanel() {
+  ShaderEditorActions actions;
+  shaderEditor_.render(project_, showShaderEditorPanel_, frameStats_.lastError, codeFont_, actions);
+
+  if (actions.modified) {
+    projectDirty_ = true;
+    updateWindowTitle();
+  }
+  if (actions.undoSnapshotNeeded) {
+    pushUndoState(actions.editLabel.empty() ? "Edit Shader" : actions.editLabel);
+  }
+  if (actions.requestImportShader && window_) {
+    const auto chosen = showOpenFilesDialog(
+        glfwGetWin32Window(window_),
+        L"Import GLSL Shader Assets into Project",
+        L"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0");
+    std::string firstImported;
+    int imported = 0;
+    for (const auto& path : chosen) {
+      auto bytes = readAllBytes(path);
+      if (!bytes.empty()) {
+        const std::string fname = iota::core::pathFilenameUtf8(path);
+        project_.localAssets[fname] = std::move(bytes);
+        if (firstImported.empty()) firstImported = fname;
+        ++imported;
+      }
+    }
+    if (imported > 0) {
+      renderer_.invalidateLocalAssets();
+      pushUndoState(imported == 1 ? "Import Shader Asset" : "Import Shader Assets");
+      openShaderInEditor(firstImported);
+      statusBanner_ = "Opened local:" + firstImported + " in Shader Editor";
+    }
+  }
+  if (actions.requestAddCustomShaderLayer && !actions.addLayerAssetName.empty() && !project_.compositions.empty()) {
+    const int compIdx = std::clamp(selectedCompIdx_, 0, static_cast<int>(project_.compositions.size()) - 1);
+    auto el = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+    el.displayName = actions.addLayerAssetName;
+    iota::model::assignAssetToElement(el, "local:" + actions.addLayerAssetName, false);
+    auto& elems = project_.compositions[static_cast<size_t>(compIdx)].elements;
+    elems.push_back(std::move(el));
+    setSingleSelection(compIdx, static_cast<int>(elems.size()) - 1);
+    pushUndoState("Add CustomShader Layer");
+    statusBanner_ = "Added CustomShader layer for local:" + actions.addLayerAssetName;
+  }
+  if (!actions.statusMessage.empty()) {
+    statusBanner_ = actions.statusMessage;
   }
 }
 
@@ -2516,6 +2736,7 @@ bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
   projectDirty_ = false;
   applyProjectMetadata(project_.metadata);
   setSingleSelection(0, project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0);
+  shaderEditor_.clearIfMissing(project_);
   renderer_.invalidateLocalAssets();
   renderer_.resetSimulation();
   undoStack_.clear(project_);
@@ -2531,6 +2752,16 @@ bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
   recordProjectInLibrary(path);
   updateWindowTitle();
   statusBanner_ = "Loaded " + iota::core::pathFilenameUtf8(path);
+
+  std::string ext = iota::core::pathToUtf8(path.extension());
+  for (char& ch : ext) {
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
+  }
+  if (ext == ".viz" && !isSmokeTest_ && !projectLibrary_.suppressVizImportNotice()) {
+    lastImportedVizName_ = iota::core::pathFilenameUtf8(path);
+    vizNoticeDontShowAgain_ = false;
+    openVizImportNoticeModal_ = true;
+  }
   return true;
 }
 

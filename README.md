@@ -121,7 +121,16 @@ Third-party C/C++ libraries are fetched automatically at configure time via CMak
 
 ### Configure & Build
 
-From a Developer Command Prompt for VS 2022 (or after calling `vcvars64.bat`):
+**Easiest (any plain PowerShell window):** `build.ps1` finds Visual Studio 2022, loads the MSVC environment (including the bundled `ninja.exe`), configures the preset if needed, and builds:
+
+```powershell
+.\build.ps1                       # Release build
+.\build.ps1 -Test                 # Release build + tests + smoke test
+.\build.ps1 -Preset release-mcp   # MCP edition
+.\build.ps1 -Run                  # Build, then launch Iota Studio
+```
+
+Or manually, from a Developer Command Prompt for VS 2022 (or after calling `vcvars64.bat`). Running `cmake` from a regular terminal fails with a `ninja` / `cl` not-found error because those tools are only on `PATH` inside a Developer prompt:
 
 ```cmd
 cmake --preset windows-msvc-ninja-release

@@ -8,6 +8,8 @@ add_executable(iota_studio
   src/inspector_panel.cpp
   src/sound_keys_panel.hpp
   src/sound_keys_panel.cpp
+  src/shader_editor_panel.hpp
+  src/shader_editor_panel.cpp
   src/asset_browser_panel.hpp
   src/asset_browser_panel.cpp
   src/docs_panel.hpp
@@ -41,6 +43,7 @@ target_link_libraries(iota_studio
     iota_export
     glfw
     imgui_docking
+    imgui_color_text_edit_lib
     comdlg32
     shell32
 )

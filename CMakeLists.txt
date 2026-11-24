@@ -104,6 +104,12 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 
+FetchContent_Declare(
+  imgui_color_text_edit
+  GIT_REPOSITORY https://github.com/LimiNode/ImGuiColorTextEdit.git
+  GIT_TAG 50cf9231acc1a1e32ee9f00ca274bbe5990e2c4f
+)
+
 FetchContent_MakeAvailable(
   nlohmann_json
   glfw
@@ -114,6 +120,7 @@ FetchContent_MakeAvailable(
   miniz
   stb
   doctest
+  imgui_color_text_edit
 )
 
 # --- Wrapper targets for header-only / source-only third-party libs ---
@@ -131,6 +138,18 @@ target_include_directories(imgui_docking PUBLIC
 )
 target_compile_definitions(imgui_docking PUBLIC IMGUI_USE_WCHAR32)
 target_link_libraries(imgui_docking PUBLIC glfw opengl32)
+
+add_library(imgui_color_text_edit_lib STATIC
+  "${imgui_color_text_edit_SOURCE_DIR}/ImGuiColorTextEdit.cpp"
+  "${imgui_color_text_edit_SOURCE_DIR}/ImGuiColorTextEdit.h"
+)
+target_include_directories(imgui_color_text_edit_lib PUBLIC "${imgui_color_text_edit_SOURCE_DIR}")
+target_link_libraries(imgui_color_text_edit_lib PUBLIC imgui_docking)
+target_compile_features(imgui_color_text_edit_lib PUBLIC cxx_std_20)
+if(MSVC)
+  target_compile_options(imgui_color_text_edit_lib PRIVATE /W0 /EHsc /utf-8)
+  target_compile_definitions(imgui_color_text_edit_lib PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+endif()
 
 add_library(miniaudio_hdr INTERFACE)
 target_include_directories(miniaudio_hdr INTERFACE "${miniaudio_SOURCE_DIR}")

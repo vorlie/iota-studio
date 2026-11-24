@@ -12,3 +12,4 @@ cmake-build-*/
 *_layout.ini
 test_template/
 local/
+.vscode/*

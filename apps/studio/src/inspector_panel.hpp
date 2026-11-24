@@ -4,7 +4,9 @@
 #include "iota/model/scene.hpp"
 
 #include <functional>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace iota::studio {
 
@@ -16,7 +18,11 @@ struct InspectorActions {
   float addKeyframeValue = 0.0f;
   bool requestLocalAssetImport = false;
   bool requestLocalFontImport = false;
+  bool requestLocalShaderImport = false;
+  bool requestOpenShaderEditor = false;
   std::string assetTargetPropName;
+  std::string editShaderTargetProp;
+  const std::map<std::string, std::vector<uint8_t>>* availableLocalAssets = nullptr;
   bool showHiddenProperties = false;
   bool preciseNumericInputs = false;
   bool showRawPropertyKeys = false;

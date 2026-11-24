@@ -1619,6 +1619,61 @@ TEST_CASE("GL45 HDR additive alpha clamp, CustomShader error persistence, and GL
     atlas.shutdown();
   }
 
+  SUBCASE("CustomShader resolves local shader assets, strips BOM, hot-reloads, and routes URIs") {
+    iota::model::Project proj;
+    proj.compositions.push_back(iota::model::createDefaultComposition(0));
+    proj.compositions.push_back(iota::model::createDefaultComposition(1));
+
+    auto cs = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+    CHECK(iota::model::assignAssetToElement(cs, "local:bg.png", false));
+    CHECK(cs.props.getString("TargetImage") == "local:bg.png");
+    CHECK(iota::model::assignAssetToElement(cs, "local:pass.vert", false));
+    CHECK(cs.props.getString("shaderVertex") == "local:pass.vert");
+    CHECK(iota::model::assignAssetToElement(cs, "local:rain.glsl", false));
+    CHECK(cs.props.getString("shaderFragment") == "local:rain.glsl");
+
+    cs.props.setString("TargetImage", "internalres:white", "img", "1_appearance");
+    cs.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+    cs.props.setString("shaderVertex", "", "etxt", "shader");
+
+    const std::string redShader =
+        "\xEF\xBB\xBF"
+        "void main() {\n"
+        "  gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    proj.localAssets["rain.glsl"] = std::vector<uint8_t>(redShader.begin(), redShader.end());
+    proj.compositions[0].elements.push_back(std::move(cs));
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st;
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.0, 0.0, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st));
+    CHECK(st.lastError.empty());
+    const size_t c = (static_cast<size_t>(kH / 2) * kW + static_cast<size_t>(kW / 2)) * 4u;
+    const auto redPx = readRgba();
+    CHECK(static_cast<int>(redPx[c + 0]) > 220);
+    CHECK(static_cast<int>(redPx[c + 1]) < 30);
+
+    // Updating the local shader asset automatically hot-reloads the compiled program
+    const std::string greenShader =
+        "void main() {\n"
+        "  gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);\n"
+        "}\n";
+    proj.localAssets["rain.glsl"] = std::vector<uint8_t>(greenShader.begin(), greenShader.end());
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.02, 0.02, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st));
+    CHECK(st.lastError.empty());
+    const auto greenPx = readRgba();
+    CHECK(static_cast<int>(greenPx[c + 1]) > 220);
+    CHECK(static_cast<int>(greenPx[c + 0]) < 30);
+
+    // Missing local shader reports a diagnostic error
+    proj.localAssets.erase("rain.glsl");
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.04, 0.04, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st));
+    CHECK(st.lastError.find("local:rain.glsl") != std::string::npos);
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

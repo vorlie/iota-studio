@@ -230,6 +230,8 @@ TEST_CASE("ProjectLibrary registry persistence, dedup, prune, and starter templa
   std::filesystem::remove(missingB);
 
   ProjectLibrary lib;
+  CHECK_FALSE(lib.suppressVizImportNotice());
+  lib.setSuppressVizImportNotice(true);
   lib.recordOpened({"Project B", missingB.string(), "2026-01-01 10:00:00", 1, 0});
   lib.recordOpened({"Project A", existingA.string(), "2026-01-02 10:00:00", 2, 3});
   lib.recordOpened({"Project A Renamed", existingA.string(), "", 2, 4});
@@ -241,6 +243,7 @@ TEST_CASE("ProjectLibrary registry persistence, dedup, prune, and starter templa
 
   ProjectLibrary reloaded;
   REQUIRE(reloaded.load(regPath));
+  CHECK(reloaded.suppressVizImportNotice());
   CHECK(reloaded.entries().size() == 2);
   CHECK(reloaded.pruneMissing() == 1);
   CHECK(reloaded.entries().size() == 1);

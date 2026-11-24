@@ -4,6 +4,7 @@
 #include "docs_panel.hpp"
 #include "hierarchy_panel.hpp"
 #include "project_manager_modal.hpp"
+#include "shader_editor_panel.hpp"
 #include "update_modal.hpp"
 
 #include "iota/audio/audio_engine.hpp"
@@ -27,6 +28,7 @@
 #include <string>
 
 struct GLFWwindow;
+struct ImFont;
 
 namespace iota::studio {
 
@@ -56,7 +58,10 @@ class EditorApp {
   void drawProjectManagerModal();
   void drawExportModal();
   void drawUpdateModal();
+  void drawVizImportNoticeModal();
   void drawDocsPanel();
+  void drawShaderEditorPanel();
+  void openShaderInEditor(std::string_view assetName);
   void openDocsForElement(iota::model::ElementType type);
   void openExternalUrl(const std::string& url);
   void handleShortcuts();
@@ -117,6 +122,9 @@ class EditorApp {
   char inspectorFilterBuf_[128]{};
   bool showDocsPanel_ = false;
   DocsPanelState docsPanelState_;
+  bool showShaderEditorPanel_ = false;
+  ShaderEditorPanel shaderEditor_;
+  ImFont* codeFont_ = nullptr;
   bool showSoundKeysPanel_ = true;
   bool showAssetBrowserPanel_ = true;
   int activeSoundKeysRange_ = 0;
@@ -168,6 +176,9 @@ class EditorApp {
   iota::core::UpdateChecker updateChecker_;
   bool openUpdateModal_ = false;
   bool updateBannerNotified_ = false;
+  bool openVizImportNoticeModal_ = false;
+  bool vizNoticeDontShowAgain_ = false;
+  std::string lastImportedVizName_;
   void* appIconBig_ = nullptr;
   void* appIconSmall_ = nullptr;
   std::string statusBanner_ = "Ready";

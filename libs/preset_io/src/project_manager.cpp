@@ -189,6 +189,7 @@ std::filesystem::path ProjectLibrary::defaultRegistryPath() {
 
 bool ProjectLibrary::load(const std::filesystem::path& path) {
   entries_.clear();
+  suppressVizImportNotice_ = false;
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in.is_open()) {
     return false;
@@ -219,6 +220,9 @@ bool ProjectLibrary::load(const std::filesystem::path& path) {
   }
   if (!root.is_object()) {
     return false;
+  }
+  if (auto supIt = root.find("suppressVizImportNotice"); supIt != root.end() && supIt->is_boolean()) {
+    suppressVizImportNotice_ = supIt->get<bool>();
   }
   auto recIt = root.find("recent");
   if (recIt == root.end() || !recIt->is_array()) {
@@ -258,7 +262,11 @@ bool ProjectLibrary::save(const std::filesystem::path& path) const {
         {"assetCount", e.assetCount},
     });
   }
-  Json root = {{"version", 1}, {"recent", std::move(arr)}};
+  Json root = {
+      {"version", 1},
+      {"suppressVizImportNotice", suppressVizImportNotice_},
+      {"recent", std::move(arr)},
+  };
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out.is_open()) {
     return false;

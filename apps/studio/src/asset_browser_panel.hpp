@@ -43,6 +43,9 @@ struct AssetBrowserActions {
 
   bool requestImportImages = false;
   bool requestImportAudio = false;
+  bool requestImportShaders = false;
+  bool requestEditShader = false;
+  std::string editShaderAssetName;
   bool requestReplaceLocalAsset = false;
   std::string replaceTargetName;
   bool requestLoadAudioPath = false;

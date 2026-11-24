@@ -2558,14 +2558,51 @@ struct SceneRenderer::Impl {
     const std::string vsRaw = getStringCI(p, "shaderVertex", "");
     const std::string fsRaw = getStringCI(p, "shaderFragment", "");
 
+    auto resolveShaderSource = [&](std::string_view raw, std::string& outErr) -> std::string {
+      std::string_view trimmed = raw;
+      while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front()))) {
+        trimmed.remove_prefix(1);
+      }
+      while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
+        trimmed.remove_suffix(1);
+      }
+      if (trimmed.rfind("local:", 0) == 0) {
+        const std::string assetName(trimmed.substr(6));
+        const auto it = project.localAssets.find(assetName);
+        if (it == project.localAssets.end()) {
+          outErr = "Shader asset not found: " + std::string(trimmed);
+          return {};
+        }
+        std::string src(reinterpret_cast<const char*>(it->second.data()), it->second.size());
+        if (src.size() >= 3 &&
+            static_cast<uint8_t>(src[0]) == 0xEF &&
+            static_cast<uint8_t>(src[1]) == 0xBB &&
+            static_cast<uint8_t>(src[2]) == 0xBF) {
+          src.erase(0, 3);
+        }
+        if (src.empty()) {
+          outErr = "Shader asset is empty: " + std::string(trimmed);
+          return {};
+        }
+        return src;
+      }
+      return std::string(raw);
+    };
+
+    std::string resolveErr;
+    const std::string vsSrc = resolveShaderSource(vsRaw, resolveErr);
+    const std::string fsSrc = resolveErr.empty() ? resolveShaderSource(fsRaw, resolveErr) : std::string{};
+
     iota::rhi::ShaderHandle sh = shBuffer;
-    if (!fsRaw.empty()) {
-      const std::string key = vsRaw + "\n---\n" + fsRaw;
+    if (!resolveErr.empty()) {
+      if (stats) stats->lastError = resolveErr;
+    } else if (!fsSrc.empty()) {
+      const std::string key = vsSrc + "\n---\n" + fsSrc;
       auto it = customShaders.find(key);
       if (it == customShaders.end()) {
         std::string err;
-        auto created = device->createShader(adaptCustomGlslTo450(vsRaw, false),
-                                            adaptCustomGlslTo450(fsRaw, true),
+        auto created = device->createShader(adaptCustomGlslTo450(vsSrc, false),
+                                            adaptCustomGlslTo450(fsSrc, true),
                                             &err);
         if (!created) {
           created = shBuffer;

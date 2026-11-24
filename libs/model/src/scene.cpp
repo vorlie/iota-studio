@@ -875,6 +875,30 @@ int removeUnusedLocalAssets(Project& project) {
   return removed;
 }
 
+bool endsWithCI(std::string_view text, std::string_view suffix) noexcept {
+  if (text.size() < suffix.size()) return false;
+  const size_t offset = text.size() - suffix.size();
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(text[offset + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isVertexShaderAssetUri(std::string_view uri) noexcept {
+  return endsWithCI(uri, ".vert") || endsWithCI(uri, ".vsh") || endsWithCI(uri, ".vs");
+}
+
+bool isShaderAssetUri(std::string_view uri) noexcept {
+  return isVertexShaderAssetUri(uri) ||
+         endsWithCI(uri, ".glsl") ||
+         endsWithCI(uri, ".frag") ||
+         endsWithCI(uri, ".fsh") ||
+         endsWithCI(uri, ".fs");
+}
+
 bool assignAssetToElement(Element& el, std::string_view uri, bool asMask) {
   if (uri.empty()) {
     return false;
@@ -903,8 +927,15 @@ bool assignAssetToElement(Element& el, std::string_view uri, bool asMask) {
       return true;
     case ElementType::MotionBlurEffect:
     case ElementType::MirrorEffect:
-    case ElementType::CustomShader:
       setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:1", "1_appearance");
+      return true;
+    case ElementType::CustomShader:
+      if (isShaderAssetUri(uri)) {
+        const char* propKey = isVertexShaderAssetUri(uri) ? "shaderVertex" : "shaderFragment";
+        setUriPropertyPreservingMeta(el.props, propKey, uri, "etxt", "shader");
+      } else {
+        setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:1", "1_appearance");
+      }
       return true;
     case ElementType::ShakeEffect:
       setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:0", "1_appearance");

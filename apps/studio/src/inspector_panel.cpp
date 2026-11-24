@@ -39,20 +39,54 @@ bool containsIgnoreCase(std::string_view haystack, std::string_view needle) noex
   return false;
 }
 
+int inputTextStringCallback(ImGuiInputTextCallbackData* data) {
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+    auto* str = static_cast<std::string*>(data->UserData);
+    str->resize(static_cast<size_t>(data->BufTextLen));
+    data->Buf = str->data();
+  }
+  return 0;
+}
+
 bool drawInputTextString(const char* label, std::string& str, bool multiline = false) {
-  char buf[2048]{};
-  const size_t copyLen = std::min(str.size(), sizeof(buf) - 1);
-  std::memcpy(buf, str.data(), copyLen);
-  bool changed = false;
+  const ImGuiInputTextFlags flags = ImGuiInputTextFlags_CallbackResize;
   if (multiline) {
-    changed = ImGui::InputTextMultiline(label, buf, sizeof(buf), ImVec2(-FLT_MIN, 100.0f));
-  } else {
-    changed = ImGui::InputText(label, buf, sizeof(buf));
+    return ImGui::InputTextMultiline(label,
+                                     str.data(),
+                                     str.capacity() + 1,
+                                     ImVec2(-FLT_MIN, 110.0f),
+                                     flags,
+                                     inputTextStringCallback,
+                                     &str);
   }
-  if (changed) {
-    str = buf;
+  return ImGui::InputText(label,
+                          str.data(),
+                          str.capacity() + 1,
+                          flags,
+                          inputTextStringCallback,
+                          &str);
+}
+
+bool hasSuffixCI(std::string_view text, std::string_view suffix) noexcept {
+  if (text.size() < suffix.size()) return false;
+  const size_t offset = text.size() - suffix.size();
+  for (size_t i = 0; i < suffix.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(text[offset + i])) !=
+        std::tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
   }
-  return changed;
+  return true;
+}
+
+bool isShaderFileName(std::string_view name) noexcept {
+  return hasSuffixCI(name, ".glsl") ||
+         hasSuffixCI(name, ".frag") ||
+         hasSuffixCI(name, ".vert") ||
+         hasSuffixCI(name, ".fsh") ||
+         hasSuffixCI(name, ".vsh") ||
+         hasSuffixCI(name, ".fs") ||
+         hasSuffixCI(name, ".vs");
 }
 
 void drawPropertyTooltip(iota::model::ElementType ownerType,
@@ -585,6 +619,61 @@ void renderPropertyEntry(iota::model::ElementType ownerType,
         actions.modified = true;
       }
       markDeactivated("Edit Text");
+      if (ownerType == iota::model::ElementType::CustomShader &&
+          (key == "shaderFragment" || key == "shaderVertex")) {
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetDragDropPayload)) {
+            const char* dropped = static_cast<const char*>(payload->Data);
+            if (dropped != nullptr && *dropped != '\0') {
+              s = dropped;
+              actions.modified = true;
+              actions.undoSnapshotNeeded = true;
+              actions.editLabel = "Drop Shader onto " + key;
+            }
+          }
+          ImGui::EndDragDropTarget();
+        }
+        if (ImGui::SmallButton("Pick Shader")) {
+          ImGui::OpenPopup("ShaderPickPopup");
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("File...")) {
+          actions.requestLocalShaderImport = true;
+          actions.assetTargetPropName = key;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Edit")) {
+          actions.requestOpenShaderEditor = true;
+          actions.editShaderTargetProp = key;
+        }
+        if (ImGui::BeginPopup("ShaderPickPopup")) {
+          if (ImGui::Selectable("(Clear / Inline)", s.empty())) {
+            s.clear();
+            actions.modified = true;
+            actions.undoSnapshotNeeded = true;
+            actions.editLabel = "Clear Shader " + key;
+          }
+          if (actions.availableLocalAssets != nullptr) {
+            bool anyShader = false;
+            for (const auto& [assetName, bytes] : *actions.availableLocalAssets) {
+              (void)bytes;
+              if (!isShaderFileName(assetName)) continue;
+              anyShader = true;
+              const std::string uri = "local:" + assetName;
+              if (ImGui::Selectable(uri.c_str(), s == uri)) {
+                s = uri;
+                actions.modified = true;
+                actions.undoSnapshotNeeded = true;
+                actions.editLabel = "Select Shader " + key;
+              }
+            }
+            if (!anyShader) {
+              ImGui::TextDisabled("(No shader assets imported yet)");
+            }
+          }
+          ImGui::EndPopup();
+        }
+      }
       if (spec.tag == PropertyTypeTag::ProText && ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Tokens: {Artist}, {Title}, {ArtistAndTitle}, {TimeCurrent}, {TimeLength}, {Fps} (press F1 for full list)");
       }
