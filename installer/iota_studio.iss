@@ -2,7 +2,7 @@
 ; Compiles build/installer/IotaStudio-Setup-<AppVersion>.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.5.1"
+  #define AppVersion "1.6.0"
 #endif
 
 #ifndef BuildDir
