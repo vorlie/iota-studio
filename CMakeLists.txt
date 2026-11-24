@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # Required for CMake 4.x compatibility with third-party FetchContent projects
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 
-project(IotaStudio VERSION 1.8.0 LANGUAGES C CXX)
+project(IotaStudio VERSION 1.9.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
