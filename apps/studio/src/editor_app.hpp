@@ -121,6 +121,8 @@ class EditorApp {
   iota::core::UpdateChecker updateChecker_;
   bool openUpdateModal_ = false;
   bool updateBannerNotified_ = false;
+  void* appIconBig_ = nullptr;
+  void* appIconSmall_ = nullptr;
   std::string statusBanner_ = "Ready";
 };
 

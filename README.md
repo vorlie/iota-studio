@@ -153,3 +153,13 @@ $env:IOTA_TEST_PRESETS_DIR = "C:\path\to\preset_jsons"
 # Without external preset fixtures (excludes preset-fixture test cases):
 .\build\release\tests\iota_tests.exe "-tce=*APK presets*,*built-in presets*"
 ```
+
+### Build Windows Installer (Inno Setup 6)
+
+With [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed alongside a Release build, package `build\installer\IotaStudio-Setup-<version>.exe` via:
+
+```powershell
+.\installer\build_installer.ps1
+```
+
+The installer checks whether `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH` or in the target folder and provides a toggleable option (pre-checked when missing, optional when present; also controllable via `/INSTALLFFMPEG` or `/NOFFMPEG`) to download and extract the essentials FFmpeg build alongside `iota_studio.exe`.

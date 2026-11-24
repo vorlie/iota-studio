@@ -155,6 +155,24 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   glfwMakeContextCurrent(window_);
   glfwSwapInterval(headlessSmokeTest ? 0 : 1);
 
+  if (!headlessSmokeTest) {
+    if (HWND hwnd = glfwGetWin32Window(window_)) {
+      HINSTANCE hInst = GetModuleHandleW(nullptr);
+      const int bigW = GetSystemMetrics(SM_CXICON);
+      const int bigH = GetSystemMetrics(SM_CYICON);
+      const int smallW = GetSystemMetrics(SM_CXSMICON);
+      const int smallH = GetSystemMetrics(SM_CYSMICON);
+      appIconBig_ = LoadImageW(hInst, MAKEINTRESOURCEW(101), IMAGE_ICON, bigW, bigH, LR_DEFAULTCOLOR);
+      appIconSmall_ = LoadImageW(hInst, MAKEINTRESOURCEW(101), IMAGE_ICON, smallW, smallH, LR_DEFAULTCOLOR);
+      if (appIconBig_) {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(appIconBig_));
+      }
+      if (appIconSmall_) {
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(appIconSmall_));
+      }
+    }
+  }
+
   std::string err;
   if (!device_.initialize(&err)) {
     std::cerr << "GL45 device init failed: " << err << "\n";
@@ -245,6 +263,14 @@ void EditorApp::shutdown() {
     glfwDestroyWindow(window_);
     window_ = nullptr;
     glfwTerminate();
+  }
+  if (appIconBig_) {
+    DestroyIcon(static_cast<HICON>(appIconBig_));
+    appIconBig_ = nullptr;
+  }
+  if (appIconSmall_) {
+    DestroyIcon(static_cast<HICON>(appIconSmall_));
+    appIconSmall_ = nullptr;
   }
 }
 

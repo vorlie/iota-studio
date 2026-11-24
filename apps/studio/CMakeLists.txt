@@ -16,6 +16,16 @@ add_executable(iota_studio
   src/update_modal.cpp
 )
 
+if(WIN32)
+  set(IOTA_STUDIO_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/iota_studio.ico")
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/iota_studio.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/iota_studio.rc"
+    @ONLY
+  )
+  target_sources(iota_studio PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/iota_studio.rc")
+endif()
+
 target_link_libraries(iota_studio
   PRIVATE
     iota_core
