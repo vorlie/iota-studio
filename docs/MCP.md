@@ -48,7 +48,7 @@ Add `iota_mcp.exe` to your MCP client (e.g. Antigravity, Claude Desktop, or Curs
 {
   "mcpServers": {
     "iota-studio": {
-      "command": "D:/Projekty/AveePlayerREA/build/release-mcp/apps/mcp/iota_mcp.exe",
+      "command": "PATH-TO/iota_mcp.exe",
       "args": []
     }
   }
