@@ -538,23 +538,71 @@ bool applyPropertyValue(iota::model::ElementType /*ownerType*/,
     case PropertyTypeTag::Child:
     case PropertyTypeTag::DynamicGroup: {
       if (val.is_string()) {
-        entry.value = val.get<std::string>();
+        const std::string chosen = val.get<std::string>();
+        std::string canonical = chosen;
+        if (eqCI(leafKey, "measureWhat")) {
+          const auto& modes = iota::model::allMeasureWhatModes();
+          bool matched = false;
+          for (std::string_view m : modes) {
+            if (eqCI(m, chosen)) {
+              canonical = std::string(m);
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            outErr = "Invalid measureWhat mode '" + chosen + "'.";
+            return false;
+          }
+        } else if (!spec.choices.empty()) {
+          bool matched = false;
+          for (const auto& ch : spec.choices) {
+            if (eqCI(ch, chosen)) {
+              canonical = ch;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            std::string allowed;
+            for (size_t i = 0; i < spec.choices.size(); ++i) {
+              if (i > 0) allowed += ", ";
+              allowed += spec.choices[i];
+            }
+            outErr = "Invalid choice '" + chosen + "' for '" + leafKey + "'. Allowed: " + allowed;
+            return false;
+          }
+        }
+        entry.value = canonical;
+        iota::model::seedVariantChildren(entry, leafKey, canonical);
         return true;
       }
       if (val.is_object()) {
+        const std::string curVariant =
+            std::holds_alternative<std::string>(entry.value) ? std::get<std::string>(entry.value) : std::string{};
+        iota::model::seedVariantChildren(entry, leafKey, curVariant);
         for (auto it = val.begin(); it != val.end(); ++it) {
-          auto* child = entry.findChild(it.key());
-          if (!child && (it.key() == "A" || it.key() == "B") && entry.findChild("measureWhat") != nullptr) {
-            auto& created = entry.getOrAddChild(it.key());
-            created.value = 0.5;
-            created.typeTag = "f -2.0 2.0";
-            child = &created;
+          iota::model::PropertyEntry* child = entry.findChild(it.key());
+          std::string childKey = it.key();
+          if (!child) {
+            for (auto& ch : entry.children) {
+              if (eqCI(ch.key, it.key())) {
+                child = &ch.entry;
+                childKey = ch.key;
+                break;
+              }
+            }
+          }
+          if (!child && (eqCI(it.key(), "A") || eqCI(it.key(), "B")) && entry.findChild("measureWhat") != nullptr) {
+            childKey = eqCI(it.key(), "A") ? "A" : "B";
+            iota::model::seedVariantChildren(entry, leafKey, "Constant");
+            child = entry.findChild(childKey);
           }
           if (!child) {
             outErr = "Unknown child key '" + it.key() + "' under '" + leafKey + "'.";
             return false;
           }
-          if (!applyPropertyValue(iota::model::ElementType::Unknown, it.key(), *child, it.value(), outErr)) {
+          if (!applyPropertyValue(iota::model::ElementType::Unknown, childKey, *child, it.value(), outErr)) {
             return false;
           }
         }
@@ -655,33 +703,38 @@ bool resolveOrSeedProperty(iota::model::PropertyBag& bag,
     return false;
   }
 
+  std::string curKey = parts[0];
   for (size_t i = 1; i < parts.size(); ++i) {
     if (parts[i].empty()) {
       outErr = "Empty child segment in property path '" + std::string(propPath) + "'.";
       return false;
     }
-    auto* next = cur->findChild(parts[i]);
-    if (!next) {
+    auto findChildCI = [&](std::string& keySeg) -> iota::model::PropertyEntry* {
+      if (auto* direct = cur->findChild(keySeg)) return direct;
       for (auto& ch : cur->children) {
-        if (eqCI(ch.key, parts[i])) {
-          next = &ch.entry;
-          parts[i] = ch.key;
-          break;
+        if (eqCI(ch.key, keySeg)) {
+          keySeg = ch.key;
+          return &ch.entry;
         }
       }
+      return nullptr;
+    };
+    auto* next = findChildCI(parts[i]);
+    if (!next && std::holds_alternative<std::string>(cur->value)) {
+      iota::model::seedVariantChildren(*cur, curKey, std::get<std::string>(cur->value));
+      next = findChildCI(parts[i]);
     }
     if (!next && (eqCI(parts[i], "A") || eqCI(parts[i], "B")) && cur->findChild("measureWhat") != nullptr) {
       const std::string abKey = eqCI(parts[i], "A") ? "A" : "B";
-      auto& created = cur->getOrAddChild(abKey);
-      created.value = 0.5;
-      created.typeTag = "f -2.0 2.0";
-      next = &created;
+      iota::model::seedVariantChildren(*cur, curKey, "Constant");
+      next = cur->findChild(abKey);
       parts[i] = abKey;
     }
     if (!next) {
       outErr = "Unknown child property '" + parts[i] + "' in path '" + std::string(propPath) + "'.";
       return false;
     }
+    curKey = parts[i];
     cur = next;
   }
 
@@ -1559,24 +1612,44 @@ nlohmann::json executeMcpTool(IStudioBridgeTarget& target,
       bag = &el->props;
     }
 
+    // Apply parent variant switches before deeper dotted child assignments so new variant children exist cleanly
+    std::vector<std::pair<std::string, const nlohmann::json*>> orderedProps;
+    orderedProps.reserve(args["properties"].size());
+    for (auto it = args["properties"].begin(); it != args["properties"].end(); ++it) {
+      orderedProps.emplace_back(it.key(), &it.value());
+    }
+    auto dotDepth = [](std::string_view key) -> size_t {
+      return static_cast<size_t>(std::count(key.begin(), key.end(), '.'));
+    };
+    auto isMeasureWhatSuffix = [](std::string_view key) -> bool {
+      constexpr std::string_view kSuffix = ".measureWhat";
+      return key.size() >= kSuffix.size() && eqCI(key.substr(key.size() - kSuffix.size()), kSuffix);
+    };
+    std::stable_sort(orderedProps.begin(), orderedProps.end(), [&](const auto& a, const auto& b) {
+      const size_t da = dotDepth(a.first);
+      const size_t db = dotDepth(b.first);
+      if (da != db) return da < db;
+      return isMeasureWhatSuffix(a.first) && !isMeasureWhatSuffix(b.first);
+    });
+
     // Apply onto a temporary clone first so an error leaves the project atomically untouched
     iota::model::PropertyBag stagedBag = *bag;
     std::vector<std::string> updatedKeys;
     bool mayInvalidateAssets = false;
-    for (auto it = args["properties"].begin(); it != args["properties"].end(); ++it) {
+    for (const auto& [propKey, propVal] : orderedProps) {
       iota::model::PropertyEntry* entry = nullptr;
       std::string leafKey;
-      if (!resolveOrSeedProperty(stagedBag, ownerType, compIdx, it.key(), entry, leafKey, err)) {
+      if (!resolveOrSeedProperty(stagedBag, ownerType, compIdx, propKey, entry, leafKey, err)) {
         return makeToolErr(err);
       }
-      if (!applyPropertyValue(ownerType, leafKey, *entry, it.value(), err)) {
+      if (!applyPropertyValue(ownerType, leafKey, *entry, *propVal, err)) {
         return makeToolErr(err);
       }
       if (leafKey == "customImage" || leafKey == "TargetImage" || leafKey == "targetImage" ||
           leafKey == "MaskImage" || leafKey == "typeFace" || leafKey == "emitterLayer") {
         mayInvalidateAssets = true;
       }
-      updatedKeys.push_back(it.key());
+      updatedKeys.push_back(propKey);
     }
 
     *bag = std::move(stagedBag);

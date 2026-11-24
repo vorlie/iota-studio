@@ -103,4 +103,7 @@ bool assignAssetToElement(Element& el, std::string_view uri, bool asMask = false
 // Helpers to ensure Base transform props exist cleanly on newly created Elements
 void addBaseElementProperties(PropertyBag& props, int id, iota::core::BlendMode defaultBlend);
 
+// Ensures default child properties exist for the active `_child` variant without overwriting existing children.
+void seedVariantChildren(PropertyEntry& entry, std::string_view propKey, std::string_view variant);
+
 } // namespace iota::model

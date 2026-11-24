@@ -85,6 +85,7 @@ struct Gl45RenderDevice::Impl {
       gl.GetShaderiv(sh, GL_INFO_LOG_LENGTH, &logLen);
       std::string log(static_cast<size_t>(std::max(1, logLen)), '\0');
       gl.GetShaderInfoLog(sh, logLen, nullptr, log.data());
+      while (!log.empty() && log.back() == '\0') log.pop_back();
       if (outError) {
         *outError = (stage == GL_VERTEX_SHADER ? "Vertex shader compile failed: "
                                                : "Fragment shader compile failed: ") +
@@ -464,6 +465,7 @@ ShaderHandle Gl45RenderDevice::createShader(std::string_view vertexGlsl,
     impl_->gl.GetProgramiv(prog, GL_INFO_LOG_LENGTH, &logLen);
     std::string log(static_cast<size_t>(std::max(1, logLen)), '\0');
     impl_->gl.GetProgramInfoLog(prog, logLen, nullptr, log.data());
+    while (!log.empty() && log.back() == '\0') log.pop_back();
     if (outError) {
       *outError = "Shader program link failed: " + log;
     }
@@ -530,13 +532,13 @@ void Gl45RenderDevice::setBlendMode(iota::core::BlendMode mode) {
       impl_->gl.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
       break;
     case BlendMode::Add:
-      impl_->gl.BlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+      impl_->gl.BlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
       break;
     case BlendMode::PreMulAlpha:
       impl_->gl.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
       break;
     case BlendMode::AddAlpha:
-      impl_->gl.BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_SRC_ALPHA, GL_ONE);
+      impl_->gl.BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
       break;
     case BlendMode::Inverse:
       impl_->gl.BlendFuncSeparate(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);

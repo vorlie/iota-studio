@@ -30,6 +30,7 @@
 #include <limits>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -423,6 +424,73 @@ void buildShapePathPoints(const iota::model::PropertyEntry* shapeProp,
   }
 }
 
+bool hasGlslDecl(std::string_view code, bool isInput, std::string_view ident) {
+  std::vector<std::string_view> toks;
+  size_t i = 0;
+  const size_t n = code.size();
+  while (i < n) {
+    const char c = code[i];
+    if (c == '/' && i + 1 < n && code[i + 1] == '/') {
+      i += 2;
+      while (i < n && code[i] != '\n') ++i;
+      continue;
+    }
+    if (c == '/' && i + 1 < n && code[i + 1] == '*') {
+      i += 2;
+      while (i + 1 < n && !(code[i] == '*' && code[i + 1] == '/')) ++i;
+      i = std::min(i + 2, n);
+      continue;
+    }
+    if (std::isspace(static_cast<unsigned char>(c))) {
+      ++i;
+      continue;
+    }
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+      const size_t start = i;
+      while (i < n && (std::isalnum(static_cast<unsigned char>(code[i])) || code[i] == '_')) {
+        ++i;
+      }
+      toks.push_back(code.substr(start, i - start));
+      continue;
+    }
+    if (c == '{' || c == '}' || c == '(' || c == ')' || c == ';') {
+      toks.push_back(code.substr(i, 1));
+    }
+    ++i;
+  }
+
+  int braceDepth = 0;
+  int parenDepth = 0;
+  for (size_t k = 0; k < toks.size(); ++k) {
+    const std::string_view tok = toks[k];
+    if (tok == "{") {
+      ++braceDepth;
+      continue;
+    }
+    if (tok == "}") {
+      braceDepth = std::max(0, braceDepth - 1);
+      continue;
+    }
+    if (tok == "(") {
+      ++parenDepth;
+      continue;
+    }
+    if (tok == ")") {
+      parenDepth = std::max(0, parenDepth - 1);
+      continue;
+    }
+    if (braceDepth == 0 && parenDepth == 0 &&
+        (isInput ? (tok == "in" || tok == "varying") : (tok == "out"))) {
+      for (size_t j = k + 1; j < toks.size(); ++j) {
+        const std::string_view tj = toks[j];
+        if (tj == ";" || tj == "{" || tj == "}" || tj == "(" || tj == ")") break;
+        if (tj == ident) return true;
+      }
+    }
+  }
+  return false;
+}
+
 std::string adaptCustomGlslTo450(std::string_view src, bool isFragment) {
   if (src.find("#version") != std::string_view::npos) {
     return std::string(src);
@@ -458,13 +526,13 @@ std::string adaptCustomGlslTo450(std::string_view src, bool isFragment) {
   replaceAll("texture2D(", "texture(");
   replaceAll("gl_FragColor", "iota_FragColor");
 
-  if (body.find("iota_FragColor") != std::string::npos) {
+  if (body.find("iota_FragColor") != std::string::npos && !hasGlslDecl(body, false, "iota_FragColor")) {
     out += "out vec4 iota_FragColor;\n";
   }
-  if (body.find("v_uv") == std::string::npos && body.find("vTexCoord") == std::string::npos) {
+  if (!hasGlslDecl(body, true, "v_uv") && !hasGlslDecl(body, true, "vTexCoord")) {
     out += "in vec2 v_uv;\n";
   }
-  if (body.find("v_color") == std::string::npos && body.find("vColor") == std::string::npos) {
+  if (!hasGlslDecl(body, true, "v_color") && !hasGlslDecl(body, true, "vColor")) {
     out += "in vec4 v_color;\n";
   }
   out += body;
@@ -494,7 +562,11 @@ struct SceneRenderer::Impl {
   iota::rhi::ShaderHandle shBloomUp{};
   iota::rhi::ShaderHandle shTonemap{};
   iota::rhi::ShaderHandle shFxaa{};
-  std::unordered_map<std::string, iota::rhi::ShaderHandle> customShaders;
+  struct CachedCustomShader {
+    iota::rhi::ShaderHandle handle{};
+    std::string error;
+  };
+  std::unordered_map<std::string, CachedCustomShader> customShaders;
 
   // Cached asset textures
   iota::rhi::TextureHandle texWhite{};
@@ -2474,12 +2546,19 @@ struct SceneRenderer::Impl {
                                             &err);
         if (!created) {
           created = shBuffer;
-          if (stats && !err.empty()) stats->lastError = err;
+          while (!err.empty() && err.back() == '\0') err.pop_back();
+          if (err.empty()) err = "Custom shader compilation failed.";
+          if (stats) stats->lastError = err;
+          customShaders.emplace(key, CachedCustomShader{created, std::move(err)});
+        } else {
+          customShaders.emplace(key, CachedCustomShader{created, {}});
         }
-        customShaders.emplace(key, created);
         sh = created;
       } else {
-        sh = it->second;
+        sh = it->second.handle;
+        if (stats && !it->second.error.empty()) {
+          stats->lastError = it->second.error;
+        }
       }
     }
 
@@ -2580,8 +2659,8 @@ void SceneRenderer::shutdown() {
   if (impl_->texWhite) { impl_->device->destroyTexture(impl_->texWhite); impl_->texWhite = {}; }
   if (impl_->texBlack) { impl_->device->destroyTexture(impl_->texBlack); impl_->texBlack = {}; }
 
-  for (auto& [k, sh] : impl_->customShaders) {
-    if (sh != impl_->shBuffer) impl_->device->destroyShader(sh);
+  for (auto& [k, entry] : impl_->customShaders) {
+    if (entry.handle != impl_->shBuffer) impl_->device->destroyShader(entry.handle);
   }
   impl_->customShaders.clear();
 

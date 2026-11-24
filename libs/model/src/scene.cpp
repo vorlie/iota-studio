@@ -13,6 +13,7 @@ int nextElementId() {
 }
 
 constexpr const char* kBlendChoices = "_child Alpha PreMulAlpha Screen Add AddAlpha";
+constexpr const char* kBlendChoicesWithOpaque = "_child Opaque Alpha PreMulAlpha Screen Add AddAlpha";
 constexpr const char* kAnchorChoices = "sel unset start center end";
 constexpr const char* kPosMeasureChoices =
     "_child Nothing BeatCamShakeMore BeatCamShakeLess BeatRandomShake ConstantShakeMore ConstantShake TrackPosition SoundKeys1 SoundKeys2 SoundKeys3 SoundKeysShake1 SoundKeysShake2 SoundKeysShake3";
@@ -44,50 +45,52 @@ void setLegacyChildMVar(PropertyBag& props, std::string_view key, std::string_vi
   }
 }
 
+bool eqCI(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void ensureChildValue(PropertyEntry& parent, std::string_view key, PropertyValue val,
+                      std::string_view typeTag, std::string_view groupTag) {
+  if (parent.findChild(key) != nullptr) return;
+  auto& c = parent.getOrAddChild(key);
+  c.typeTag = std::string(typeTag);
+  c.groupTag = std::string(groupTag);
+  c.value = std::move(val);
+}
+
+void seedSegmentChildren(PropertyEntry& seg, std::string_view typeName,
+                         iota::core::ColorRgba c0, iota::core::ColorRgba c1,
+                         float heightMul, float width, bool mirror) {
+  if (typeName.empty() || eqCI(typeName, "None")) return;
+
+  ensureChildValue(seg, "colorFrom", static_cast<int64_t>(c0.toArgbInt32()), "crgba", "misc");
+  ensureChildValue(seg, "colorTo", static_cast<int64_t>(c1.toArgbInt32()), "crgba", "misc");
+  ensureChildValue(seg, "fixedHeight", 0.0, "f -50.0 50.0", "misc");
+  ensureChildValue(seg, "barHeightMultiplier", static_cast<double>(heightMul), "f -2.0 2.0", "misc");
+
+  if (eqCI(typeName, "Bars") || eqCI(typeName, "SharpBars") || eqCI(typeName, "RoundBars")) {
+    ensureChildValue(seg, "barWidth", static_cast<double>(width), "f 0.0 2.0", "misc");
+  }
+  if (eqCI(typeName, "Bars") || eqCI(typeName, "RoundBars")) {
+    ensureChildValue(seg, "barWidthAffectedByShape", static_cast<int64_t>(1), "b", "b");
+  }
+  ensureChildValue(seg, "mirror", static_cast<int64_t>(mirror ? 1 : 0), "b", "b");
+}
+
 void addDefaultSegment(PropertyEntry& seg, std::string_view typeName,
                        iota::core::ColorRgba c0, iota::core::ColorRgba c1,
                        float heightMul, float width, bool mirror) {
   seg.typeTag = "_child None Bars Line SharpBars RoundBars";
   seg.groupTag = "1_bars";
   seg.value = std::string(typeName);
-  if (typeName == "None") return;
-
-  auto& cf = seg.getOrAddChild("colorFrom");
-  cf.typeTag = "crgba";
-  cf.groupTag = "misc";
-  cf.value = static_cast<int64_t>(c0.toArgbInt32());
-
-  auto& ct = seg.getOrAddChild("colorTo");
-  ct.typeTag = "crgba";
-  ct.groupTag = "misc";
-  ct.value = static_cast<int64_t>(c1.toArgbInt32());
-
-  auto& fh = seg.getOrAddChild("fixedHeight");
-  fh.typeTag = "f -50.0 50.0";
-  fh.groupTag = "misc";
-  fh.value = 0.0;
-
-  auto& hm = seg.getOrAddChild("barHeightMultiplier");
-  hm.typeTag = "f -2.0 2.0";
-  hm.groupTag = "misc";
-  hm.value = static_cast<double>(heightMul);
-
-  if (typeName == "Bars" || typeName == "SharpBars" || typeName == "RoundBars") {
-    auto& bw = seg.getOrAddChild("barWidth");
-    bw.typeTag = "f 0.0 2.0";
-    bw.groupTag = "misc";
-    bw.value = static_cast<double>(width);
-  }
-  if (typeName == "Bars" || typeName == "RoundBars") {
-    auto& bwa = seg.getOrAddChild("barWidthAffectedByShape");
-    bwa.typeTag = "b";
-    bwa.groupTag = "b";
-    bwa.value = static_cast<int64_t>(1);
-  }
-  auto& mr = seg.getOrAddChild("mirror");
-  mr.typeTag = "b";
-  mr.groupTag = "b";
-  mr.value = static_cast<int64_t>(mirror ? 1 : 0);
+  seedSegmentChildren(seg, typeName, c0, c1, heightMul, width, mirror);
 }
 
 } // namespace
@@ -155,7 +158,11 @@ const std::vector<ElementType>& addableElementTypes() noexcept {
 void addBaseElementProperties(PropertyBag& props, int id, iota::core::BlendMode defaultBlend) {
   props.setInt("_id", id, 0, 0, "", "ih");
   props.setBool("visible", true, "0_general", "b");
-  props.setString("blendMode", iota::core::blendModeToString(defaultBlend), kBlendChoices, "0_general");
+  const bool isOpaque = (defaultBlend == iota::core::BlendMode::Opaque);
+  const std::string_view blendName =
+      isOpaque ? std::string_view("Opaque") : iota::core::blendModeToString(defaultBlend);
+  const char* blendTag = isOpaque ? kBlendChoicesWithOpaque : kBlendChoices;
+  props.setString("blendMode", blendName, blendTag, "0_general");
   props.setVec2("position", {0.5f, 0.5f}, -1.0f, 1.0f, "0_general");
   props.setString("anchorX", "unset", kAnchorChoices, "0_general");
   props.setString("anchorY", "unset", kAnchorChoices, "0_general");
@@ -166,6 +173,56 @@ void addBaseElementProperties(PropertyBag& props, int id, iota::core::BlendMode 
   setLegacyChildMVar(props, "measureScale", "Nothing", 0.5f, 0.5f, kAllMeasureChoices, "0_general");
   props.setFloat("rotation", 0.0f, 0.0f, 300.0f, "0_general");
   setLegacyChildMVar(props, "measureRot", "Nothing", 0.5f, 0.5f, kAllMeasureChoices, "0_general");
+}
+
+void seedVariantChildren(PropertyEntry& entry, std::string_view propKey, std::string_view variant) {
+  if (entry.findChild("measureWhat") != nullptr) {
+    if (!variant.empty() && !eqCI(variant, "Nothing")) {
+      ensureChildValue(entry, "A", 0.5, "f -2.0 2.0", "misc");
+      ensureChildValue(entry, "B", 0.5, "f -2.0 2.0", "misc");
+    }
+    return;
+  }
+
+  if (eqCI(propKey, "ShapePath")) {
+    if (eqCI(variant, "Circle")) {
+      ensureChildValue(entry, "radius", 0.7, "f 0.5 3.0", "misc");
+      ensureChildValue(entry, "gap", 0.0, "f 0.0 0.9", "misc");
+    } else if (eqCI(variant, "SidedPolygon")) {
+      ensureChildValue(entry, "sides", int64_t{6}, "i 3 18", "misc");
+      ensureChildValue(entry, "radius", 0.7, "f 0.1 3.0", "misc");
+      ensureChildValue(entry, "gap", 0.0, "f 0.0 0.9", "misc");
+    } else if (eqCI(variant, "Letter") || eqCI(variant, "Year")) {
+      ensureChildValue(entry, "radius", 0.8, "f 0.1 3.0", "misc");
+      ensureChildValue(entry, "gap", 0.0, "f 0.0 0.9", "misc");
+    }
+    return;
+  }
+
+  if (eqCI(propKey, "Segment1") || eqCI(propKey, "Segment2")) {
+    seedSegmentChildren(entry, variant, {255, 255, 255, 255}, {255, 255, 255, 255}, 1.0f, 0.5f, false);
+    return;
+  }
+
+  if (eqCI(propKey, "Shape")) {
+    if (eqCI(variant, "Circle")) {
+      ensureChildValue(entry, "radius", 1.0, "f 0.1 2.0", "misc");
+      ensureChildValue(entry, "gap", 0.0, "f 0.0 0.9", "misc");
+    } else if (eqCI(variant, "SidedPolygon")) {
+      ensureChildValue(entry, "sides", int64_t{6}, "i 3 18", "misc");
+      ensureChildValue(entry, "radius", 1.0, "f 0.1 2.0", "misc");
+      ensureChildValue(entry, "gap", 0.0, "f 0.0 0.9", "misc");
+    }
+    return;
+  }
+
+  if (eqCI(propKey, "SpawnArea") && !variant.empty() && !eqCI(variant, "None")) {
+    ensureChildValue(entry, "vectorRelativeToCenter", int64_t{1}, "b", "misc");
+    ensureChildValue(entry, "useRandomVectorInstead", int64_t{0}, "b", "misc");
+    ensureChildValue(entry, "vectorAngle", 270.0, "f 0.0 360.0", "misc");
+    ensureChildValue(entry, "vectorAngleZ", 0.0, "f -1.0 1.0", "misc");
+    return;
+  }
 }
 
 Element createDefaultElement(ElementType type) {
@@ -497,7 +554,6 @@ Element createDefaultElement(ElementType type) {
     case ElementType::ShakeEffect: {
       el.displayName = "Camera Shake";
       addBaseElementProperties(el.props, id, iota::core::BlendMode::Opaque);
-      el.props.setString("blendMode", "Opaque", "_child Opaque Alpha PreMulAlpha Screen Add AddAlpha", "0_general");
       el.props.setString("TargetImage", "composition:0", "img composition:0", "1_appearance");
       el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_appearance");
       el.props.setString("wrapX", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");

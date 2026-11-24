@@ -255,7 +255,7 @@ bool HeadlessStudioSession::renderPreviewPng(int width,
     const double tFrame = std::max(0.0, tTarget + static_cast<double>(i) * dt);
     iota::engine::FrameTiming timing;
     timing.dt = dt;
-    timing.totalTimeSec = std::max(0.0, static_cast<double>(i + roll) * dt);
+    timing.totalTimeSec = tFrame;
     timing.playAccumTimeSec = tFrame;
     timing.isExporting = true;
     timing.fxaaEnabled = fxaa;

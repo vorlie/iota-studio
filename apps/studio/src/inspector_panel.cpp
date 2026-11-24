@@ -754,6 +754,7 @@ void renderPropertyEntry(iota::model::ElementType ownerType,
           for (const auto& ch : *choiceList) {
             if (ImGui::Selectable(ch.c_str(), cur == ch)) {
               cur = ch;
+              iota::model::seedVariantChildren(entry, key, ch);
               actions.modified = true;
               actions.undoSnapshotNeeded = true;
               actions.editLabel = "Switch " + iota::model::formatPropertyDisplayName(ownerType, key);
@@ -771,16 +772,7 @@ void renderPropertyEntry(iota::model::ElementType ownerType,
           renderPropertyEntry(ownerType, "measureWhat", *mw, actions, depth + 1);
           const auto* mwStr = std::get_if<std::string>(&mw->value);
           if (mwStr && *mwStr != "Nothing") {
-            if (!entry.findChild("A")) {
-              auto& ea = entry.getOrAddChild("A");
-              ea.value = 0.5;
-              ea.typeTag = "f -2.0 2.0";
-            }
-            if (!entry.findChild("B")) {
-              auto& eb = entry.getOrAddChild("B");
-              eb.value = 0.5;
-              eb.typeTag = "f -2.0 2.0";
-            }
+            iota::model::seedVariantChildren(entry, key, *mwStr);
           }
         }
         for (auto& child : entry.children) {

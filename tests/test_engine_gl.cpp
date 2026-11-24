@@ -13,6 +13,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -1279,6 +1280,217 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
       }
       CHECK(totalLuma > 25000);
     }
+  }
+
+  renderer.shutdown();
+  device.shutdown();
+  glfwDestroyWindow(win);
+  glfwTerminate();
+}
+
+TEST_CASE("ShakeEffect blend choices and variant child seeding work cleanly") {
+  using namespace iota::model;
+
+  auto shake = createDefaultElement(ElementType::ShakeEffect);
+  CHECK(shake.props.getString("blendMode") == "Opaque");
+  const auto* blendEntry = shake.props.find("blendMode");
+  REQUIRE(blendEntry != nullptr);
+  const auto blendSpec = parseTypeTag(blendEntry->typeTag);
+  CHECK(blendSpec.tag == PropertyTypeTag::Child);
+  CHECK(std::find(blendSpec.choices.begin(), blendSpec.choices.end(), "Opaque") != blendSpec.choices.end());
+
+  auto bars = createDefaultElement(ElementType::Bars);
+  auto* seg2 = bars.props.find("Segment2");
+  REQUIRE(seg2 != nullptr);
+  seg2->value = std::string("Bars");
+  seedVariantChildren(*seg2, "Segment2", "Bars");
+  REQUIRE(seg2->findChild("colorFrom") != nullptr);
+  REQUIRE(seg2->findChild("colorTo") != nullptr);
+  REQUIRE(seg2->findChild("barWidth") != nullptr);
+  REQUIRE(seg2->findChild("barWidthAffectedByShape") != nullptr);
+  REQUIRE(seg2->findChild("mirror") != nullptr);
+  seg2->findChild("barWidth")->value = 0.85;
+  seedVariantChildren(*seg2, "Segment2", "Bars");
+  CHECK(std::get<double>(seg2->findChild("barWidth")->value) == doctest::Approx(0.85));
+
+  auto* sp = bars.props.find("ShapePath");
+  REQUIRE(sp != nullptr);
+  sp->value = std::string("SidedPolygon");
+  seedVariantChildren(*sp, "ShapePath", "SidedPolygon");
+  REQUIRE(sp->findChild("sides") != nullptr);
+  CHECK(std::get<int64_t>(sp->findChild("sides")->value) == 6);
+  REQUIRE(sp->findChild("radius") != nullptr);
+
+  auto img = createDefaultElement(ElementType::Image);
+  auto* imgShape = img.props.find("Shape");
+  REQUIRE(imgShape != nullptr);
+  imgShape->value = std::string("SidedPolygon");
+  seedVariantChildren(*imgShape, "Shape", "SidedPolygon");
+  REQUIRE(imgShape->findChild("sides") != nullptr);
+  REQUIRE(imgShape->findChild("radius") != nullptr);
+  REQUIRE(imgShape->findChild("gap") != nullptr);
+
+  auto* mp = bars.props.find("MeasurePos");
+  REQUIRE(mp != nullptr);
+  CHECK(mp->findChild("A") == nullptr);
+  seedVariantChildren(*mp, "MeasurePos", "Beat");
+  REQUIRE(mp->findChild("A") != nullptr);
+  REQUIRE(mp->findChild("B") != nullptr);
+}
+
+TEST_CASE("GL45 HDR additive alpha clamp, CustomShader error persistence, and GLSL 450 decl adaptation") {
+  if (!glfwInit()) {
+    FAIL("glfwInit failed");
+    return;
+  }
+
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+  glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
+  GLFWwindow* win = glfwCreateWindow(256, 256, "iota_gl_fix_test", nullptr, nullptr);
+  if (!win) {
+    glfwTerminate();
+    FAIL("Failed to create OpenGL 4.5 hidden test window");
+    return;
+  }
+  glfwMakeContextCurrent(win);
+
+  iota::rhi::Gl45RenderDevice device;
+  std::string err;
+  REQUIRE_MESSAGE(device.initialize(&err), err);
+
+  iota::engine::SceneRenderer renderer;
+  REQUIRE_MESSAGE(renderer.initialize(&device, &err), err);
+
+  iota::audio::AudioEngine audio;
+  audio.loadTrack(iota::audio::createSyntheticSineTrack(110.0f, 3.0, 44100, 0.5f, "Test Tone"));
+
+  constexpr int kW = 128;
+  constexpr int kH = 128;
+  auto readRgba = [&]() {
+    std::vector<uint8_t> rgba;
+    int rw = 0, rh = 0;
+    REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, rgba, true));
+    REQUIRE(rw == kW);
+    REQUIRE(rh == kH);
+    return rgba;
+  };
+
+  SUBCASE("HDR RGBA16F additive blend clamps alpha without negative inversion over red background") {
+    iota::model::Project proj;
+    proj.compositions.push_back(iota::model::createDefaultComposition(0));
+    proj.compositions.push_back(iota::model::createDefaultComposition(1));
+    proj.compositions[0].props.setBool("hdrPipeline", true, "3_hdrPost", "b");
+    proj.compositions[0].props.setBool("bloomEnabled", false, "3_hdrPost", "b");
+
+    auto bg = iota::model::createDefaultElement(iota::model::ElementType::Image);
+    bg.props.setString("customImage", "internalres:white", "img", "1_image");
+    bg.props.setColorHsla("Color", {0.0f, 1.0f, 0.5f, 1.0f}, "2_color");
+    bg.props.setString("blendMode", "Alpha", "_child Alpha", "0_general");
+    bg.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+
+    auto compLayer = iota::model::createDefaultElement(iota::model::ElementType::Image);
+    compLayer.props.setString("customImage", "composition:1", "img", "1_image");
+    compLayer.props.setColorHsla("Color", {0.0f, 0.0f, 1.0f, 1.0f}, "2_color");
+    compLayer.props.setString("blendMode", "PreMulAlpha", "_child PreMulAlpha", "0_general");
+    compLayer.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+
+    proj.compositions[0].elements.push_back(std::move(bg));
+    proj.compositions[0].elements.push_back(std::move(compLayer));
+
+    for (int i = 0; i < 2; ++i) {
+      auto addGray = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      addGray.props.setString("customImage", "internalres:white", "img", "1_image");
+      addGray.props.setColorHsla("Color", {0.0f, 0.0f, 0.12f, 0.85f}, "2_color");
+      addGray.props.setString("blendMode", "Add", "_child Add", "0_general");
+      addGray.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+      proj.compositions[1].elements.push_back(std::move(addGray));
+    }
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st;
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.0, 0.0, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st));
+    const auto px = readRgba();
+    const size_t c = (static_cast<size_t>(kH / 2) * kW + static_cast<size_t>(kW / 2)) * 4u;
+    CHECK(static_cast<int>(px[c + 0]) >= 64);
+    CHECK(static_cast<int>(px[c + 1]) >= 55);
+    CHECK(static_cast<int>(px[c + 0]) > static_cast<int>(px[c + 1]) + 2);
+
+    // Verify HDR .rgb intensity > 1.0 is preserved for Bloom without alpha overflow
+    auto hdrWhite = iota::model::createDefaultElement(iota::model::ElementType::Image);
+    hdrWhite.props.setString("customImage", "internalres:white", "img", "1_image");
+    hdrWhite.props.setColorHsla("Color", {0.0f, 0.0f, 1.0f, 1.0f}, "2_color");
+    hdrWhite.props.setFloat("hdrIntensity", 4.0f, 0.0f, 16.0f, "2_color");
+    hdrWhite.props.setString("blendMode", "Add", "_child Add", "0_general");
+    hdrWhite.props.setVec2("scale", {0.5f, 0.5f}, 0.0f, 2.0f, "0_general");
+    proj.compositions[1].elements.push_back(std::move(hdrWhite));
+    proj.compositions[0].props.setBool("bloomEnabled", true, "3_hdrPost", "b");
+
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.1, 0.1, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st));
+    CHECK(st.hdrPipelineActive);
+    CHECK(st.bloomActive);
+    const auto hdrPx = readRgba();
+    CHECK(hdrPx[c + 0] >= 250);
+    CHECK(hdrPx[c + 1] >= 250);
+    CHECK(hdrPx[c + 2] >= 250);
+  }
+
+  SUBCASE("CustomShader persists compile error across cached frames without trailing NUL") {
+    iota::model::Project proj;
+    proj.compositions.push_back(iota::model::createDefaultComposition(0));
+    proj.compositions.push_back(iota::model::createDefaultComposition(1));
+
+    auto cs = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+    cs.props.setString("TargetImage", "internalres:white", "img", "1_appearance");
+    cs.props.setString("shaderFragment", "void main() { iota_undefined_sym = 1.0; }", "etxt", "shader");
+    proj.compositions[0].elements.push_back(std::move(cs));
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st0;
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.0, 0.0, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st0));
+    REQUIRE(!st0.lastError.empty());
+    CHECK(st0.lastError.back() != '\0');
+    CHECK(st0.lastError.find("Fragment shader") != std::string::npos);
+
+    iota::engine::RenderFrameStats st1;
+    REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.02, 0.02, true, 0.0f, false, 60.0f},
+                                 kW, kH, {}, &st1));
+    CHECK(st1.lastError == st0.lastError);
+  }
+
+  SUBCASE("CustomShader GLSL 450 adapter ignores comments when injecting v_uv and v_color") {
+    iota::model::Project proj;
+    proj.compositions.push_back(iota::model::createDefaultComposition(0));
+    proj.compositions.push_back(iota::model::createDefaultComposition(1));
+
+    auto cs = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+    cs.props.setString("TargetImage", "internalres:white", "img", "1_appearance");
+    cs.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+    cs.props.setString("shaderFragment",
+                       "// Comment mentioning in vec2 v_uv; and in vec4 v_color;\n"
+                       "void main() {\n"
+                       "  gl_FragColor = vec4(v_uv.x, 0.25, v_uv.y, 1.0) * v_color;\n"
+                       "}\n",
+                       "etxt", "shader");
+    proj.compositions[0].elements.push_back(std::move(cs));
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st;
+    for (int f = 0; f < 2; ++f) {
+      REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, false, 60.0f},
+                                   kW, kH, {}, &st));
+      CHECK(st.lastError.empty());
+    }
+    const auto px = readRgba();
+    const size_t leftIdx = (static_cast<size_t>(kH / 2) * kW + 6u) * 4u;
+    const size_t rightIdx = (static_cast<size_t>(kH / 2) * kW + static_cast<size_t>(kW - 7)) * 4u;
+    CHECK(static_cast<int>(px[leftIdx + 0]) < 45);
+    CHECK(static_cast<int>(px[rightIdx + 0]) > 200);
   }
 
   renderer.shutdown();

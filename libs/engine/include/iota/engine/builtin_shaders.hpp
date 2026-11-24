@@ -30,7 +30,7 @@ out vec4 fragColor;
 
 void main() {
   vec4 c = v_color * texture(u_texture, v_uv);
-  fragColor = vec4(c.rgb * u_hdrGain, c.a);
+  fragColor = vec4(c.rgb * u_hdrGain, clamp(c.a, 0.0, 1.0));
 }
 )glsl";
 
@@ -67,7 +67,7 @@ void main() {
   float mLight = clamp(mask_l_add + mLuma * mask_l_mul, 0.0, 1.0);
   float maskFactor = mAlpha * mLight;
 
-  fragColor = vec4(c.rgb * maskFactor * u_hdrGain, c.a * maskFactor);
+  fragColor = vec4(c.rgb * maskFactor * u_hdrGain, clamp(c.a * maskFactor, 0.0, 1.0));
 }
 )glsl";
 
@@ -232,7 +232,7 @@ void main() {
   vec3 rgb = c0.rgb * splitColor0 + c1.rgb * splitColor1 + c2.rgb * splitColor2;
   float alpha = (c0.a + c1.a + c2.a) / 3.0;
   vec4 outCol = vec4(rgb, alpha) * v_color;
-  fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
+  fragColor = vec4(outCol.rgb * u_hdrGain, clamp(outCol.a, 0.0, 1.0));
 }
 )glsl";
 
@@ -261,7 +261,7 @@ void main() {
   float motionMag = length(u_posAmount) + length(u_scaleAmount) + abs(u_rotAmount);
   if (motionMag < 1e-5) {
     vec4 outCol = texture(u_texture, v_uv) * v_color;
-    fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
+    fragColor = vec4(outCol.rgb * u_hdrGain, clamp(outCol.a, 0.0, 1.0));
     return;
   }
 
@@ -292,7 +292,7 @@ void main() {
   }
 
   vec4 outCol = (acc / float(count)) * v_color;
-  fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
+  fragColor = vec4(outCol.rgb * u_hdrGain, clamp(outCol.a, 0.0, 1.0));
 }
 )glsl";
 
@@ -869,7 +869,7 @@ void main() {
     acc /= float(count);
   }
   vec4 outCol = acc * v_color;
-  fragColor = vec4(outCol.rgb * u_hdrGain, outCol.a);
+  fragColor = vec4(outCol.rgb * u_hdrGain, clamp(outCol.a, 0.0, 1.0));
 }
 )glsl";
 

@@ -383,3 +383,196 @@ TEST_CASE("Standalone iota_mcp.exe handles stdio JSON-RPC requests cleanly") {
   CHECK(!lines[2]["result"]["isError"].get<bool>());
 }
 #endif
+
+TEST_CASE("MCP layer_set_properties supports ShakeEffect Opaque blend and parent-before-child ordering") {
+  using namespace iota::mcp;
+
+  HeadlessStudioSession session;
+  McpServer server(session);
+
+  auto addShake = callMcpTool(server, 1, "layer_add", {{"element_type", "ShakeEffect"}, {"name", "Fix4 Shake"}});
+  REQUIRE(!addShake["result"]["isError"].get<bool>());
+  const int shakeIdx = parseToolTextJson(addShake).at("element_index").get<int>();
+
+  auto setScreen = callMcpTool(
+      server,
+      2,
+      "layer_set_properties",
+      {{"composition_index", 0}, {"element_index", shakeIdx}, {"properties", {{"blendMode", "Screen"}}}});
+  CHECK(!setScreen["result"]["isError"].get<bool>());
+
+  auto setOpaque = callMcpTool(
+      server,
+      3,
+      "layer_set_properties",
+      {{"composition_index", 0}, {"element_index", shakeIdx}, {"properties", {{"blendMode", "Opaque"}}}});
+  CHECK(!setOpaque["result"]["isError"].get<bool>());
+
+  auto setInvalid = callMcpTool(
+      server,
+      4,
+      "layer_set_properties",
+      {{"composition_index", 0}, {"element_index", shakeIdx}, {"properties", {{"blendMode", "NotABlend"}}}});
+  CHECK(setInvalid["result"]["isError"].get<bool>());
+
+  auto addBars = callMcpTool(server, 5, "layer_add", {{"element_type", "Bars"}, {"name", "Fix6 Bars"}});
+  REQUIRE(!addBars["result"]["isError"].get<bool>());
+  const int barsIdx = parseToolTextJson(addBars).at("element_index").get<int>();
+
+  auto atomicSet = callMcpTool(
+      server,
+      6,
+      "layer_set_properties",
+      {{"composition_index", 0},
+       {"element_index", barsIdx},
+       {"properties",
+        {{"Segment2.barWidth", 0.42},
+         {"Segment2.colorFrom", "#ffff0000"},
+         {"Segment2", "Bars"},
+         {"ShapePath.sides", 8},
+         {"ShapePath", "SidedPolygon"},
+         {"MeasurePos.A", 0.9},
+         {"MeasurePos.measureWhat", "Beat"}}}});
+  REQUIRE(!atomicSet["result"]["isError"].get<bool>());
+
+  const auto& barsProps = session.project().compositions[0].elements[static_cast<size_t>(barsIdx)].props;
+  const auto* seg2 = barsProps.find("Segment2");
+  REQUIRE(seg2 != nullptr);
+  CHECK(std::get<std::string>(seg2->value) == "Bars");
+  REQUIRE(seg2->findChild("barWidth") != nullptr);
+  CHECK(std::get<double>(seg2->findChild("barWidth")->value) == doctest::Approx(0.42));
+
+  const auto* sp = barsProps.find("ShapePath");
+  REQUIRE(sp != nullptr);
+  CHECK(std::get<std::string>(sp->value) == "SidedPolygon");
+  REQUIRE(sp->findChild("sides") != nullptr);
+  CHECK(std::get<int64_t>(sp->findChild("sides")->value) == 8);
+
+  const auto* mp = barsProps.find("MeasurePos");
+  REQUIRE(mp != nullptr);
+  REQUIRE(mp->findChild("measureWhat") != nullptr);
+  CHECK(std::get<std::string>(mp->findChild("measureWhat")->value) == "Beat");
+  REQUIRE(mp->findChild("A") != nullptr);
+  CHECK(std::get<double>(mp->findChild("A")->value) == doctest::Approx(0.9));
+}
+
+TEST_CASE("MCP render_preview_frame advances totalTimeSec cleanly during headless scrubbing") {
+  using namespace iota::mcp;
+
+  HeadlessStudioSession session;
+  McpServer server(session);
+
+  REQUIRE(!callMcpTool(server, 0, "project_new", {{"template", "blank"}})["result"]["isError"].get<bool>());
+  REQUIRE(!callMcpTool(server, 1, "audio_load", {{"synthetic_freq_hz", 110.0}, {"synthetic_duration_sec", 4.0}})
+               ["result"]["isError"]
+                   .get<bool>());
+
+  auto addCs = callMcpTool(server, 2, "layer_add", {{"element_type", "CustomShader"}, {"name", "Time Scrub"}});
+  REQUIRE(!addCs["result"]["isError"].get<bool>());
+  const int csIdx = parseToolTextJson(addCs).at("element_index").get<int>();
+
+  auto setCs = callMcpTool(
+      server,
+      3,
+      "layer_set_properties",
+      {{"composition_index", 0},
+       {"element_index", csIdx},
+       {"properties",
+        {{"TargetImage", "internalres:white"},
+         {"scale", {1.0, 1.0}},
+         {"shaderFragment", "uniform float u_time;\nvoid main() { gl_FragColor = vec4(0.15 + 0.75 * fract(u_time * 0.5), 0.25, 0.5, 1.0); }"}}}});
+  REQUIRE(!setCs["result"]["isError"].get<bool>());
+
+  auto prev0 = callMcpTool(
+      server,
+      4,
+      "render_preview_frame",
+      {{"width", 128}, {"height", 128}, {"time_sec", 0.0}, {"pre_roll_frames", 0}, {"return_image", true}});
+  REQUIRE(!prev0["result"]["isError"].get<bool>());
+  CHECK(parseToolTextJson(prev0)["last_error"] == "");
+
+  auto prev1 = callMcpTool(
+      server,
+      5,
+      "render_preview_frame",
+      {{"width", 128}, {"height", 128}, {"time_sec", 1.0}, {"pre_roll_frames", 0}, {"return_image", true}});
+  REQUIRE(!prev1["result"]["isError"].get<bool>());
+  CHECK(parseToolTextJson(prev1)["last_error"] == "");
+
+  CHECK(prev0["result"]["content"][1]["data"] != prev1["result"]["content"][1]["data"]);
+  session.releaseGraphicsContext();
+}
+
+TEST_CASE("MCP LiveBridgeHost serves concurrent LiveBridgeClient connections cleanly") {
+  using namespace iota::mcp;
+
+  const std::string pipeName =
+      "\\\\.\\pipe\\iota_studio_mcp_multi_test_" + std::to_string(GetCurrentProcessId());
+
+  HeadlessStudioSession hostSession;
+  LiveBridgeHost host;
+  REQUIRE(host.start(pipeName));
+  CHECK(host.isListening());
+
+  std::atomic<bool> stopPolling{false};
+  std::thread mainSimThread([&]() {
+    while (!stopPolling.load(std::memory_order_acquire)) {
+      host.pollAndDispatch([&](const nlohmann::json& req) {
+        return executeTargetBridgeRequest(hostSession, req, host.requestsHandled());
+      });
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+  });
+
+  HeadlessStudioSession localA;
+  LiveBridgeClient clientA;
+  McpServer serverA(localA, &clientA);
+
+  HeadlessStudioSession localB;
+  LiveBridgeClient clientB;
+  McpServer serverB(localB, &clientB);
+
+  REQUIRE(!callMcpTool(serverA, 1, "studio_connect", {{"pipe_name", pipeName}, {"timeout_ms", 2000}})
+               ["result"]["isError"]
+                   .get<bool>());
+  REQUIRE(!callMcpTool(serverB, 1, "studio_connect", {{"pipe_name", pipeName}, {"timeout_ms", 2000}})
+               ["result"]["isError"]
+                   .get<bool>());
+
+  CHECK(clientA.isConnected());
+  CHECK(clientB.isConnected());
+  CHECK(host.hasConnectedClient());
+
+  std::atomic<bool> okA{false};
+  std::atomic<bool> okB{false};
+  std::thread threadA([&]() {
+    auto r1 = callMcpTool(serverA, 2, "studio_status");
+    auto r2 = callMcpTool(serverA, 3, "layer_add", {{"element_type", "Text"}, {"name", "ClientA Text"}});
+    okA.store(!r1["result"]["isError"].get<bool>() && !r2["result"]["isError"].get<bool>());
+  });
+  std::thread threadB([&]() {
+    auto r1 = callMcpTool(serverB, 2, "studio_status");
+    auto r2 = callMcpTool(serverB, 3, "layer_add", {{"element_type", "Text"}, {"name", "ClientB Text"}});
+    okB.store(!r1["result"]["isError"].get<bool>() && !r2["result"]["isError"].get<bool>());
+  });
+  threadA.join();
+  threadB.join();
+
+  CHECK(okA.load());
+  CHECK(okB.load());
+  CHECK(host.requestsHandled() >= 4u);
+
+  REQUIRE(!callMcpTool(serverA, 4, "studio_disconnect")["result"]["isError"].get<bool>());
+  CHECK(clientB.isConnected());
+  auto statusB = callMcpTool(serverB, 4, "studio_status");
+  CHECK(!statusB["result"]["isError"].get<bool>());
+  CHECK(host.hasConnectedClient());
+
+  REQUIRE(!callMcpTool(serverB, 5, "studio_disconnect")["result"]["isError"].get<bool>());
+
+  stopPolling.store(true, std::memory_order_release);
+  mainSimThread.join();
+  host.stop();
+  CHECK(!host.isListening());
+  CHECK(!host.hasConnectedClient());
+}

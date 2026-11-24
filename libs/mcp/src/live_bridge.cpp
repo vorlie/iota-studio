@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -258,37 +259,157 @@ struct LiveBridgeHost::Impl {
     nlohmann::json response;
   };
 
+  struct ClientSession {
+    std::thread thread;
+    std::atomic<bool> finished{false};
+  };
+
+  static constexpr DWORD kMaxPipeInstances = 8;
+
   mutable std::mutex configMutex;
   std::string pipeName;
 
   HANDLE stopEvent = nullptr;
   std::atomic<bool> stopRequested{false};
   std::atomic<bool> listening{false};
-  std::atomic<bool> clientConnected{false};
+  std::atomic<int> activeClients{0};
   std::atomic<uint64_t> handledCount{0};
   std::thread worker;
+
+  std::mutex clientsMutex;
+  std::vector<std::unique_ptr<ClientSession>> clientSessions;
 
   std::mutex queueMutex;
   std::deque<std::shared_ptr<PendingRequest>> queue;
 
-  HANDLE createListeningPipe(const std::wstring& wideName) const {
+  HANDLE createListeningPipe(const std::wstring& wideName, bool firstInstance) const {
+    const DWORD openMode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+                           (firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
     return CreateNamedPipeW(
         wideName.c_str(),
-        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+        openMode,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-        4,
+        kMaxPipeInstances,
         65536,
         65536,
         1000,
         nullptr);
   }
 
-  void workerLoop(std::string targetPipeName) {
-    const std::wstring wideName = utf8ToWide(targetPipeName);
+  void reapFinishedClients() {
+    std::vector<std::unique_ptr<ClientSession>> done;
+    {
+      std::lock_guard<std::mutex> lock(clientsMutex);
+      auto it = clientSessions.begin();
+      while (it != clientSessions.end()) {
+        if ((*it)->finished.load(std::memory_order_acquire)) {
+          done.push_back(std::move(*it));
+          it = clientSessions.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+    for (auto& session : done) {
+      if (session && session->thread.joinable()) {
+        session->thread.join();
+      }
+    }
+  }
+
+  void joinAllClients() {
+    std::vector<std::unique_ptr<ClientSession>> all;
+    {
+      std::lock_guard<std::mutex> lock(clientsMutex);
+      all = std::move(clientSessions);
+      clientSessions.clear();
+    }
+    for (auto& session : all) {
+      if (session && session->thread.joinable()) {
+        session->thread.join();
+      }
+    }
+  }
+
+  void clientSessionLoop(HANDLE pipe, ClientSession* session) {
+    struct Guard {
+      Impl* self;
+      HANDLE p;
+      ClientSession* s;
+      ~Guard() {
+        DisconnectNamedPipe(p);
+        CloseHandle(p);
+        self->activeClients.fetch_sub(1, std::memory_order_release);
+        if (s) s->finished.store(true, std::memory_order_release);
+      }
+    } guard{this, pipe, session};
+
     while (!stopRequested.load(std::memory_order_acquire)) {
-      HANDLE pipe = createListeningPipe(wideName);
+      nlohmann::json req;
+      std::string ioErr;
+      if (!readJsonFrame(pipe, req, stopEvent, INFINITE, &ioErr)) {
+        break;
+      }
+
+      auto item = std::make_shared<PendingRequest>();
+      item->request = std::move(req);
+      {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        queue.push_back(item);
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+      {
+        std::unique_lock<std::mutex> lock(item->doneMutex);
+        while (!item->done && !stopRequested.load(std::memory_order_acquire)) {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+          }
+          item->doneCv.wait_for(lock, std::chrono::milliseconds(50));
+        }
+      }
+
+      if (stopRequested.load(std::memory_order_acquire)) {
+        break;
+      }
+
+      nlohmann::json resp;
+      {
+        std::lock_guard<std::mutex> lock(item->doneMutex);
+        if (item->done) {
+          resp = item->response;
+        } else {
+          resp = {
+              {"jsonrpc", "2.0"},
+              {"id", nullptr},
+              {"error", {{"code", -32000}, {"message", "Timed out waiting for Studio main thread."}}},
+          };
+        }
+      }
+
+      if (!writeJsonFrame(pipe, resp, stopEvent, 10000, &ioErr)) {
+        break;
+      }
+      handledCount.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  void acceptLoop(std::string targetPipeName, HANDLE firstPipe) {
+    const std::wstring wideName = utf8ToWide(targetPipeName);
+    HANDLE pendingPipe = firstPipe;
+
+    while (!stopRequested.load(std::memory_order_acquire)) {
+      reapFinishedClients();
+
+      HANDLE pipe = pendingPipe;
+      pendingPipe = INVALID_HANDLE_VALUE;
       if (pipe == INVALID_HANDLE_VALUE) {
-        Sleep(100);
+        pipe = createListeningPipe(wideName, false);
+      }
+      if (pipe == INVALID_HANDLE_VALUE) {
+        if (WaitForSingleObject(stopEvent, 50) == WAIT_OBJECT_0) {
+          break;
+        }
         continue;
       }
 
@@ -326,61 +447,21 @@ struct LiveBridgeHost::Impl {
         continue;
       }
 
-      clientConnected.store(true, std::memory_order_release);
-      while (!stopRequested.load(std::memory_order_acquire)) {
-        nlohmann::json req;
-        std::string ioErr;
-        if (!readJsonFrame(pipe, req, stopEvent, INFINITE, &ioErr)) {
-          break;
-        }
-
-        auto item = std::make_shared<PendingRequest>();
-        item->request = std::move(req);
-        {
-          std::lock_guard<std::mutex> lock(queueMutex);
-          queue.push_back(item);
-        }
-
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
-        {
-          std::unique_lock<std::mutex> lock(item->doneMutex);
-          while (!item->done && !stopRequested.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() >= deadline) {
-              break;
-            }
-            item->doneCv.wait_for(lock, std::chrono::milliseconds(50));
-          }
-        }
-
-        if (stopRequested.load(std::memory_order_acquire)) {
-          break;
-        }
-
-        nlohmann::json resp;
-        {
-          std::lock_guard<std::mutex> lock(item->doneMutex);
-          if (item->done) {
-            resp = item->response;
-          } else {
-            resp = {
-                {"jsonrpc", "2.0"},
-                {"id", nullptr},
-                {"error", {{"code", -32000}, {"message", "Timed out waiting for Studio main thread."}}},
-            };
-          }
-        }
-
-        if (!writeJsonFrame(pipe, resp, stopEvent, 10000, &ioErr)) {
-          break;
-        }
-        handledCount.fetch_add(1, std::memory_order_relaxed);
+      auto session = std::make_unique<ClientSession>();
+      ClientSession* sessionPtr = session.get();
+      activeClients.fetch_add(1, std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> lock(clientsMutex);
+        sessionPtr->thread = std::thread([this, pipe, sessionPtr]() {
+          clientSessionLoop(pipe, sessionPtr);
+        });
+        clientSessions.push_back(std::move(session));
       }
-
-      clientConnected.store(false, std::memory_order_release);
-      DisconnectNamedPipe(pipe);
-      CloseHandle(pipe);
     }
 
+    if (pendingPipe != INVALID_HANDLE_VALUE) {
+      CloseHandle(pendingPipe);
+    }
     listening.store(false, std::memory_order_release);
   }
 };
@@ -395,14 +476,14 @@ bool LiveBridgeHost::start(const std::string& pipeName) {
   stop();
 
   const std::string targetName = pipeName.empty() ? defaultLiveBridgePipeName() : pipeName;
-  HANDLE testPipe = impl_->createListeningPipe(utf8ToWide(targetName));
-  if (testPipe == INVALID_HANDLE_VALUE) {
+  HANDLE firstPipe = impl_->createListeningPipe(utf8ToWide(targetName), true);
+  if (firstPipe == INVALID_HANDLE_VALUE) {
     return false;
   }
-  CloseHandle(testPipe);
 
   impl_->stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!impl_->stopEvent) {
+    CloseHandle(firstPipe);
     return false;
   }
 
@@ -411,9 +492,9 @@ bool LiveBridgeHost::start(const std::string& pipeName) {
     impl_->pipeName = targetName;
   }
   impl_->stopRequested.store(false, std::memory_order_release);
-  impl_->clientConnected.store(false, std::memory_order_release);
+  impl_->activeClients.store(0, std::memory_order_release);
   impl_->listening.store(true, std::memory_order_release);
-  impl_->worker = std::thread([this, targetName]() { impl_->workerLoop(targetName); });
+  impl_->worker = std::thread([this, targetName, firstPipe]() { impl_->acceptLoop(targetName, firstPipe); });
   return true;
 }
 
@@ -443,12 +524,13 @@ void LiveBridgeHost::stop() {
   if (impl_->worker.joinable()) {
     impl_->worker.join();
   }
+  impl_->joinAllClients();
   if (impl_->stopEvent != nullptr) {
     CloseHandle(impl_->stopEvent);
     impl_->stopEvent = nullptr;
   }
   impl_->listening.store(false, std::memory_order_release);
-  impl_->clientConnected.store(false, std::memory_order_release);
+  impl_->activeClients.store(0, std::memory_order_release);
 }
 
 size_t LiveBridgeHost::pollAndDispatch(
@@ -497,7 +579,7 @@ bool LiveBridgeHost::isListening() const noexcept {
 }
 
 bool LiveBridgeHost::hasConnectedClient() const noexcept {
-  return impl_->clientConnected.load(std::memory_order_acquire);
+  return impl_->activeClients.load(std::memory_order_acquire) > 0;
 }
 
 uint64_t LiveBridgeHost::requestsHandled() const noexcept {
