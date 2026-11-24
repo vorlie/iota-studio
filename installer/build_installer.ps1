@@ -1,5 +1,8 @@
 param(
-  [string]$Configuration = "release"
+  [ValidateSet("Standard", "Mcp", "All")]
+  [string]$Variant = "Standard",
+  [string]$Configuration = "release",
+  [string]$McpConfiguration = "release-mcp"
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,26 +43,54 @@ if (-not $IsccExe) {
   throw "Inno Setup 6 compiler (ISCC.exe) not found. Install Inno Setup 6 and retry."
 }
 
-$BuildRelDir = "..\build\$Configuration"
-$StudioExe = Join-Path $RepoRoot "build\$Configuration\apps\studio\iota_studio.exe"
-if (-not (Test-Path $StudioExe)) {
-  throw "Built executable not found at $StudioExe. Run cmake --build build/$Configuration first."
+function Invoke-InstallerBuild {
+  param(
+    [bool]$IncludeMcp,
+    [string]$BuildConfig
+  )
+
+  $buildRelDir = "..\build\$BuildConfig"
+  $studioExe = Join-Path $RepoRoot "build\$BuildConfig\apps\studio\iota_studio.exe"
+  if (-not (Test-Path $studioExe)) {
+    throw "Built executable not found at $studioExe. Run cmake --build build/$BuildConfig first."
+  }
+
+  $mcpExe = Join-Path $RepoRoot "build\$BuildConfig\apps\mcp\iota_mcp.exe"
+  if ($IncludeMcp -and (-not (Test-Path $mcpExe))) {
+    throw "Built MCP executable not found at $mcpExe. Run cmake --build build/$BuildConfig with -DIOTA_BUILD_MCP=ON first."
+  }
+
+  $includeMcpFlag = if ($IncludeMcp) { 1 } else { 0 }
+  $editionLabel = if ($IncludeMcp) { "MCP edition" } else { "standard edition" }
+  $outputName = if ($IncludeMcp) {
+    "IotaStudio-MCP-Setup-$AppVersion.exe"
+  } else {
+    "IotaStudio-Setup-$AppVersion.exe"
+  }
+
+  Write-Host "Building Iota Studio v$AppVersion installer ($editionLabel) from build/$BuildConfig using $IsccExe..."
+  & $IsccExe "/DAppVersion=$AppVersion" "/DBuildDir=$buildRelDir" "/DIncludeMcp=$includeMcpFlag" $IssPath
+  if ($LASTEXITCODE -ne 0) {
+    throw "ISCC.exe exited with code $LASTEXITCODE"
+  }
+
+  $outputInstaller = Join-Path $RepoRoot "build\installer\$outputName"
+  if (-not (Test-Path $outputInstaller)) {
+    throw "Expected installer output not found at $outputInstaller"
+  }
+
+  $item = Get-Item $outputInstaller
+  $sha256 = (Get-FileHash $outputInstaller -Algorithm SHA256).Hash
+  Write-Host "Installer built successfully:"
+  Write-Host "  Path:   $($item.FullName)"
+  Write-Host "  Size:   $($item.Length) bytes"
+  Write-Host "  SHA256: $sha256"
 }
 
-Write-Host "Building Iota Studio v$AppVersion installer using $IsccExe..."
-& $IsccExe "/DAppVersion=$AppVersion" "/DBuildDir=$BuildRelDir" $IssPath
-if ($LASTEXITCODE -ne 0) {
-  throw "ISCC.exe exited with code $LASTEXITCODE"
+if ($Variant -eq "Standard" -or $Variant -eq "All") {
+  Invoke-InstallerBuild -IncludeMcp $false -BuildConfig $Configuration
 }
 
-$OutputInstaller = Join-Path $RepoRoot "build\installer\IotaStudio-Setup-$AppVersion.exe"
-if (-not (Test-Path $OutputInstaller)) {
-  throw "Expected installer output not found at $OutputInstaller"
+if ($Variant -eq "Mcp" -or $Variant -eq "All") {
+  Invoke-InstallerBuild -IncludeMcp $true -BuildConfig $McpConfiguration
 }
-
-$item = Get-Item $OutputInstaller
-$sha256 = (Get-FileHash $OutputInstaller -Algorithm SHA256).Hash
-Write-Host "Installer built successfully:"
-Write-Host "  Path:   $($item.FullName)"
-Write-Host "  Size:   $($item.Length) bytes"
-Write-Host "  SHA256: $sha256"

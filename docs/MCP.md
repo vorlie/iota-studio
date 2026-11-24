@@ -6,6 +6,22 @@ By default, MCP is **disabled** (`IOTA_BUILD_MCP=OFF`) so standard desktop build
 
 ---
 
+## Windows Installer (MCP Edition)
+
+Release assets include a dedicated **`IotaStudio-MCP-Setup-<version>.exe`** installer alongside the standard `IotaStudio-Setup-<version>.exe` package:
+
+- Installs the MCP-enabled `iota_studio.exe` (with **MCP -> Enable Live Studio Bridge**), the standalone stdio MCP server `iota_mcp.exe`, and `MCP.md` into the installation folder (`%LOCALAPPDATA%\Programs\Iota Studio\` by default for per-user installs, so `iota_mcp.exe` lives at `%LOCALAPPDATA%\Programs\Iota Studio\iota_mcp.exe`).
+- Shares the same application ID as the standard edition so switching between standard and MCP builds upgrades cleanly in-place.
+- To build locally from `build/release-mcp`:
+
+```pwsh
+.\installer\build_installer.ps1 -Variant Mcp
+# Or build both Standard and MCP installers:
+.\installer\build_installer.ps1 -Variant All
+```
+
+---
+
 ## Building With or Without MCP
 
 ### Standard Build (No MCP Bloat — Default)

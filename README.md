@@ -157,10 +157,17 @@ $env:IOTA_TEST_PRESETS_DIR = "C:\path\to\preset_jsons"
 
 ### Build Windows Installer (Inno Setup 6)
 
-With [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed alongside a Release build, package `build\installer\IotaStudio-Setup-<version>.exe` via:
+With [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed alongside Release builds, package the standard and/or MCP installers into `build\installer\`:
 
 ```powershell
+# Standard desktop installer -> build\installer\IotaStudio-Setup-<version>.exe
 .\installer\build_installer.ps1
+
+# MCP edition installer -> build\installer\IotaStudio-MCP-Setup-<version>.exe
+.\installer\build_installer.ps1 -Variant Mcp
+
+# Build both release installer assets
+.\installer\build_installer.ps1 -Variant All
 ```
 
-The installer checks whether `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH` or in the target folder and provides a toggleable option (pre-checked when missing, optional when present; also controllable via `/INSTALLFFMPEG` or `/NOFFMPEG`) to download and extract the essentials FFmpeg build alongside `iota_studio.exe`.
+The installer checks whether `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH` or in the target folder and provides a toggleable option (pre-checked when missing, optional when present; also controllable via `/INSTALLFFMPEG` or `/NOFFMPEG`) to download and extract the essentials FFmpeg build alongside `iota_studio.exe`. See [docs/MCP.md](docs/MCP.md) for details on the MCP edition and client setup.

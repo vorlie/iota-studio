@@ -48,7 +48,8 @@ struct ReleaseInfo {
     std::string_view jsonBody,
     std::string_view currentVersion,
     std::string_view fallbackReleasesUrl = "https://github.com/vorlie/iota-studio/releases",
-    std::string* outError = nullptr);
+    std::string* outError = nullptr,
+    bool preferMcpAsset = false);
 
 enum class UpdateCheckStatus {
   Idle,
@@ -83,7 +84,8 @@ class UpdateChecker {
   void startCheckAsync(std::string currentVersion,
                        std::string owner = kDefaultRepoOwner,
                        std::string repo = kDefaultRepoName,
-                       bool isManual = false);
+                       bool isManual = false,
+                       bool preferMcpAsset = false);
 
   /// Thread-safe snapshot of the current update check state for UI polling.
   [[nodiscard]] UpdateCheckSnapshot snapshot() const;

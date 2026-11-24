@@ -5,13 +5,22 @@
   #define AppVersion "1.6.0"
 #endif
 
+#ifndef IncludeMcp
+  #define IncludeMcp 0
+#endif
+
 #ifndef BuildDir
-  #define BuildDir "..\build\release"
+  #if IncludeMcp
+    #define BuildDir "..\build\release-mcp"
+  #else
+    #define BuildDir "..\build\release"
+  #endif
 #endif
 
 #define AppName "Iota Studio"
 #define AppPublisher "Iota Studio"
 #define AppExeName "iota_studio.exe"
+#define McpExeName "iota_mcp.exe"
 #define AppRepoUrl "https://github.com/vorlie/iota-studio"
 #define FfmpegUrl "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z"
 #define FfmpegArchiveName "ffmpeg-release-essentials.7z"
@@ -20,7 +29,11 @@
 AppId={{8F6D3C91-4B27-4E9E-B84A-72F0D5A81C42}
 AppName={#AppName}
 AppVersion={#AppVersion}
+#if IncludeMcp
+AppVerName={#AppName} {#AppVersion} (MCP)
+#else
 AppVerName={#AppName} {#AppVersion}
+#endif
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppRepoUrl}
 AppSupportURL={#AppRepoUrl}/issues
@@ -39,7 +52,11 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 ArchiveExtraction=enhanced/nopassword
 OutputDir=..\build\installer
+#if IncludeMcp
+OutputBaseFilename=IotaStudio-MCP-Setup-{#AppVersion}
+#else
 OutputBaseFilename=IotaStudio-Setup-{#AppVersion}
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -49,11 +66,18 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#BuildDir}\apps\studio\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+#if IncludeMcp
+Source: "{#BuildDir}\apps\mcp\{#McpExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\docs\MCP.md"; DestDir: "{app}"; DestName: "MCP.md"; Flags: ignoreversion
+#endif
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{tmp}\{#FfmpegArchiveName}"; DestDir: "{tmp}\ffmpeg_extract"; Flags: external extractarchive recursesubdirs ignoreversion deleteafterinstall; Check: ShouldExtractFfmpeg
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+#if IncludeMcp
+Name: "{group}\MCP Setup Guide"; Filename: "{app}\MCP.md"
+#endif
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
@@ -63,6 +87,12 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 [UninstallDelete]
 Type: files; Name: "{app}\ffmpeg.exe"
 Type: files; Name: "{app}\ffprobe.exe"
+
+#if !IncludeMcp
+[InstallDelete]
+Type: files; Name: "{app}\{#McpExeName}"
+Type: files; Name: "{app}\MCP.md"
+#endif
 
 [Code]
 var
@@ -433,6 +463,13 @@ begin
     DepMemo := DepMemo + Space + 'Action: Download and install FFmpeg & FFprobe into destination folder'
   else
     DepMemo := DepMemo + Space + 'Action: Skip FFmpeg & FFprobe installation';
+
+#if IncludeMcp
+  DepMemo := DepMemo + NewLine + NewLine +
+             'MCP Support (Enabled):' + NewLine +
+             Space + 'Installs MCP-enabled ' + '{#AppExeName}' + ', ' + '{#McpExeName}' + ', and MCP.md' + NewLine +
+             Space + 'MCP Server Path: ' + AddBackslash(WizardDirValue) + '{#McpExeName}';
+#endif
 
   Result := Result + DepMemo;
 end;

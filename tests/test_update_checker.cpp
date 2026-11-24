@@ -157,4 +157,44 @@ TEST_CASE("parseGitHubReleaseJson extracts release metadata, assets, and update 
     CHECK_FALSE(parseGitHubReleaseJson(R"({"name":"no tag"})", "1.3.1", UpdateChecker::kReleasesPageUrl, &err).has_value());
     CHECK_FALSE(err.empty());
   }
+
+  SUBCASE("Selects standard or MCP installer asset based on preferMcpAsset") {
+    const char* kMultiAssetPayload = R"({
+      "tag_name": "v1.7.0",
+      "name": "Iota Studio v1.7.0",
+      "html_url": "https://github.com/vorlie/iota-studio/releases/tag/v1.7.0",
+      "published_at": "2026-11-24T18:00:00Z",
+      "prerelease": false,
+      "draft": false,
+      "body": "Release 1.7.0",
+      "assets": [
+        {
+          "name": "IotaStudio-MCP-Setup-1.7.0.exe",
+          "size": 3600000,
+          "browser_download_url": "https://github.com/vorlie/iota-studio/releases/download/v1.7.0/IotaStudio-MCP-Setup-1.7.0.exe"
+        },
+        {
+          "name": "IotaStudio-Setup-1.7.0.exe",
+          "size": 3500000,
+          "browser_download_url": "https://github.com/vorlie/iota-studio/releases/download/v1.7.0/IotaStudio-Setup-1.7.0.exe"
+        }
+      ]
+    })";
+
+    const auto stdRel = parseGitHubReleaseJson(
+        kMultiAssetPayload, "1.6.0", UpdateChecker::kReleasesPageUrl, nullptr, false);
+    REQUIRE(stdRel.has_value());
+    CHECK(stdRel->assetName == "IotaStudio-Setup-1.7.0.exe");
+
+    const auto mcpRel = parseGitHubReleaseJson(
+        kMultiAssetPayload, "1.6.0", UpdateChecker::kReleasesPageUrl, nullptr, true);
+    REQUIRE(mcpRel.has_value());
+    CHECK(mcpRel->assetName == "IotaStudio-MCP-Setup-1.7.0.exe");
+
+    // Fallback when MCP build sees a release containing only the standard asset
+    const auto fallbackRel = parseGitHubReleaseJson(
+        kNewerPayload, "1.3.1", UpdateChecker::kReleasesPageUrl, nullptr, true);
+    REQUIRE(fallbackRel.has_value());
+    CHECK(fallbackRel->assetName == "iota_studio.exe");
+  }
 }

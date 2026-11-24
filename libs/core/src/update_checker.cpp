@@ -108,6 +108,32 @@ bool endsWithIgnoreCase(std::string_view str, std::string_view suffix) noexcept 
   return true;
 }
 
+bool containsIgnoreCase(std::string_view haystack, std::string_view needle) noexcept {
+  if (needle.empty() || needle.size() > haystack.size()) {
+    return false;
+  }
+  const size_t limit = haystack.size() - needle.size();
+  for (size_t i = 0; i <= limit; ++i) {
+    bool match = true;
+    for (size_t j = 0; j < needle.size(); ++j) {
+      if (std::tolower(static_cast<unsigned char>(haystack[i + j])) !=
+          std::tolower(static_cast<unsigned char>(needle[j]))) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return true;
+  }
+  return false;
+}
+
+bool isMcpAssetName(std::string_view name) noexcept {
+  return containsIgnoreCase(name, "-mcp") ||
+         containsIgnoreCase(name, "_mcp") ||
+         containsIgnoreCase(name, "mcp-setup") ||
+         containsIgnoreCase(name, "iota_mcp");
+}
+
 #ifdef _WIN32
 
 std::wstring utf8ToWideString(std::string_view utf8) {
@@ -374,7 +400,8 @@ bool isSafeHttpsUrl(std::string_view url) {
 std::optional<ReleaseInfo> parseGitHubReleaseJson(std::string_view jsonBody,
                                                   std::string_view currentVersion,
                                                   std::string_view fallbackReleasesUrl,
-                                                  std::string* outError) {
+                                                  std::string* outError,
+                                                  bool preferMcpAsset) {
   const nlohmann::json doc = nlohmann::json::parse(jsonBody, nullptr, false);
   if (doc.is_discarded() || !doc.is_object()) {
     if (outError) {
@@ -431,7 +458,8 @@ std::optional<ReleaseInfo> parseGitHubReleaseJson(std::string_view jsonBody,
     info.isDraft = it->get<bool>();
   }
 
-  // Pick preferred Windows release binary asset (.exe > .zip > first valid HTTPS asset)
+  // Pick preferred Windows release binary asset (.exe > .zip > first valid HTTPS asset),
+  // prioritizing the running edition (MCP vs Standard) while falling back cleanly.
   int bestScore = -1;
   if (const auto assetsIt = doc.find("assets"); assetsIt != doc.end() && assetsIt->is_array()) {
     for (const auto& asset : *assetsIt) {
@@ -450,11 +478,12 @@ std::optional<ReleaseInfo> parseGitHubReleaseJson(std::string_view jsonBody,
       if (const auto nameIt = asset.find("name"); nameIt != asset.end() && nameIt->is_string()) {
         name = sanitizeUtf8(nameIt->get_ref<const std::string&>());
       }
+      const bool editionMatch = (isMcpAssetName(name) == preferMcpAsset);
       int score = 1;
       if (endsWithIgnoreCase(name, ".exe")) {
-        score = 3;
+        score = editionMatch ? 5 : 4;
       } else if (endsWithIgnoreCase(name, ".zip")) {
-        score = 2;
+        score = editionMatch ? 3 : 2;
       }
       if (score > bestScore) {
         bestScore = score;
@@ -513,7 +542,8 @@ UpdateCheckSnapshot UpdateChecker::snapshot() const {
 void UpdateChecker::startCheckAsync(std::string currentVersion,
                                     std::string owner,
                                     std::string repo,
-                                    bool isManual) {
+                                    bool isManual,
+                                    bool preferMcpAsset) {
   std::shared_ptr<SharedState> nextState;
   {
     std::lock_guard<std::mutex> lock(statePtrMutex_);
@@ -539,7 +569,8 @@ void UpdateChecker::startCheckAsync(std::string currentVersion,
   std::thread([nextState,
                curVer = std::move(currentVersion),
                repoOwner = std::move(owner),
-               repoName = std::move(repo)]() {
+               repoName = std::move(repo),
+               preferMcpAsset]() {
     auto finishError = [&](std::string msg) {
       if (!nextState->cancelled.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> dataLock(nextState->dataMutex);
@@ -575,7 +606,7 @@ void UpdateChecker::startCheckAsync(std::string currentVersion,
 
     const std::string fallbackUrl = "https://github.com/" + repoOwner + "/" + repoName + "/releases";
     std::string parseErr;
-    const auto parsed = parseGitHubReleaseJson(fetch.body, curVer, fallbackUrl, &parseErr);
+    const auto parsed = parseGitHubReleaseJson(fetch.body, curVer, fallbackUrl, &parseErr, preferMcpAsset);
     if (!parsed) {
       finishError(parseErr.empty() ? "Failed to parse GitHub release metadata." : parseErr);
       return;

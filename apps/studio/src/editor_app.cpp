@@ -32,6 +32,12 @@ namespace iota::studio {
 
 namespace {
 
+#ifdef IOTA_ENABLE_MCP
+constexpr bool kPreferMcpReleaseAsset = true;
+#else
+constexpr bool kPreferMcpReleaseAsset = false;
+#endif
+
 std::optional<std::filesystem::path> showOpenFileDialog(HWND owner,
                                                         const wchar_t* title,
                                                         const wchar_t* filter) {
@@ -238,7 +244,8 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
     updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
                                    iota::core::UpdateChecker::kDefaultRepoOwner,
                                    iota::core::UpdateChecker::kDefaultRepoName,
-                                   false);
+                                   false,
+                                   kPreferMcpReleaseAsset);
   }
   updateWindowTitle();
 
@@ -909,7 +916,8 @@ void EditorApp::drawMenuBar() {
       updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
                                      iota::core::UpdateChecker::kDefaultRepoOwner,
                                      iota::core::UpdateChecker::kDefaultRepoName,
-                                     true);
+                                     true,
+                                     kPreferMcpReleaseAsset);
       openUpdateModal_ = true;
     }
     if (ImGui::MenuItem("Open Releases Page")) {
@@ -2307,7 +2315,8 @@ void EditorApp::drawUpdateModal() {
     updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
                                    iota::core::UpdateChecker::kDefaultRepoOwner,
                                    iota::core::UpdateChecker::kDefaultRepoName,
-                                   true);
+                                   true,
+                                   kPreferMcpReleaseAsset);
   }
   if (actions.requestOpenUrl && !actions.urlToOpen.empty()) {
     openExternalUrl(actions.urlToOpen);
