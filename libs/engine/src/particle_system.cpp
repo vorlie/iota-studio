@@ -237,6 +237,7 @@ ParticleCurvePreset particleCurvePresetFromString(std::string_view s) noexcept {
   if (eqCI(s, "EaseIn")) return ParticleCurvePreset::EaseIn;
   if (eqCI(s, "Pulse")) return ParticleCurvePreset::Pulse;
   if (eqCI(s, "Constant")) return ParticleCurvePreset::Constant;
+  if (eqCI(s, "HoldFadeOut")) return ParticleCurvePreset::HoldFadeOut;
   return ParticleCurvePreset::Linear;
 }
 
@@ -261,6 +262,13 @@ float evaluateParticleCurve(ParticleCurvePreset preset, float lifeT, float fadeF
   switch (preset) {
     case ParticleCurvePreset::Constant:
       return 1.0f;
+    case ParticleCurvePreset::HoldFadeOut: {
+      const float tail = std::clamp(fadeFrac, 0.01f, 0.95f);
+      const float startFade = 1.0f - tail;
+      if (t <= startFade) return 1.0f;
+      const float u = std::clamp((t - startFade) / tail, 0.0f, 1.0f);
+      return 1.0f - u * u * (3.0f - 2.0f * u);
+    }
     case ParticleCurvePreset::FadeInOut:
       if (t < f) return t / f;
       if (t > (1.0f - f)) return (1.0f - t) / f;
@@ -329,15 +337,36 @@ void ParticleSystem::spawnPrimary(const ParticleSimConfig& cfg,
   Particle pt;
   const float baseLife = std::clamp(cfg.lifetime, 0.05f, 30.0f);
   const float lifeRandAmt = std::clamp(cfg.lifetimeRandom, 0.0f, 0.95f);
-  pt.maxAge = std::max(0.05f, baseLife * (1.0f + randSym(rng_) * lifeRandAmt * 0.5f));
+  pt.maxAge = std::max(0.05f, baseLife * (1.0f + randSym(rng_) * lifeRandAmt));
   pt.sizeRand = rand01(rng_);
   pt.endSizeRand = rand01(rng_);
+  pt.opacityRand = rand01(rng_);
   pt.hueShift = randSym(rng_) * std::clamp(cfg.colorRandomHue, 0.0f, 1.0f) * 0.5f;
   pt.rotation = cfg.initialRotationRandom ? (rand01(rng_) * kTwoPi) : 0.0f;
   pt.spinSpeed = (cfg.spinSpeedDeg + randSym(rng_) * cfg.spinRandomDeg) * (kPi / 180.0f);
   pt.waveFreq = cfg.sideSineWaveFreq + cfg.sideSineWaveFreqRandom * randSym(rng_) * 0.5f;
   pt.waveMag = cfg.sideSineWaveMag + cfg.sideSineWaveMagRandom * randSym(rng_) * 0.5f;
   pt.wavePhase = rand01(rng_) * kTwoPi;
+  if (cfg.orbitalSpinAmp > 1e-4f) {
+    const float cz = randSym(rng_);
+    const float phi = rand01(rng_) * kTwoPi;
+    const float rxy = std::sqrt(std::max(0.0f, 1.0f - cz * cz));
+    const iota::core::Vec3 n{rxy * std::cos(phi), rxy * std::sin(phi), cz};
+    const iota::core::Vec3 ref = (std::abs(n.x) > 0.85f)
+                                     ? iota::core::Vec3{0.0f, 1.0f, 0.0f}
+                                     : iota::core::Vec3{1.0f, 0.0f, 0.0f};
+    pt.orbitAxisU = normalizeSafe3({
+        ref.y * n.z - ref.z * n.y,
+        ref.z * n.x - ref.x * n.z,
+        ref.x * n.y - ref.y * n.x,
+    });
+    pt.orbitAxisV = normalizeSafe3({
+        n.y * pt.orbitAxisU.z - n.z * pt.orbitAxisU.y,
+        n.z * pt.orbitAxisU.x - n.x * pt.orbitAxisU.z,
+        n.x * pt.orbitAxisU.y - n.y * pt.orbitAxisU.x,
+    });
+    pt.orbitPhase = rand01(rng_) * kTwoPi;
+  }
 
   const float cx = emitterRect.centerX();
   const float cy = emitterRect.centerY();
@@ -522,34 +551,56 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
                                   int viewH,
                                   float dtSec,
                                   std::span<const EmitterSamplePoint> layerSamples) {
-  const float dt = std::clamp(dtSec, 0.0f, 0.05f);
-  if (dt <= 0.0f) {
+  const float wallDt = std::clamp(dtSec, 0.0f, 0.05f);
+  if (wallDt <= 0.0f) {
     return;
   }
-  simTime_ += dt;
 
   const iota::core::Vec2 curCenter{emitterRect.centerX(), emitterRect.centerY()};
   iota::core::Vec2 emitterVel{};
   if (hasPrevEmitterPos_) {
     emitterVel = {
-        (curCenter.x - prevEmitterCenter_.x) / std::max(dt, 1e-4f),
-        (curCenter.y - prevEmitterCenter_.y) / std::max(dt, 1e-4f),
+        (curCenter.x - prevEmitterCenter_.x) / std::max(wallDt, 1e-4f),
+        (curCenter.y - prevEmitterCenter_.y) / std::max(wallDt, 1e-4f),
     };
   }
   prevEmitterCenter_ = curCenter;
   hasPrevEmitterPos_ = true;
+
+  const float ptf = std::clamp(cfg.physicsTimeFactor, 0.0f, 30.0f);
+  const float totalPhysDt = wallDt * ptf;
+  const int subSteps =
+      (totalPhysDt > 0.045f) ? std::min(16, static_cast<int>(std::ceil(totalPhysDt / 0.04f))) : 1;
+  const float subWallDt = wallDt / static_cast<float>(subSteps);
+  const float subPhysDt = totalPhysDt / static_cast<float>(subSteps);
+
+  for (int s = 0; s < subSteps; ++s) {
+    stepSubstep(cfg, emitterRect, viewW, viewH, subWallDt, subPhysDt, emitterVel, layerSamples);
+  }
+}
+
+void ParticleSystem::stepSubstep(const ParticleSimConfig& cfg,
+                                 const iota::core::RectF& emitterRect,
+                                 int viewW,
+                                 int viewH,
+                                 float wallDt,
+                                 float physDt,
+                                 iota::core::Vec2 emitterVel,
+                                 std::span<const EmitterSamplePoint> layerSamples) {
+  (void)viewW;
+  const iota::core::Vec2 curCenter{emitterRect.centerX(), emitterRect.centerY()};
 
   const int maxCap = std::clamp(cfg.maxParticles, 1, 50000);
   if (static_cast<int>(particles_.size()) > maxCap) {
     particles_.resize(static_cast<size_t>(maxCap));
   }
 
-  // Emission rate (frame-rate-independent accumulator)
+  // Primary emission rate stays anchored to wall-clock time (matching Trapcode Particular)
   const float baseRate = (cfg.particlesPerSec > 0.0f)
                              ? cfg.particlesPerSec
                              : (1.0f / std::max(0.0005f, cfg.spawnTime));
   const float emitRate = std::clamp(baseRate * std::max(0.0f, cfg.emitRateMultiplier), 0.0f, 20000.0f);
-  spawnAccum_ += emitRate * dt;
+  spawnAccum_ += emitRate * wallDt;
   const int maxSpawnsThisStep = std::min(2000, maxCap);
   int spawned = 0;
   while (spawnAccum_ >= 1.0f && spawned < maxSpawnsThisStep) {
@@ -563,9 +614,14 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
     spawnAccum_ = 10.0f;
   }
 
+  if (physDt <= 0.0f) {
+    return;
+  }
+  simTime_ += physDt;
+
   // Physics constants
   const float dragFactor = (cfg.airResistance > 1e-5f)
-                               ? std::exp(-std::clamp(cfg.airResistance, 0.0f, 20.0f) * dt)
+                               ? std::exp(-std::clamp(cfg.airResistance, 0.0f, 20.0f) * physDt)
                                : 1.0f;
   const float fieldRadius = std::max(20.0f, cfg.forceFieldRadius);
   const float fieldStr = cfg.forceFieldStrength;
@@ -574,6 +630,7 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
   const bool hasTurbulence = (std::abs(cfg.turbulenceAffectPos) > 1e-3f) ||
                              (std::abs(cfg.turbulenceAffectSize) > 1e-3f) ||
                              (std::abs(cfg.turbulenceAffectOpacity) > 1e-3f);
+  const bool hasOrbitalSpin = (cfg.orbitalSpinAmp > 1e-4f) && (cfg.orbitalSpinFreq > 1e-4f);
   const float floorY = std::clamp(cfg.bounceFloorY, 0.0f, 1.2f) * static_cast<float>(std::max(1, viewH));
   const float bounceRest = std::clamp(cfg.bounceRestitution, 0.0f, 1.0f);
   const float bounceFric = std::clamp(cfg.bounceFriction, 0.0f, 1.0f);
@@ -583,7 +640,7 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
   size_t i = 0;
   while (i < particles_.size()) {
     Particle& pt = particles_[i];
-    pt.age += dt;
+    pt.age += physDt;
     if (pt.age >= pt.maxAge) {
       if (!pt.isAux && cfg.auxMode == ParticleAuxMode::AtDeath) {
         const Particle copy = pt;
@@ -615,26 +672,26 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
         const float nx = rx / safeDist;
         const float ny = ry / safeDist;
         if (cfg.forceField == ParticleForceFieldType::Vortex) {
-          pt.vx += (-ny * fieldStr * falloff) * dt;
-          pt.vy += (nx * fieldStr * falloff) * dt;
+          pt.vx += (-ny * fieldStr * falloff) * physDt;
+          pt.vy += (nx * fieldStr * falloff) * physDt;
         } else if (cfg.forceField == ParticleForceFieldType::Attract) {
-          pt.vx += (-nx * fieldStr * falloff) * dt;
-          pt.vy += (-ny * fieldStr * falloff) * dt;
+          pt.vx += (-nx * fieldStr * falloff) * physDt;
+          pt.vy += (-ny * fieldStr * falloff) * physDt;
         } else if (cfg.forceField == ParticleForceFieldType::Repel) {
-          pt.vx += (nx * fieldStr * falloff) * dt;
-          pt.vy += (ny * fieldStr * falloff) * dt;
+          pt.vx += (nx * fieldStr * falloff) * physDt;
+          pt.vy += (ny * fieldStr * falloff) * physDt;
         } else if (cfg.forceField == ParticleForceFieldType::TurbulentVortex) {
-          pt.vx += ((-ny * 0.85f - nx * 0.35f) * fieldStr * falloff) * dt;
-          pt.vy += ((nx * 0.85f - ny * 0.35f) * fieldStr * falloff) * dt;
+          pt.vx += ((-ny * 0.85f - nx * 0.35f) * fieldStr * falloff) * physDt;
+          pt.vy += ((nx * 0.85f - ny * 0.35f) * fieldStr * falloff) * physDt;
         }
       }
     }
 
     // Gravity + Wind
-    pt.vx += (cfg.wind.x) * dt;
-    pt.vy += (cfg.gravity.y + cfg.wind.y) * dt;
-    pt.vx += (cfg.gravity.x) * dt;
-    pt.vz += (cfg.gravityZ + cfg.wind.z) * dt;
+    pt.vx += (cfg.wind.x) * physDt;
+    pt.vy += (cfg.gravity.y + cfg.wind.y) * physDt;
+    pt.vx += (cfg.gravity.x) * physDt;
+    pt.vz += (cfg.gravityZ + cfg.wind.z) * physDt;
 
     // Frame-rate-independent exponential air resistance
     pt.vx *= dragFactor;
@@ -644,9 +701,10 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
     // 3D Curl Turbulence field
     iota::core::Vec3 curlVel{};
     if (hasTurbulence) {
-      const float fadeInEnv = (cfg.turbulenceFadeIn > 1e-4f)
-                                  ? std::clamp(pt.age / cfg.turbulenceFadeIn, 0.0f, 1.0f)
-                                  : 1.0f;
+      const float uTurb = (cfg.turbulenceFadeIn > 1e-4f)
+                              ? std::clamp(pt.age / cfg.turbulenceFadeIn, 0.0f, 1.0f)
+                              : 1.0f;
+      const float fadeInEnv = uTurb * uTurb * (3.0f - 2.0f * uTurb);
       const auto curl = curlNoise3D(pt.x * turbScale + turbTime * 0.35f,
                                     pt.y * turbScale - turbTime * 0.25f,
                                     pt.z * turbScale + turbTime * 0.50f,
@@ -659,6 +717,25 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
       pt.turbAlphaMod = 1.0f;
     }
 
+    // Trapcode Particular-style 3D orbital Spin drift
+    iota::core::Vec3 spinVel{};
+    if (hasOrbitalSpin && !pt.isAux) {
+      const float uSpin = (cfg.orbitalSpinFadeIn > 1e-4f)
+                              ? std::clamp(pt.age / cfg.orbitalSpinFadeIn, 0.0f, 1.0f)
+                              : 1.0f;
+      const float spinFade = uSpin * uSpin * (3.0f - 2.0f * uSpin);
+      const float omega = kTwoPi * cfg.orbitalSpinFreq;
+      const float theta = pt.age * omega + pt.orbitPhase;
+      const float spinSpeedScale = cfg.orbitalSpinAmp * omega * spinFade;
+      const float sTh = std::sin(theta);
+      const float cTh = std::cos(theta);
+      spinVel = {
+          (-sTh * pt.orbitAxisU.x + cTh * pt.orbitAxisV.x) * spinSpeedScale,
+          (-sTh * pt.orbitAxisU.y + cTh * pt.orbitAxisV.y) * spinSpeedScale,
+          (-sTh * pt.orbitAxisU.z + cTh * pt.orbitAxisV.z) * spinSpeedScale,
+      };
+    }
+
     // Legacy sinusoidal wave perpendicular to horizontal velocity
     float waveDispX = 0.0f;
     float waveDispY = 0.0f;
@@ -669,10 +746,10 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
       waveDispY = (pt.vx / spdLen) * lateral;
     }
 
-    pt.x += (pt.vx * cfg.overallSpeedMultiplier + curlVel.x + waveDispX) * dt;
-    pt.y += (pt.vy * cfg.overallSpeedMultiplier + curlVel.y + waveDispY) * dt;
-    pt.z += (pt.vz * cfg.overallSpeedMultiplier + curlVel.z) * dt;
-    pt.rotation += pt.spinSpeed * dt;
+    pt.x += (pt.vx * cfg.overallSpeedMultiplier + curlVel.x + spinVel.x + waveDispX) * physDt;
+    pt.y += (pt.vy * cfg.overallSpeedMultiplier + curlVel.y + spinVel.y + waveDispY) * physDt;
+    pt.z += (pt.vz * cfg.overallSpeedMultiplier + curlVel.z + spinVel.z) * physDt;
+    pt.rotation += pt.spinSpeed * physDt;
 
     // Floor bounce collision
     if (cfg.bounceEnabled && pt.y >= floorY) {
@@ -692,7 +769,7 @@ void ParticleSystem::stepInternal(const ParticleSimConfig& cfg,
 
     // Continuous Aux trailing emitter
     if (!pt.isAux && cfg.auxMode == ParticleAuxMode::Continuously && cfg.auxParticlesPerSec > 0.0f) {
-      pt.auxAccum += cfg.auxParticlesPerSec * dt;
+      pt.auxAccum += cfg.auxParticlesPerSec * physDt;
       int auxBudget = 6;
       while (pt.auxAccum >= 1.0f && auxBudget-- > 0) {
         pt.auxAccum -= 1.0f;
@@ -743,7 +820,7 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
   const float fadeTimeFrac = std::clamp(cfg.fadeInAndOutTime, 0.01f, 0.49f);
   const float aspect = std::max(0.1f, cfg.sizeAspectRatio);
 
-  const float fovRad = std::clamp(cfg.perspectiveFov, 20.0f, 170.0f) * (kPi / 180.0f);
+  const float fovRad = std::clamp(cfg.perspectiveFov, 15.0f, 170.0f) * (kPi / 180.0f);
   const float legacyFocalScale = 1.0f / std::max(0.15f, std::tan(fovRad * 0.5f));
   const float focalPx = (0.5f * minDim) * legacyFocalScale;
   const float camDist = cfg.camera3DEnabled ? std::max(40.0f, cfg.cameraDistance) : focalPx;
@@ -784,7 +861,7 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
       if (camZ < 8.0f) {
         continue;
       }
-      perspFactor = std::clamp(focalPx / camZ, 0.05f, 5.0f);
+      perspFactor = std::clamp(focalPx / camZ, 0.05f, 18.0f);
       sx = viewCx + r.x * perspFactor;
       syScreen = viewCy + r.y * perspFactor;
       const iota::core::Vec3 rv = rotateYawPitch({pt.vx, pt.vy, pt.vz}, cy, sy, cp, sp);
@@ -826,7 +903,7 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
       szCurve = cfg.fadeInSize * evaluateParticleCurve(cfg.sizeOverLife, lifeT, fadeTimeFrac);
     }
 
-    const float sizeJitter = 1.0f + std::clamp(cfg.sizeRandom, 0.0f, 1.0f) * (pt.sizeRand - 0.5f);
+    const float sizeJitter = std::max(0.05f, 1.0f + std::clamp(cfg.sizeRandom, 0.0f, 1.0f) * (pt.sizeRand * 2.0f - 1.0f));
     szCurve = std::max(0.01f, szCurve * sizeJitter * pt.turbSizeMod);
     if (pt.isAux) {
       szCurve *= std::clamp(cfg.auxSizeScale, 0.05f, 4.0f);
@@ -880,15 +957,19 @@ void ParticleSystem::buildGeometry(const ParticleSimConfig& cfg,
     col.r = static_cast<uint8_t>((static_cast<uint32_t>(col.r) * cfg.baseTint.r) / 255u);
     col.g = static_cast<uint8_t>((static_cast<uint32_t>(col.g) * cfg.baseTint.g) / 255u);
     col.b = static_cast<uint8_t>((static_cast<uint32_t>(col.b) * cfg.baseTint.b) / 255u);
+    const float opacityRandMul = 1.0f - std::clamp(cfg.opacityRandom, 0.0f, 1.0f) * pt.opacityRand;
     const float finalAlpha = static_cast<float>(col.a) * (cfg.baseTint.a / 255.0f) *
-                             opacityMul * nearFadeFactor * pt.turbAlphaMod * dofAlphaAtten;
+                             opacityMul * opacityRandMul * nearFadeFactor * pt.turbAlphaMod * dofAlphaAtten;
     col.a = static_cast<uint8_t>(std::clamp(finalAlpha, 0.0f, 255.0f));
     if (col.a == 0) {
       continue;
     }
 
     const float dofSizeExpand = 1.0f + coc * 2.5f;
-    float halfW = std::max(0.75f, scalePx * szCurve * perspFactor * dofSizeExpand);
+    const float glowMult = (cfg.shapeType == ParticleShapeType::GlowSphere && cfg.glowOpacity > 1e-4f)
+                               ? std::clamp(cfg.glowSize, 1.0f, 6.0f)
+                               : 1.0f;
+    float halfW = std::max(0.75f, scalePx * szCurve * perspFactor * dofSizeExpand) * glowMult;
     float halfH = halfW * aspect;
     float angle = pt.rotation;
     const float speed2D = std::sqrt(svx * svx + svy * svy);

@@ -291,4 +291,127 @@ TEST_CASE("ParticleSystem 3D curl noise, emitter shapes, physics, DoF, and Aux t
     }
     CHECK(sys.activeCount() > 10);
   }
+
+  SUBCASE("Trapcode Particular parity: HoldFadeOut, PhysicsTimeFactor, OrbitalSpin, OpacityRandom, GlowSphere halo") {
+    // 1. HoldFadeOut curve stays 1.0 until 1 - fadeFrac, then smoothsteps to 0.0
+    CHECK(evaluateParticleCurve(ParticleCurvePreset::HoldFadeOut, 0.0f, 0.375f) == doctest::Approx(1.0f));
+    CHECK(evaluateParticleCurve(ParticleCurvePreset::HoldFadeOut, 0.625f, 0.375f) == doctest::Approx(1.0f));
+    CHECK(evaluateParticleCurve(ParticleCurvePreset::HoldFadeOut, 0.8125f, 0.375f) == doctest::Approx(0.5f).epsilon(0.01));
+    CHECK(evaluateParticleCurve(ParticleCurvePreset::HoldFadeOut, 1.0f, 0.375f) == doctest::Approx(0.0f));
+
+    // 2. physicsTimeFactor scales motion & particle aging while preserving wall-clock emission count
+    auto runPtf = [&](float ptf, int steps) {
+      ParticleSystem sys;
+      ParticleSimConfig cfg;
+      cfg.emitterType = ParticleEmitterType::Point;
+      cfg.maxParticles = 500;
+      cfg.particlesPerSec = 100.0f;
+      cfg.lifetime = 1.0f;
+      cfg.lifetimeRandom = 0.0f;
+      cfg.speedBase = 60.0f;
+      cfg.speedRandom = 0.0f;
+      cfg.directionSpreadDeg = 0.0f;
+      cfg.vectorRelativeToCenter = false;
+      cfg.vectorAngleRad = 0.0f;
+      cfg.physicsTimeFactor = ptf;
+      cfg.opacityOverLife = ParticleCurvePreset::Constant;
+      for (int i = 0; i < steps; ++i) {
+        sys.step(cfg, emitterRect, kW, kH, 1.0f / 30.0f);
+      }
+      std::vector<iota::rhi::VertexPosColUv> verts;
+      std::vector<uint32_t> idx;
+      sys.buildGeometry(cfg, emitterRect, kW, kH, false, false, verts, idx);
+      float firstCenterX = 0.0f;
+      if (verts.size() >= 4) {
+        firstCenterX = 0.25f * (verts[0].x + verts[1].x + verts[2].x + verts[3].x);
+      }
+      return std::pair<int, float>{sys.activeCount(), firstCenterX};
+    };
+
+    // Over 0.2 s (6 frames @ 30fps): PTF=1 keeps ~20 particles; PTF=10 ages out particles >0.1s wall-clock (~10 left)
+    const auto [cntBase, xBase] = runPtf(1.0f, 6);
+    const auto [cntFast, xFast] = runPtf(10.0f, 6);
+    CHECK(cntBase >= 19);
+    CHECK(cntBase <= 21);
+    CHECK(cntFast >= 8);
+    CHECK(cntFast <= 12);
+    CHECK(xFast - emitterRect.centerX() > (xBase - emitterRect.centerX()) * 3.0f);
+
+    // 3. orbitalSpinAmp produces transverse drift from a stationary Point emitter
+    {
+      ParticleSystem spinSys;
+      ParticleSimConfig spinCfg;
+      spinCfg.emitterType = ParticleEmitterType::Point;
+      spinCfg.maxParticles = 32;
+      spinCfg.particlesPerSec = 120.0f;
+      spinCfg.lifetime = 5.0f;
+      spinCfg.lifetimeRandom = 0.0f;
+      spinCfg.speedBase = 0.0f;
+      spinCfg.speedRandom = 0.0f;
+      spinCfg.orbitalSpinAmp = 25.0f;
+      spinCfg.orbitalSpinFreq = 1.0f;
+      spinCfg.orbitalSpinFadeIn = 0.1f;
+      spinCfg.opacityOverLife = ParticleCurvePreset::Constant;
+      for (int f = 0; f < 30; ++f) {
+        spinSys.step(spinCfg, emitterRect, kW, kH, 1.0f / 60.0f);
+      }
+      std::vector<iota::rhi::VertexPosColUv> verts;
+      std::vector<uint32_t> idx;
+      spinSys.buildGeometry(spinCfg, emitterRect, kW, kH, false, false, verts, idx);
+      REQUIRE(verts.size() >= 4);
+      float maxOffset = 0.0f;
+      for (size_t i = 0; i + 3 < verts.size(); i += 4) {
+        const float cx = 0.25f * (verts[i].x + verts[i + 1].x + verts[i + 2].x + verts[i + 3].x);
+        const float cy = 0.25f * (verts[i].y + verts[i + 1].y + verts[i + 2].y + verts[i + 3].y);
+        maxOffset = std::max(maxOffset, std::hypot(cx - emitterRect.centerX(), cy - emitterRect.centerY()));
+      }
+      CHECK(maxOffset > 5.0f);
+    }
+
+    // 4. opacityRandom varies alpha and GlowSphere expands quad extent by glowSize
+    {
+      ParticleSystem glowSys;
+      ParticleSimConfig glowCfg;
+      glowCfg.emitterType = ParticleEmitterType::Point;
+      glowCfg.shapeType = ParticleShapeType::GlowSphere;
+      glowCfg.maxParticles = 64;
+      glowCfg.particlesPerSec = 300.0f;
+      glowCfg.lifetime = 4.0f;
+      glowCfg.speedBase = 0.0f;
+      glowCfg.speedRandom = 0.0f;
+      glowCfg.sizeRandom = 0.0f;
+      glowCfg.particleScale = 4.0f;
+      glowCfg.glowSize = 3.0f;
+      glowCfg.glowOpacity = 0.25f;
+      glowCfg.opacityRandom = 0.5f;
+      glowCfg.colorFrom = {0.0f, 0.0f, 1.0f, 1.0f};
+      glowCfg.colorTo = {0.0f, 0.0f, 1.0f, 1.0f};
+      glowCfg.sizeOverLife = ParticleCurvePreset::Constant;
+      glowCfg.opacityOverLife = ParticleCurvePreset::Constant;
+      for (int f = 0; f < 10; ++f) {
+        glowSys.step(glowCfg, emitterRect, kW, kH, 1.0f / 60.0f);
+      }
+      std::vector<iota::rhi::VertexPosColUv> vertsNoGlow;
+      std::vector<iota::rhi::VertexPosColUv> vertsGlow;
+      std::vector<uint32_t> idx;
+      glowSys.buildGeometry(glowCfg, emitterRect, kW, kH, false, false, vertsGlow, idx);
+      glowCfg.glowOpacity = 0.0f;
+      glowSys.buildGeometry(glowCfg, emitterRect, kW, kH, false, false, vertsNoGlow, idx);
+      REQUIRE(vertsGlow.size() >= 16);
+      REQUIRE(vertsNoGlow.size() == vertsGlow.size());
+
+      const float wGlow = std::hypot(vertsGlow[1].x - vertsGlow[0].x, vertsGlow[1].y - vertsGlow[0].y);
+      const float wNoGlow = std::hypot(vertsNoGlow[1].x - vertsNoGlow[0].x, vertsNoGlow[1].y - vertsNoGlow[0].y);
+      CHECK(wGlow == doctest::Approx(wNoGlow * 3.0f).epsilon(0.02));
+
+      uint8_t minA = 255, maxA = 0;
+      for (size_t i = 0; i < vertsGlow.size(); i += 4) {
+        const uint8_t a = static_cast<uint8_t>((vertsGlow[i].abgr >> 24) & 0xFFu);
+        minA = std::min(minA, a);
+        maxA = std::max(maxA, a);
+      }
+      CHECK(minA < 195);
+      CHECK(maxA > 215);
+    }
+  }
 }

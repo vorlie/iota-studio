@@ -1301,12 +1301,20 @@ void EditorApp::drawInspectorPanel() {
         }
         el.props.getOrAdd("CountLimit").typeTag = "i 1 50000";
         el.props.getOrAdd("trailLength").typeTag = "f 0.0 5.0";
+        el.props.getOrAdd("emitterSizeZ").typeTag = "f 0.0 4000.0";
+        el.props.getOrAdd("perspectiveFov").typeTag = "f 15.0 170.0";
+        el.props.getOrAdd("cameraDistance").typeTag = "f 80.0 5000.0";
+        el.props.getOrAdd("dofFocusDist").typeTag = "f 40.0 5000.0";
+        el.props.getOrAdd("sizeOverLife").typeTag =
+            "sel Linear FadeInOut EaseOut EaseIn Pulse Constant HoldFadeOut";
+        el.props.getOrAdd("opacityOverLife").typeTag =
+            "sel FadeInOut Linear EaseOut EaseIn Pulse Constant HoldFadeOut";
         el.props.getOrAdd("SpawnArea").typeTag =
             "_child HorizontalLine Rectangle Point Box3D Sphere Ring Grid LayerMask";
         el.props.getOrAdd("ForceField").typeTag =
             "_child None Vortex Attract Repel TurbulentVortex";
       };
-      if (!el.props.contains("turbulenceAffectPos")) {
+      if (!el.props.contains("turbulenceAffectPos") || !el.props.contains("measurePhysicsTime")) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Enable Particular 3D Controls")) {
           upgradeParticularProps();
@@ -1333,6 +1341,92 @@ void EditorApp::drawInspectorPanel() {
           actions.editLabel = std::string("Apply Particle Preset: ") + label;
         }
       };
+      applyPreset("BassNation", [&]() {
+        el.props.setString("particleShape", "GlowSphere",
+                           "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+        el.props.setFloat("feather", 0.80f, 0.0f, 1.0f, "appearance");
+        el.props.setFloat("glowSize", 3.2f, 1.0f, 6.0f, "appearance");
+        el.props.setFloat("glowOpacity", 0.42f, 0.0f, 1.0f, "appearance");
+        el.props.setFloat("glowFeather", 1.0f, 0.0f, 1.0f, "appearance");
+        el.props.setString("blendMode", "Screen", "_child Alpha PreMulAlpha Screen Add AddAlpha", "0_general");
+        el.props.setVec2("position", {0.5f, 0.5f}, -1.0f, 1.0f, "0_general");
+        el.props.setBool("scaleIsUniform", false, "0_general");
+        el.props.setVec2("scale", {0.46f, 0.10f}, 0.0f, 4.0f, "0_general");
+        auto& sa = el.props.getOrAdd("SpawnArea");
+        sa.value = std::string("Box3D");
+        sa.getOrAddChild("vectorRelativeToCenter").value = static_cast<int64_t>(1);
+        sa.getOrAddChild("useRandomVectorInstead").value = static_cast<int64_t>(0);
+        el.props.setInt("CountLimit", 2500, 1, 50000, "1_overall");
+        el.props.setFloat("particlesPerSec", 80.0f, 0.0f, 5000.0f, "1_overall");
+        el.props.setMVar("measureEmitRate",
+                         iota::model::MVariableFloat{{{"Constant", 1.0f, 0.0f}, {"SoundKeys1", 1.417f, 0.0f}}},
+                         "mvarf 0.0 5.0",
+                         "1_overall");
+        el.props.setMVar("measurePhysicsTime",
+                         iota::model::MVariableFloat{{{"Constant", 1.0f, 0.0f}, {"SoundKeys1", 20.0f, 0.0f}}},
+                         "mvarf 0.0 25.0",
+                         "behaviour");
+        el.props.setMVar("MeasureOverallSpeed",
+                         iota::model::MVariableFloat{{{"Nothing", 0.0f, 0.0f}}},
+                         "_child Nothing Beat TotalTime TrackPosition SoundKeys1 SoundKeys2 SoundKeys3",
+                         "behaviour");
+        el.props.setFloat("emitterSizeZ", 1000.0f, 0.0f, 4000.0f, "1_overall");
+        el.props.setFloat("preRunSec", 3.0f, 0.0f, 10.0f, "1_overall");
+        el.props.setBool("mirrorX", true, "1_overall");
+        el.props.setBool("mirrorY", false, "1_overall");
+        el.props.setFloat("Speed", 240.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("speedRandom", 110.0f, 0.0f, 500.0f, "behaviour");
+        el.props.setFloat("directionSpread", 22.0f, 0.0f, 180.0f, "behaviour");
+        el.props.setFloat("airResistance", 0.06f, 0.0f, 10.0f, "behaviour");
+        el.props.setFloat("lifetime", 8.5f, 0.05f, 20.0f, "behaviour");
+        el.props.setFloat("lifetimeRandom", 0.75f, 0.0f, 0.95f, "behaviour");
+        el.props.setFloat("particleScale", 2.5f, 0.25f, 16.0f, "appearance");
+        el.props.setFloat("sizeRandom", 1.0f, 0.0f, 1.0f, "appearance");
+        el.props.setFloat("opacityRandom", 0.35f, 0.0f, 1.0f, "appearance");
+        el.props.setString("sizeOverLife", "HoldFadeOut",
+                           "sel Linear FadeInOut EaseOut EaseIn Pulse Constant HoldFadeOut", "appearance");
+        el.props.setString("opacityOverLife", "Constant",
+                           "sel FadeInOut Linear EaseOut EaseIn Pulse Constant HoldFadeOut", "appearance");
+        el.props.setFloat("fadeInAndOutTime", 0.375f, 0.0f, 0.5f, "appearance");
+        el.props.setFloat("startSize", 1.0f, 0.0f, 20.0f, "appearance");
+        el.props.setFloat("fadeInSize", 1.0f, 0.0f, 20.0f, "appearance");
+        el.props.setFloat("endSize", 0.0f, 0.0f, 20.0f, "appearance");
+        el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_overall");
+        el.props.setColorHsla("ColorFrom", {0.0f, 0.0f, 1.0f, 1.0f}, "appearance");
+        el.props.setColorHsla("ColorTo", {0.0f, 0.0f, 1.0f, 1.0f}, "appearance");
+        el.props.setBool("useMidColor", false, "appearance");
+        el.props.setFloat("colorRandomHue", 0.0f, 0.0f, 1.0f, "appearance");
+        el.props.setFloat("orbitalSpinAmp", 20.0f, 0.0f, 200.0f, "behaviour");
+        el.props.setFloat("orbitalSpinFreq", 0.5f, 0.0f, 10.0f, "behaviour");
+        el.props.setFloat("orbitalSpinFadeIn", 1.0f, 0.0f, 5.0f, "behaviour");
+        el.props.setFloat("sideSineWaveFreq", 0.0f, 0.0f, 10.0f, "waveBehaviour");
+        el.props.setFloat("sideSineWaveFreqRandom", 0.0f, -10.0f, 10.0f, "waveBehaviour");
+        el.props.setFloat("sideSineWaveMag", 0.0f, 0.0f, 10.0f, "waveBehaviour");
+        el.props.setFloat("sideSineWaveMagRandom", 0.0f, -10.0f, 10.0f, "waveBehaviour");
+        el.props.setVec2("gravity", {0.0f, 0.0f}, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("gravityZ", 0.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("windX", 0.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("windY", 0.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("windZ", -140.0f, -500.0f, 500.0f, "behaviour");
+        el.props.setFloat("turbulenceAffectPos", 0.0f, 0.0f, 500.0f, "4_turbulence");
+        el.props.setFloat("turbulenceAffectSize", 0.45f, 0.0f, 2.0f, "4_turbulence");
+        el.props.setFloat("turbulenceAffectOpacity", 0.0f, 0.0f, 1.0f, "4_turbulence");
+        el.props.setFloat("turbulenceScale", 2.0f, 0.1f, 10.0f, "4_turbulence");
+        el.props.setFloat("turbulenceEvolution", 1.5f, 0.0f, 5.0f, "4_turbulence");
+        el.props.setInt("turbulenceOctaves", 3, 1, 3, "4_turbulence");
+        el.props.setFloat("turbulenceFadeIn", 0.5f, 0.0f, 5.0f, "4_turbulence");
+        el.props.setString("auxEmitMode", "Off", "sel Off Continuously AtBounce AtDeath", "5_auxSystem");
+        el.props.setBool("camera3DEnabled", true, "6_cameraDof");
+        el.props.setFloat("perspectiveFov", 64.0f, 15.0f, 170.0f, "1_overall");
+        el.props.setFloat("cameraDistance", 680.0f, 80.0f, 5000.0f, "6_cameraDof");
+        el.props.setFloat("cameraOrbitYaw", 0.0f, -180.0f, 180.0f, "6_cameraDof");
+        el.props.setFloat("cameraOrbitPitch", 0.0f, -85.0f, 85.0f, "6_cameraDof");
+        el.props.setFloat("nearCameraFadeOutDistance", 35.0f, 0.0f, 500.0f, "appearance");
+        el.props.setBool("dofEnabled", false, "6_cameraDof");
+        el.props.setBool("velocityAngle", false, "appearance");
+        el.props.setFloat("trailLength", 0.0f, 0.0f, 5.0f, "appearance");
+        el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "appearance");
+      });
       applyPreset("3D Bokeh", [&]() {
         el.props.setString("particleShape", "BokehRing",
                            "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");

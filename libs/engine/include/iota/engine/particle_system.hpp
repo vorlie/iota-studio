@@ -37,6 +37,7 @@ enum class ParticleCurvePreset {
   EaseIn = 3,
   Pulse = 4,
   Constant = 5,
+  HoldFadeOut = 6,
 };
 
 enum class ParticleForceFieldType {
@@ -85,6 +86,7 @@ struct ParticleSimConfig {
   float speedBase = 90.0f;
   float speedRandom = 40.0f;
   float overallSpeedMultiplier = 1.0f;
+  float physicsTimeFactor = 1.0f;  // Scales simulation clock dt (motion, drag, spin, turbulence, aging)
   float directionSpreadDeg = 35.0f;
   bool vectorRelativeToCenter = true;
   bool useRandomVector = false;
@@ -99,6 +101,9 @@ struct ParticleSimConfig {
   // Particle appearance & over-life curves
   ParticleShapeType shapeType = ParticleShapeType::Sprite;
   float feather = 0.5f;
+  float glowSize = 3.0f;       // GlowSphere outer halo radius multiplier (1.0..6.0)
+  float glowOpacity = 0.25f;   // GlowSphere outer halo opacity (0.0..1.0)
+  float glowFeather = 1.0f;    // GlowSphere outer halo radial feather (0.0..1.0)
   float lifetime = 2.2f;
   float lifetimeRandom = 0.25f;
   float particleScale = 2.5f;
@@ -109,6 +114,7 @@ struct ParticleSimConfig {
   float endSizeRandom = 0.0f;
   float endSizeZFactor = 0.0f;
   float sizeAspectRatio = 1.0f;
+  float opacityRandom = 0.0f;  // Per-particle random opacity reduction [0, 1]
   float fadeInAndOutTime = 0.25f;
   ParticleCurvePreset sizeOverLife = ParticleCurvePreset::Linear;
   ParticleCurvePreset opacityOverLife = ParticleCurvePreset::FadeInOut;
@@ -123,6 +129,9 @@ struct ParticleSimConfig {
   bool initialRotationRandom = false;
   float spinSpeedDeg = 0.0f;
   float spinRandomDeg = 0.0f;
+  float orbitalSpinAmp = 0.0f;     // Trapcode Displace > Spin Amplitude (px)
+  float orbitalSpinFreq = 0.5f;    // Trapcode Displace > Spin Frequency (Hz)
+  float orbitalSpinFadeIn = 1.0f;  // Trapcode Displace > Fade-in Spin (s)
 
   // Physics & environment
   iota::core::Vec2 gravity{0.0f, 0.0f};
@@ -211,12 +220,16 @@ class ParticleSystem {
     float maxAge = 2.0f;
     float sizeRand = 0.0f;
     float endSizeRand = 0.0f;
+    float opacityRand = 0.0f;
     float hueShift = 0.0f;
     float rotation = 0.0f;
     float spinSpeed = 0.0f;
     float waveFreq = 0.0f;
     float waveMag = 0.0f;
     float wavePhase = 0.0f;
+    float orbitPhase = 0.0f;
+    iota::core::Vec3 orbitAxisU{1.0f, 0.0f, 0.0f};
+    iota::core::Vec3 orbitAxisV{0.0f, 1.0f, 0.0f};
     float turbSizeMod = 1.0f;
     float turbAlphaMod = 1.0f;
     float auxAccum = 0.0f;
@@ -231,6 +244,15 @@ class ParticleSystem {
                     int viewH,
                     float dtSec,
                     std::span<const EmitterSamplePoint> layerSamples);
+
+  void stepSubstep(const ParticleSimConfig& cfg,
+                   const iota::core::RectF& emitterRect,
+                   int viewW,
+                   int viewH,
+                   float wallDt,
+                   float physDt,
+                   iota::core::Vec2 emitterVel,
+                   std::span<const EmitterSamplePoint> layerSamples);
 
   void spawnPrimary(const ParticleSimConfig& cfg,
                     const iota::core::RectF& emitterRect,

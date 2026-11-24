@@ -1686,13 +1686,22 @@ struct SceneRenderer::Impl {
         iota::dsp::MVarEvaluator::makeKey(rid, "MeasureOverallSpeed"),
         p.getMVar("MeasureOverallSpeed"),
         mctx));
+    if (findPropCI(p, "measurePhysicsTime")) {
+      cfg.physicsTimeFactor = std::clamp(
+          mvarEval.evaluateScalar(iota::dsp::MVarEvaluator::makeKey(rid, "measurePhysicsTime"),
+                                  p.getMVar("measurePhysicsTime", iota::model::MVariableFloat::constant(1.0f)),
+                                  mctx),
+          0.0f, 30.0f);
+    } else {
+      cfg.physicsTimeFactor = 1.0f;
+    }
 
     cfg.emitterSizeZ = getFloatCI(p, "emitterSizeZ", 0.0f);
     cfg.preRunSec = std::clamp(getFloatCI(p, "preRunSec", 0.0f), 0.0f, 10.0f);
     cfg.mirrorX = getBoolCI(p, "mirrorX", false);
     cfg.mirrorY = getBoolCI(p, "mirrorY", false);
     cfg.perspectiveDepth = std::max(0.0f, getFloatCI(p, "perspectiveDepth", 0.0f));
-    cfg.perspectiveFov = std::clamp(getFloatCI(p, "perspectiveFov", 110.0f), 20.0f, 170.0f);
+    cfg.perspectiveFov = std::clamp(getFloatCI(p, "perspectiveFov", 110.0f), 15.0f, 170.0f);
 
     const auto* spawnArea = findPropCI(p, "SpawnArea");
     const std::string spawnKind = spawnArea && std::get_if<std::string>(&spawnArea->value)
@@ -1724,6 +1733,9 @@ struct SceneRenderer::Impl {
 
     cfg.shapeType = particleShapeTypeFromString(getStringCI(p, "particleShape", "Sprite"));
     cfg.feather = std::clamp(getFloatCI(p, "feather", 0.5f), 0.0f, 1.0f);
+    cfg.glowSize = std::clamp(getFloatCI(p, "glowSize", 3.0f), 1.0f, 6.0f);
+    cfg.glowOpacity = std::clamp(getFloatCI(p, "glowOpacity", 0.25f), 0.0f, 1.0f);
+    cfg.glowFeather = std::clamp(getFloatCI(p, "glowFeather", 1.0f), 0.0f, 1.0f);
     cfg.particleScale = getFloatCI(p, "particleScale", 2.5f);
     cfg.startSize = getFloatCI(p, "startSize", 1.0f);
     cfg.fadeInSize = getFloatCI(p, "fadeInSize", 1.0f);
@@ -1732,6 +1744,7 @@ struct SceneRenderer::Impl {
     cfg.endSizeRandom = getFloatCI(p, "endSizeRandom", 0.0f);
     cfg.endSizeZFactor = getFloatCI(p, "endSizeZFactor", 0.0f);
     cfg.sizeAspectRatio = std::max(0.1f, getFloatCI(p, "sizeAspectRatio", 1.0f));
+    cfg.opacityRandom = std::clamp(getFloatCI(p, "opacityRandom", 0.0f), 0.0f, 1.0f);
     cfg.fadeInAndOutTime = std::clamp(getFloatCI(p, "fadeInAndOutTime", 0.25f), 0.01f, 0.49f);
     cfg.sizeOverLife = particleCurvePresetFromString(getStringCI(p, "sizeOverLife", "Linear"));
     cfg.opacityOverLife = particleCurvePresetFromString(getStringCI(p, "opacityOverLife", "FadeInOut"));
@@ -1746,6 +1759,9 @@ struct SceneRenderer::Impl {
     cfg.initialRotationRandom = getBoolCI(p, "initialRotationRandom", false);
     cfg.spinSpeedDeg = getFloatCI(p, "spinSpeed", 0.0f);
     cfg.spinRandomDeg = getFloatCI(p, "spinRandom", 0.0f);
+    cfg.orbitalSpinAmp = std::clamp(getFloatCI(p, "orbitalSpinAmp", 0.0f), 0.0f, 500.0f);
+    cfg.orbitalSpinFreq = std::clamp(getFloatCI(p, "orbitalSpinFreq", 0.5f), 0.0f, 20.0f);
+    cfg.orbitalSpinFadeIn = std::clamp(getFloatCI(p, "orbitalSpinFadeIn", 1.0f), 0.0f, 10.0f);
 
     cfg.gravity = p.getVec2("gravity", {0.0f, 0.0f});
     cfg.gravityZ = getFloatCI(p, "gravityZ", 0.0f);
@@ -1879,6 +1895,11 @@ struct SceneRenderer::Impl {
       device->setUniformFloat(shParticle, "u_feather", cfg.feather);
       device->setUniformFloat(shParticle, "u_premulRgb", premulRgb);
       device->setUniformFloat(shParticle, "u_hdrGain", evalElementHdrGain(el, mctx));
+      const float activeGlowSize =
+          (cfg.shapeType == ParticleShapeType::GlowSphere && cfg.glowOpacity > 1e-4f) ? cfg.glowSize : 1.0f;
+      device->setUniformFloat(shParticle, "u_glowSize", activeGlowSize);
+      device->setUniformFloat(shParticle, "u_glowOpacity", cfg.glowOpacity);
+      device->setUniformFloat(shParticle, "u_glowFeather", cfg.glowFeather);
       device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
       if (stats) stats->drawCalls += 1;
     }

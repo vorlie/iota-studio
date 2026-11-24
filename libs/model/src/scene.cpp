@@ -357,6 +357,9 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("particleShape", "Sprite",
                          "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
       el.props.setFloat("feather", 0.5f, 0.0f, 1.0f, "appearance");
+      el.props.setFloat("glowSize", 3.0f, 1.0f, 6.0f, "appearance");
+      el.props.setFloat("glowOpacity", 0.25f, 0.0f, 1.0f, "appearance");
+      el.props.setFloat("glowFeather", 1.0f, 0.0f, 1.0f, "appearance");
       el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "appearance");
       el.props.setMVar("measureHdrIntensity", MVariableFloat{{{"Nothing", 1.0f, 0.0f}}}, "mvarf 0.0 8.0", "appearance");
       el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_overall");
@@ -368,10 +371,10 @@ Element createDefaultElement(ElementType type) {
       el.props.setFloat("preRunSec", 0.0f, 0.0f, 10.0f, "1_overall");
       el.props.setBool("mirrorX", false, "1_overall");
       el.props.setBool("mirrorY", false, "1_overall");
-      el.props.setFloat("emitterSizeZ", 0.0f, 0.0f, 1000.0f, "1_overall");
+      el.props.setFloat("emitterSizeZ", 0.0f, 0.0f, 4000.0f, "1_overall");
       el.props.setString("emitterLayer", "", "img composition:0", "1_overall");
       el.props.setFloat("perspectiveDepth", 0.0f, 0.0f, 1000.0f, "1_overall");
-      el.props.setFloat("perspectiveFov", 110.0f, 25.0f, 170.0f, "1_overall");
+      el.props.setFloat("perspectiveFov", 110.0f, 15.0f, 170.0f, "1_overall");
       auto& sa = el.props.getOrAdd("SpawnArea");
       sa.typeTag = "_child HorizontalLine Rectangle Point Box3D Sphere Ring Grid LayerMask";
       sa.groupTag = "1_overall";
@@ -386,6 +389,7 @@ Element createDefaultElement(ElementType type) {
       sa.getOrAddChild("vectorAngleZ").typeTag = "f -1.0 1.0";
 
       setLegacyChildMVar(el.props, "MeasureOverallSpeed", "Beat", 1.5f, 1.5f, kAllMeasureChoices, "behaviour");
+      el.props.setMVar("measurePhysicsTime", MVariableFloat::constant(1.0f), "mvarf 0.0 25.0", "behaviour");
       el.props.setFloat("Speed", 90.0f, -500.0f, 500.0f, "behaviour");
       el.props.setFloat("speedRandom", 40.0f, 0.0f, 500.0f, "behaviour");
       el.props.setFloat("directionSpread", 35.0f, 0.0f, 180.0f, "behaviour");
@@ -409,17 +413,21 @@ Element createDefaultElement(ElementType type) {
       el.props.setBool("initialRotationRandom", false, "appearance");
       el.props.setFloat("spinSpeed", 0.0f, -360.0f, 360.0f, "appearance");
       el.props.setFloat("spinRandom", 0.0f, 0.0f, 360.0f, "appearance");
+      el.props.setFloat("orbitalSpinAmp", 0.0f, 0.0f, 200.0f, "behaviour");
+      el.props.setFloat("orbitalSpinFreq", 0.5f, 0.0f, 10.0f, "behaviour");
+      el.props.setFloat("orbitalSpinFadeIn", 1.0f, 0.0f, 5.0f, "behaviour");
       el.props.setFloat("sizeAspectRatio", 1.0f, 0.1f, 10.0f, "appearance");
       el.props.setString("sizeOverLife", "Linear",
-                         "sel Linear FadeInOut EaseOut EaseIn Pulse Constant", "appearance");
+                         "sel Linear FadeInOut EaseOut EaseIn Pulse Constant HoldFadeOut", "appearance");
       el.props.setString("opacityOverLife", "FadeInOut",
-                         "sel FadeInOut Linear EaseOut EaseIn Pulse Constant", "appearance");
+                         "sel FadeInOut Linear EaseOut EaseIn Pulse Constant HoldFadeOut", "appearance");
       el.props.setFloat("startSize", 1.0f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("fadeInSize", 1.0f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("endSize", 0.2f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("sizeRandom", 0.2f, 0.0f, 1.0f, "appearance");
       el.props.setFloat("endSizeRandom", 0.0f, 0.0f, 20.0f, "appearance");
       el.props.setFloat("endSizeZFactor", 0.0f, 0.0f, 40.0f, "appearance");
+      el.props.setFloat("opacityRandom", 0.0f, 0.0f, 1.0f, "appearance");
       el.props.setFloat("sideSineWaveFreq", 2.0f, 0.0f, 10.0f, "waveBehaviour");
       el.props.setFloat("sideSineWaveFreqRandom", 1.0f, -10.0f, 10.0f, "waveBehaviour");
       el.props.setFloat("sideSineWaveMag", 1.5f, 0.0f, 10.0f, "waveBehaviour");
@@ -453,11 +461,11 @@ Element createDefaultElement(ElementType type) {
       el.props.setFloat("auxOpacity", 0.65f, 0.0f, 1.0f, "5_auxSystem");
 
       el.props.setBool("camera3DEnabled", false, "6_cameraDof");
-      el.props.setFloat("cameraDistance", 420.0f, 80.0f, 2000.0f, "6_cameraDof");
+      el.props.setFloat("cameraDistance", 420.0f, 80.0f, 5000.0f, "6_cameraDof");
       el.props.setFloat("cameraOrbitYaw", 0.0f, -180.0f, 180.0f, "6_cameraDof");
       el.props.setFloat("cameraOrbitPitch", 0.0f, -85.0f, 85.0f, "6_cameraDof");
       el.props.setBool("dofEnabled", false, "6_cameraDof");
-      el.props.setFloat("dofFocusDist", 420.0f, 40.0f, 2000.0f, "6_cameraDof");
+      el.props.setFloat("dofFocusDist", 420.0f, 40.0f, 5000.0f, "6_cameraDof");
       el.props.setFloat("dofAperture", 0.35f, 0.0f, 2.0f, "6_cameraDof");
       el.props.setFloat("dofMaxBlur", 0.85f, 0.0f, 1.0f, "6_cameraDof");
       break;

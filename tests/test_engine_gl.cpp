@@ -750,6 +750,96 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
       CHECK(st.activeAuxParticles > 10);
       CHECK(luma > 20000);
     }
+
+    // 4. BassNation Trapcode Particular configuration (GlowSphere 300% halo, Box3D, 50mm FOV, MirrorX, PhysicsTimeFactor)
+    {
+      iota::model::Project bn;
+      bn.version = "10";
+      auto comp0 = iota::model::createDefaultComposition(0);
+      comp0.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::AudioProvider));
+      comp0.elements.push_back(iota::model::createDefaultElement(iota::model::ElementType::SoundKeys));
+
+      auto pt = iota::model::createDefaultElement(iota::model::ElementType::Particles);
+      pt.props.setString("particleShape", "GlowSphere",
+                         "sel Sprite Sphere GlowSphere Star BokehRing Streaklet", "appearance");
+      pt.props.setFloat("feather", 0.5f, 0.0f, 1.0f, "appearance");
+      pt.props.setFloat("glowSize", 3.0f, 1.0f, 6.0f, "appearance");
+      pt.props.setFloat("glowOpacity", 0.25f, 0.0f, 1.0f, "appearance");
+      pt.props.setFloat("glowFeather", 1.0f, 0.0f, 1.0f, "appearance");
+      pt.props.setString("blendMode", "Alpha", "sel Add Alpha PreMulAlpha Screen", "0_general");
+      pt.props.setBool("scaleIsUniform", false, "0_general");
+      pt.props.setVec2("scale", {0.353f, 0.089f}, 0.0f, 4.0f, "0_general");
+      pt.props.getOrAdd("SpawnArea").value = std::string("Box3D");
+      pt.props.setInt("CountLimit", 1500, 1, 50000, "1_overall");
+      pt.props.setFloat("particlesPerSec", 60.0f, 0.0f, 5000.0f, "1_overall");
+      pt.props.setMVar("measureEmitRate",
+                       iota::model::MVariableFloat{{{"Constant", 1.0f, 0.0f}, {"SoundKeys1", 1.417f, 0.0f}}},
+                       "mvarf 0.0 5.0",
+                       "1_overall");
+      pt.props.setMVar("measurePhysicsTime",
+                       iota::model::MVariableFloat{{{"Constant", 1.0f, 0.0f}, {"SoundKeys1", 20.0f, 0.0f}}},
+                       "mvarf 0.0 25.0",
+                       "behaviour");
+      pt.props.setFloat("emitterSizeZ", 2088.0f, 0.0f, 4000.0f, "1_overall");
+      pt.props.setFloat("preRunSec", 1.5f, 0.0f, 10.0f, "1_overall");
+      pt.props.setBool("mirrorX", true, "1_overall");
+      pt.props.setFloat("Speed", 90.0f, -500.0f, 500.0f, "behaviour");
+      pt.props.setFloat("speedRandom", 36.0f, 0.0f, 500.0f, "behaviour");
+      pt.props.setFloat("directionSpread", 20.0f, 0.0f, 180.0f, "behaviour");
+      pt.props.setFloat("airResistance", 0.5f, 0.0f, 10.0f, "behaviour");
+      pt.props.setFloat("lifetime", 11.0f, 0.05f, 20.0f, "behaviour");
+      pt.props.setFloat("lifetimeRandom", 0.75f, 0.0f, 0.95f, "behaviour");
+      pt.props.setFloat("particleScale", 0.8f, 0.25f, 16.0f, "appearance");
+      pt.props.setFloat("sizeRandom", 1.0f, 0.0f, 1.0f, "appearance");
+      pt.props.setFloat("opacityRandom", 0.5f, 0.0f, 1.0f, "appearance");
+      pt.props.setString("sizeOverLife", "HoldFadeOut",
+                         "sel Linear FadeInOut EaseOut EaseIn Pulse Constant HoldFadeOut", "appearance");
+      pt.props.setString("opacityOverLife", "Constant",
+                         "sel FadeInOut Linear EaseOut EaseIn Pulse Constant HoldFadeOut", "appearance");
+      pt.props.setFloat("fadeInAndOutTime", 0.375f, 0.0f, 0.5f, "appearance");
+      pt.props.setColorHsla("ColorFrom", {0.0f, 0.0f, 1.0f, 1.0f}, "appearance");
+      pt.props.setColorHsla("ColorTo", {0.0f, 0.0f, 1.0f, 1.0f}, "appearance");
+      pt.props.setFloat("orbitalSpinAmp", 20.0f, 0.0f, 200.0f, "behaviour");
+      pt.props.setFloat("orbitalSpinFreq", 0.5f, 0.0f, 10.0f, "behaviour");
+      pt.props.setFloat("turbulenceAffectPos", 0.0f, 0.0f, 500.0f, "4_turbulence");
+      pt.props.setFloat("turbulenceAffectSize", 0.45f, 0.0f, 2.0f, "4_turbulence");
+      pt.props.setBool("camera3DEnabled", true, "6_cameraDof");
+      pt.props.setFloat("perspectiveFov", 22.9f, 15.0f, 170.0f, "1_overall");
+      pt.props.setFloat("cameraDistance", 2666.7f, 80.0f, 5000.0f, "6_cameraDof");
+      pt.props.setFloat("nearCameraFadeOutDistance", 10.0f, 0.0f, 500.0f, "appearance");
+      comp0.elements.push_back(std::move(pt));
+      bn.compositions.push_back(std::move(comp0));
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      for (int f = 0; f < 10; ++f) {
+        REQUIRE(renderer.renderFrame(bn, audio, {1.0f / 30.0f, f / 30.0, f / 30.0, true, 0.0f, true, 30.0f},
+                                     kW, kH, {}, &st));
+      }
+      std::vector<uint8_t> rgba;
+      const uint64_t luma = measureTotalLuma(rgba);
+      CHECK(st.activeParticles > 50);
+      CHECK(luma > 10000);
+
+      // Verify bilateral mirrorX symmetry between left and right halves
+      uint64_t leftLuma = 0;
+      uint64_t rightLuma = 0;
+      for (int y = 0; y < kH; ++y) {
+        for (int x = 0; x < kW / 2; ++x) {
+          const size_t i = static_cast<size_t>((y * kW + x) * 4);
+          leftLuma += rgba[i] + rgba[i + 1] + rgba[i + 2];
+        }
+        for (int x = kW / 2; x < kW; ++x) {
+          const size_t i = static_cast<size_t>((y * kW + x) * 4);
+          rightLuma += rgba[i] + rgba[i + 1] + rgba[i + 2];
+        }
+      }
+      CHECK(leftLuma > 3000);
+      CHECK(rightLuma > 3000);
+      const double ratio = static_cast<double>(std::min(leftLuma, rightLuma)) /
+                           static_cast<double>(std::max<uint64_t>(1, std::max(leftLuma, rightLuma)));
+      CHECK(ratio > 0.70);
+    }
   }
 
   SUBCASE("HDR RGBA16F pipeline, emissive gain, physical Bloom pyramid, and Filmic Tonemapping") {

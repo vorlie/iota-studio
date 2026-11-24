@@ -414,6 +414,9 @@ uniform int u_particleShape;  // 0=Sprite, 1=Sphere, 2=GlowSphere, 3=Star, 4=Bok
 uniform float u_feather;
 uniform float u_premulRgb;
 uniform float u_hdrGain;
+uniform float u_glowSize;
+uniform float u_glowOpacity;
+uniform float u_glowFeather;
 
 out vec4 fragColor;
 
@@ -448,11 +451,14 @@ void main() {
     // Soft shaded sphere
     shapeA = 1.0 - smoothstep(max(0.0, 1.0 - f), 1.0, r);
   } else if (u_particleShape == 2) {
-    // Glowing core + exponential halo
-    float core = 1.0 - smoothstep(0.0, mix(0.45, 0.85, f), r);
-    float halo = exp(-r * r * mix(8.0, 2.2, f));
-    float mask = 1.0 - smoothstep(0.82, 1.0, r);
-    shapeA = clamp((core * 0.55 + halo * 0.85) * mask, 0.0, 1.0);
+    // Dual-zone Trapcode-style Glow Sphere: feathered inner core + wide outer halo
+    float gSize = max(1.0, u_glowSize);
+    float rCore = r * gSize;
+    float coreA = 1.0 - smoothstep(max(0.0, 1.0 - f), 1.0, rCore);
+    float gf = clamp(u_glowFeather, 0.05, 1.0);
+    float haloBase = 1.0 - smoothstep(max(0.0, 1.0 - gf), 1.0, r);
+    float haloA = pow(haloBase, mix(1.0, 2.2, gf)) * clamp(u_glowOpacity, 0.0, 1.0);
+    shapeA = clamp(coreA + haloA * (1.0 - coreA), 0.0, 1.0);
   } else if (u_particleShape == 3) {
     // 4-point star glint + central core
     float k = mix(14.0, 4.5, f);
