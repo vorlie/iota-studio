@@ -27,6 +27,30 @@
         "CMAKE_C_COMPILER": "cl",
         "CMAKE_CXX_COMPILER": "cl"
       }
+    },
+    {
+      "name": "windows-msvc-ninja-release-mcp",
+      "displayName": "Windows MSVC x64 Ninja Release (MCP Enabled)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release-mcp",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "IOTA_BUILD_MCP": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-ninja-debug-mcp",
+      "displayName": "Windows MSVC x64 Ninja Debug (MCP Enabled)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug-mcp",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "IOTA_BUILD_MCP": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -37,6 +61,14 @@
     {
       "name": "debug",
       "configurePreset": "windows-msvc-ninja-debug"
+    },
+    {
+      "name": "release-mcp",
+      "configurePreset": "windows-msvc-ninja-release-mcp"
+    },
+    {
+      "name": "debug-mcp",
+      "configurePreset": "windows-msvc-ninja-debug-mcp"
     }
   ]
 }

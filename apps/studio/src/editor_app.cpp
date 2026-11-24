@@ -248,6 +248,9 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
 }
 
 void EditorApp::shutdown() {
+#ifdef IOTA_ENABLE_MCP
+  mcpBridgeHost_.stop();
+#endif
   exportSession_.cancel();
   encoderProbe_.cancel();
   updateChecker_.cancel();
@@ -369,6 +372,9 @@ int EditorApp::run() {
         }
       }
     } else {
+#ifdef IOTA_ENABLE_MCP
+      pollMcpLiveBridge();
+#endif
       iota::engine::FrameTiming timing;
       timing.dt = dt;
       timing.totalTimeSec = totalTimeSec_;
@@ -914,6 +920,67 @@ void EditorApp::drawMenuBar() {
     ImGui::MenuItem(verLabel.c_str(), nullptr, false, false);
     ImGui::EndMenu();
   }
+
+#ifdef IOTA_ENABLE_MCP
+  if (ImGui::BeginMenu("MCP")) {
+    bool liveOn = mcpBridgeHost_.isListening();
+    if (ImGui::MenuItem("Enable Live Studio Bridge", nullptr, &liveOn)) {
+      if (liveOn) {
+        enableMcpLiveBridge();
+      } else {
+        disableMcpLiveBridge("MCP Live Bridge disabled");
+      }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+      ImGui::SetTooltip(
+          "Allows local AI agents (via iota_mcp --attach or studio_connect) to inspect and edit this session.\n"
+          "Automatically saves a <name>.mcp.iota working copy first so original files are never modified.");
+    }
+    ImGui::Separator();
+    const char* bridgeState =
+        !mcpBridgeHost_.isListening()
+            ? "Status: Disabled"
+            : (mcpBridgeHost_.hasConnectedClient() ? "Status: Listening (Agent Connected)"
+                                                   : "Status: Listening (Waiting for Agent)");
+    ImGui::MenuItem(bridgeState, nullptr, false, false);
+    const std::string reqStr = "Requests Handled: " + std::to_string(mcpBridgeHost_.requestsHandled());
+    ImGui::MenuItem(reqStr.c_str(), nullptr, false, false);
+    if (!currentProjectPath_.empty()) {
+      const std::string activeStr = "Active File: " + iota::core::pathFilenameUtf8(currentProjectPath_);
+      ImGui::MenuItem(activeStr.c_str(), nullptr, false, false);
+    }
+    if (!mcpOriginalProjectPath_.empty()) {
+      const std::string origStr = "Protected Original: " + iota::core::pathFilenameUtf8(mcpOriginalProjectPath_);
+      ImGui::MenuItem(origStr.c_str(), nullptr, false, false);
+    }
+    const std::string curPipe = mcpBridgeHost_.isListening()
+                                    ? mcpBridgeHost_.pipeName()
+                                    : iota::mcp::defaultLiveBridgePipeName();
+    if (ImGui::MenuItem("Copy Bridge Pipe Name")) {
+      ImGui::SetClipboardText(curPipe.c_str());
+      statusBanner_ = "Copied MCP pipe name";
+    }
+    ImGui::EndMenu();
+  }
+
+  if (mcpBridgeHost_.isListening()) {
+    ImGui::Separator();
+    const bool clientOn = mcpBridgeHost_.hasConnectedClient();
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          clientOn ? ImVec4(0.14f, 0.50f, 0.56f, 1.0f) : ImVec4(0.18f, 0.34f, 0.44f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                          clientOn ? ImVec4(0.18f, 0.62f, 0.68f, 1.0f) : ImVec4(0.24f, 0.45f, 0.58f, 1.0f));
+    const char* badge = clientOn ? "MCP Live (Connected)" : "MCP Live";
+    if (ImGui::SmallButton(badge)) {
+      disableMcpLiveBridge("MCP Live Bridge disabled");
+    }
+    ImGui::PopStyleColor(2);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+      ImGui::SetTooltip("Pipe: %s\nClick to turn off MCP Live Studio Bridge.",
+                        mcpBridgeHost_.pipeName().c_str());
+    }
+  }
+#endif
 
   const auto updSnap = updateChecker_.snapshot();
   if (updSnap.status == iota::core::UpdateCheckStatus::UpdateAvailable) {
@@ -2293,6 +2360,11 @@ void EditorApp::updateWindowTitle() {
   }
   const std::string rawName = project_.metadata.name.empty() ? "Untitled Project" : project_.metadata.name;
   std::string title = "Iota Studio - " + iota::core::sanitizeUtf8(rawName);
+#ifdef IOTA_ENABLE_MCP
+  if (mcpBridgeHost_.isListening()) {
+    title += " [MCP Live]";
+  }
+#endif
   if (projectDirty_) {
     title += " *";
   }
@@ -2323,6 +2395,11 @@ void EditorApp::recordProjectInLibrary(const std::filesystem::path& path) {
 }
 
 bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
+#ifdef IOTA_ENABLE_MCP
+  if (mcpBridgeHost_.isListening()) {
+    disableMcpLiveBridge("MCP Live Bridge disabled for newly opened project");
+  }
+#endif
   std::string err;
   auto loaded = iota::preset_io::loadProjectFromFile(path, &err);
   if (!loaded) {
@@ -2460,5 +2537,356 @@ void EditorApp::actionLoadBuiltinTestTone(float freqHz) {
   audio_.loadTrack(std::move(track));
   playAccumTimeSec_ = 0.0;
 }
+
+#ifdef IOTA_ENABLE_MCP
+
+class EditorLiveStudioTarget final : public iota::mcp::IStudioBridgeTarget {
+ public:
+  explicit EditorLiveStudioTarget(EditorApp& app) noexcept : app_(app) {}
+
+  bool isLiveStudio() const noexcept override { return true; }
+  iota::model::Project& project() noexcept override { return app_.project_; }
+  const iota::model::Project& project() const noexcept override { return app_.project_; }
+  iota::audio::AudioEngine& audio() noexcept override { return app_.audio_; }
+  const iota::audio::AudioEngine& audio() const noexcept override { return app_.audio_; }
+  std::filesystem::path currentProjectPath() const override { return app_.currentProjectPath_; }
+
+  bool loadProject(const std::filesystem::path& path,
+                   std::string* outError,
+                   std::filesystem::path* outWorkingCopyPath) override {
+    std::string err;
+    auto loaded = iota::preset_io::loadProjectFromFile(path, &err);
+    if (!loaded) {
+      if (outError) *outError = err;
+      return false;
+    }
+
+    if (loaded->metadata.name.empty() || loaded->metadata.name == "Untitled Project") {
+      loaded->metadata.name = iota::core::pathStemUtf8(path);
+    }
+
+    std::filesystem::path nextPath = path;
+    std::filesystem::path origPath;
+    if (!iota::mcp::isMcpWorkingCopyPath(path)) {
+      const auto copyPath = iota::mcp::computeMcpWorkingCopyPath(path);
+      if (!iota::preset_io::saveProjectAutoFormat(*loaded, copyPath, &err)) {
+        if (outError) *outError = "Failed to create MCP working copy: " + err;
+        return false;
+      }
+      origPath = path;
+      nextPath = copyPath;
+    }
+
+    app_.project_ = std::move(*loaded);
+    app_.mcpOriginalProjectPath_ = std::move(origPath);
+    app_.currentProjectPath_ = nextPath;
+    app_.projectDirty_ = false;
+    app_.applyProjectMetadata(app_.project_.metadata);
+    app_.setSingleSelection(
+        0, app_.project_.compositions.empty() || app_.project_.compositions[0].elements.empty() ? -1 : 0);
+    app_.renderer_.invalidateLocalAssets();
+    app_.renderer_.resetSimulation();
+    app_.undoStack_.clear(app_.project_);
+
+    if (!app_.project_.metadata.audioPath.empty()) {
+      const std::filesystem::path linkedAudio = iota::core::pathFromUtf8(app_.project_.metadata.audioPath);
+      if (iota::core::pathExistsNoThrow(linkedAudio) && app_.audio_.loadFile(linkedAudio)) {
+        app_.playAccumTimeSec_ = 0.0;
+        app_.audio_.pause();
+      }
+    }
+
+    app_.recordProjectInLibrary(nextPath);
+    app_.updateWindowTitle();
+    app_.statusBanner_ = "MCP Opened Working Copy: " + iota::core::pathFilenameUtf8(nextPath);
+    if (outWorkingCopyPath) {
+      *outWorkingCopyPath = nextPath;
+    }
+    return true;
+  }
+
+  bool createNewProject(iota::model::Project project,
+                        const std::string& undoLabel) override {
+    app_.project_ = std::move(project);
+    app_.currentProjectPath_.clear();
+    app_.mcpOriginalProjectPath_.clear();
+    app_.projectDirty_ = true;
+    app_.applyProjectMetadata(app_.project_.metadata);
+    app_.setSingleSelection(
+        0, app_.project_.compositions.empty() || app_.project_.compositions[0].elements.empty() ? -1 : 0);
+    app_.renderer_.invalidateLocalAssets();
+    app_.renderer_.resetSimulation();
+    app_.pushUndoState(undoLabel);
+    app_.updateWindowTitle();
+    app_.statusBanner_ = undoLabel;
+    return true;
+  }
+
+  bool saveProject(const std::filesystem::path& path,
+                   bool allowVizOverwrite,
+                   std::string* outError,
+                   std::filesystem::path* outSavedPath) override {
+    const std::filesystem::path target = path.empty() ? app_.currentProjectPath_ : path;
+    if (target.empty()) {
+      if (outError) *outError = "No target path provided and current project has not been saved yet.";
+      return false;
+    }
+    if (iota::mcp::isVizExtension(target) && !allowVizOverwrite && iota::core::pathExistsNoThrow(target)) {
+      if (outError) {
+        *outError =
+            "Refusing to overwrite legacy .viz template '" + iota::core::pathToUtf8(target) +
+            "' without allow_viz_overwrite=true. Save to a .iota path instead.";
+      }
+      return false;
+    }
+
+    app_.project_.metadata.previewWidth = app_.previewWidth_;
+    app_.project_.metadata.previewHeight = app_.previewHeight_;
+    app_.project_.metadata.targetFps = std::clamp(app_.exportCfg_.fps, 15, 120);
+
+    std::string err;
+    if (!iota::preset_io::saveProjectAutoFormat(app_.project_, target, &err)) {
+      if (outError) *outError = err;
+      return false;
+    }
+    app_.currentProjectPath_ = target;
+    app_.projectDirty_ = false;
+    app_.recordProjectInLibrary(target);
+    app_.updateWindowTitle();
+    app_.statusBanner_ = "MCP Saved " + iota::core::pathFilenameUtf8(target);
+    if (outSavedPath) {
+      *outSavedPath = target;
+    }
+    return true;
+  }
+
+  void commitEdit(const std::string& label,
+                  bool invalidateAssets,
+                  bool resetSim) override {
+    app_.clampSelectionToProject();
+    if (invalidateAssets) {
+      app_.renderer_.invalidateLocalAssets();
+    }
+    if (resetSim) {
+      app_.renderer_.resetSimulation();
+    }
+    app_.pushUndoState(label.empty() ? "MCP Edit" : label);
+    app_.statusBanner_ = label.empty() ? "MCP Edit" : label;
+  }
+
+  bool canUndo() const noexcept override { return app_.undoStack_.canUndo(); }
+  bool canRedo() const noexcept override { return app_.undoStack_.canRedo(); }
+
+  bool undo(std::string* outLabel) override {
+    if (!app_.undoStack_.canUndo()) {
+      return false;
+    }
+    const std::string desc = app_.undoStack_.undoDescription();
+    app_.actionUndo();
+    if (outLabel) *outLabel = desc;
+    return true;
+  }
+
+  bool redo(std::string* outLabel) override {
+    if (!app_.undoStack_.canRedo()) {
+      return false;
+    }
+    const std::string desc = app_.undoStack_.redoDescription();
+    app_.actionRedo();
+    if (outLabel) *outLabel = desc;
+    return true;
+  }
+
+  bool renderPreviewPng(int width,
+                        int height,
+                        double timeSec,
+                        int preRollFrames,
+                        bool fxaa,
+                        std::vector<uint8_t>& outPng,
+                        iota::engine::RenderFrameStats& outStats,
+                        std::string* outError) override {
+    const int w = std::clamp(width > 0 ? width : app_.previewWidth_, 64, 4096);
+    const int h = std::clamp(height > 0 ? height : app_.previewHeight_, 64, 4096);
+    const int roll = std::clamp(preRollFrames, 0, 120);
+    const double tTarget = std::max(0.0, timeSec);
+    const float dt = 1.0f / static_cast<float>(std::clamp(app_.exportCfg_.fps, 15, 120));
+
+    app_.renderer_.resetSimulation();
+    iota::rhi::RenderTargetHandle finalRt{};
+    for (int i = -roll; i <= 0; ++i) {
+      const double tFrame = std::max(0.0, tTarget + static_cast<double>(i) * dt);
+      iota::engine::FrameTiming timing;
+      timing.dt = dt;
+      timing.totalTimeSec = std::max(0.0, static_cast<double>(i + roll) * dt);
+      timing.playAccumTimeSec = tFrame;
+      timing.isExporting = true;
+      timing.visOffsetMs = app_.visOffsetMs_;
+      timing.fxaaEnabled = fxaa;
+      timing.fpsStat = static_cast<float>(std::clamp(app_.exportCfg_.fps, 15, 120));
+
+      finalRt = app_.renderer_.renderFrame(app_.project_, app_.audio_, timing, w, h, {}, &outStats);
+      if (!finalRt) {
+        if (outError) *outError = "SceneRenderer returned null render target.";
+        return false;
+      }
+    }
+
+    std::vector<uint8_t> rgba;
+    int rw = 0;
+    int rh = 0;
+    if (!app_.device_.readRenderTargetRgba(finalRt, rw, rh, rgba, true) || rw != w || rh != h) {
+      if (outError) *outError = "Failed to read rendered preview framebuffer.";
+      return false;
+    }
+
+    outPng = iota::mcp::encodeRgbaToPng(rw, rh, rgba);
+    if (outPng.empty()) {
+      if (outError) *outError = "PNG compression failed.";
+      return false;
+    }
+    return true;
+  }
+
+  bool exportVideo(const iota::export_video::ExportSettings& settings,
+                   std::string* outError,
+                   std::string* outEncoderUsed,
+                   bool* outUsedFallback,
+                   std::string* outFallbackNotice) override {
+    iota::export_video::ExportSettings effective = settings;
+    effective.visOffsetMs = app_.visOffsetMs_;
+    iota::export_video::VideoExportSession session;
+    if (!session.begin(effective, app_.audio_, outError)) {
+      return false;
+    }
+    if (outEncoderUsed) *outEncoderUsed = session.activeEncoderDisplayName();
+    if (outUsedFallback) *outUsedFallback = session.usedCpuFallback();
+    if (outFallbackNotice) *outFallbackNotice = session.fallbackNotice();
+
+    app_.renderer_.resetSimulation();
+    while (!session.isDone()) {
+      if (!session.stepFrame(app_.device_, app_.renderer_, app_.project_, app_.audio_, outError)) {
+        session.cancel();
+        return false;
+      }
+    }
+    const bool fin = session.finish(outError);
+    app_.renderer_.resetSimulation();
+    return fin;
+  }
+
+  bool controlPlayback(std::string_view action,
+                       std::optional<double> seekSec,
+                       std::string* outError) override {
+    if (seekSec.has_value()) {
+      const double clamped = std::max(0.0, *seekSec);
+      app_.audio_.seekSeconds(clamped);
+      app_.playAccumTimeSec_ = clamped;
+    }
+    if (action == "play") {
+      app_.audio_.play();
+    } else if (action == "pause") {
+      app_.audio_.pause();
+    } else if (action == "stop") {
+      app_.audio_.stop();
+      app_.playAccumTimeSec_ = 0.0;
+    } else if (action == "toggle") {
+      if (app_.audio_.isPlaying()) app_.audio_.pause();
+      else app_.audio_.play();
+    } else if (action == "seek") {
+      if (!seekSec.has_value()) {
+        if (outError) *outError = "Action 'seek' requires seek_sec.";
+        return false;
+      }
+    } else if (!action.empty()) {
+      if (outError) *outError = "Unknown playback action: " + std::string(action);
+      return false;
+    }
+    return true;
+  }
+
+  int previewWidth() const noexcept override { return app_.previewWidth_; }
+  int previewHeight() const noexcept override { return app_.previewHeight_; }
+  int targetFps() const noexcept override { return std::clamp(app_.exportCfg_.fps, 15, 120); }
+
+  void setPreviewMetrics(int width, int height, int fps) override {
+    if (width > 0) {
+      app_.previewWidth_ = std::clamp(width, 64, 4096);
+      app_.project_.metadata.previewWidth = app_.previewWidth_;
+    }
+    if (height > 0) {
+      app_.previewHeight_ = std::clamp(height, 64, 4096);
+      app_.project_.metadata.previewHeight = app_.previewHeight_;
+    }
+    if (fps > 0) {
+      app_.exportCfg_.fps = std::clamp(fps, 15, 120);
+      app_.project_.metadata.targetFps = app_.exportCfg_.fps;
+    }
+  }
+
+ private:
+  EditorApp& app_;
+};
+
+bool EditorApp::enableMcpLiveBridge() {
+  if (mcpBridgeHost_.isListening()) {
+    return true;
+  }
+
+  if (!currentProjectPath_.empty() && !iota::mcp::isMcpWorkingCopyPath(currentProjectPath_)) {
+    const std::filesystem::path copyPath = iota::mcp::computeMcpWorkingCopyPath(currentProjectPath_);
+    project_.metadata.previewWidth = previewWidth_;
+    project_.metadata.previewHeight = previewHeight_;
+    project_.metadata.targetFps = std::clamp(exportCfg_.fps, 15, 120);
+
+    std::string saveErr;
+    if (!iota::preset_io::saveProjectAutoFormat(project_, copyPath, &saveErr)) {
+      statusBanner_ = "Failed to create MCP working copy: " + saveErr;
+      return false;
+    }
+    mcpOriginalProjectPath_ = currentProjectPath_;
+    currentProjectPath_ = copyPath;
+    projectDirty_ = false;
+    recordProjectInLibrary(copyPath);
+  }
+
+  pushUndoState("Before MCP Live Bridge");
+
+  if (!mcpBridgeHost_.start()) {
+    statusBanner_ = "Failed to start MCP Live Bridge listener.";
+    return false;
+  }
+
+  updateWindowTitle();
+  if (!currentProjectPath_.empty()) {
+    statusBanner_ = "MCP Live Bridge enabled (" + iota::core::pathFilenameUtf8(currentProjectPath_) + ")";
+  } else {
+    statusBanner_ = "MCP Live Bridge enabled";
+  }
+  return true;
+}
+
+void EditorApp::disableMcpLiveBridge(std::string_view reason) {
+  mcpBridgeHost_.stop();
+  mcpOriginalProjectPath_.clear();
+  updateWindowTitle();
+  if (!reason.empty()) {
+    statusBanner_ = std::string(reason);
+  }
+}
+
+void EditorApp::pollMcpLiveBridge() {
+  if (!mcpBridgeHost_.isListening()) {
+    return;
+  }
+  EditorLiveStudioTarget target(*this);
+  const uint64_t handled = mcpBridgeHost_.requestsHandled();
+  mcpBridgeHost_.pollAndDispatch(
+      [&](const nlohmann::json& req) {
+        return iota::mcp::executeTargetBridgeRequest(target, req, handled);
+      },
+      8);
+}
+
+#endif  // IOTA_ENABLE_MCP
 
 }  // namespace iota::studio

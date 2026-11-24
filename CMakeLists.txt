@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(IOTA_BUILD_TESTS "Build automated doctest suite" ON)
+option(IOTA_BUILD_MCP "Build optional MCP server and Studio live bridge" OFF)
 
 include(FetchContent)
 
@@ -167,6 +168,10 @@ add_subdirectory(libs/rhi)
 add_subdirectory(libs/rhi_gl45)
 add_subdirectory(libs/engine)
 add_subdirectory(libs/export)
+if(IOTA_BUILD_MCP)
+  add_subdirectory(libs/mcp)
+  add_subdirectory(apps/mcp)
+endif()
 add_subdirectory(apps/studio)
 
 if(IOTA_BUILD_TESTS)

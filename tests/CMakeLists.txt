@@ -26,6 +26,15 @@ target_link_libraries(iota_tests
     doctest::doctest
 )
 
+if(IOTA_BUILD_MCP)
+  target_sources(iota_tests PRIVATE test_mcp.cpp)
+  target_compile_definitions(iota_tests PRIVATE
+    IOTA_ENABLE_MCP=1
+    IOTA_MCP_EXE_PATH="$<TARGET_FILE:iota_mcp_app>"
+  )
+  target_link_libraries(iota_tests PRIVATE iota_mcp)
+endif()
+
 iota_configure_target(iota_tests)
 
 add_test(NAME iota_tests COMMAND iota_tests)

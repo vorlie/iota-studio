@@ -15,6 +15,13 @@
 #include "iota/preset_io/project_manager.hpp"
 #include "iota/rhi/gl45_device.hpp"
 
+#ifdef IOTA_ENABLE_MCP
+#include "iota/mcp/live_bridge.hpp"
+#include "iota/mcp/mcp_server.hpp"
+#include "iota/mcp/png_encode.hpp"
+#include "iota/mcp/working_copy.hpp"
+#endif
+
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -80,6 +87,13 @@ class EditorApp {
   void actionOpenAudio();
   void actionLoadBuiltinTestTone(float freqHz);
 
+#ifdef IOTA_ENABLE_MCP
+  friend class EditorLiveStudioTarget;
+  bool enableMcpLiveBridge();
+  void disableMcpLiveBridge(std::string_view reason = {});
+  void pollMcpLiveBridge();
+#endif
+
   GLFWwindow* window_ = nullptr;
   bool imguiInitialized_ = false;
   bool dockLayoutBuilt_ = false;
@@ -129,6 +143,10 @@ class EditorApp {
   std::string exportModalError_;
   std::string exportModalSuccess_;
   bool openExportModal_ = false;
+#ifdef IOTA_ENABLE_MCP
+  iota::mcp::LiveBridgeHost mcpBridgeHost_;
+  std::filesystem::path mcpOriginalProjectPath_;
+#endif
   iota::core::UpdateChecker updateChecker_;
   bool openUpdateModal_ = false;
   bool updateBannerNotified_ = false;

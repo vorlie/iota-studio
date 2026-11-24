@@ -45,4 +45,9 @@ target_link_libraries(iota_studio
     shell32
 )
 
+if(IOTA_BUILD_MCP)
+  target_compile_definitions(iota_studio PRIVATE IOTA_ENABLE_MCP=1)
+  target_link_libraries(iota_studio PRIVATE iota_mcp)
+endif()
+
 iota_configure_target(iota_studio)
