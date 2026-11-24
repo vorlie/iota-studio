@@ -136,7 +136,7 @@ void drawQuickStartPage() {
     ImGui::Bullet();
     ImGui::TextWrapped("Ctrl+Click any slider to type an exact value, or toggle Precise Inputs at the top of the Inspector.");
     ImGui::Bullet();
-    ImGui::TextWrapped("FFmpeg (ffmpeg.exe & ffprobe.exe) is used for MP3/FLAC/AAC/OGG audio decoding and H.264/H.265 MP4 video export (uncompressed PCM WAV works without FFmpeg).");
+    ImGui::TextWrapped("FFmpeg (ffmpeg.exe & ffprobe.exe) powers MP3/FLAC/AAC/OGG audio decoding and H.264/H.265 MP4 video export with optional GPU acceleration (Auto, NVIDIA NVENC, AMD AMF, Intel Quick Sync), Fast/Balanced/Quality presets, and automatic CPU fallback (uncompressed PCM WAV works without FFmpeg).");
     ImGui::Bullet();
     ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
                        "Backup Warning: Saving over an external mobile .viz preset in Iota Studio updates its schema and makes that overwritten file incompatible with the legacy mobile player.");

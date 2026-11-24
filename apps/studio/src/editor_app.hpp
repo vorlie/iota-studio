@@ -124,6 +124,10 @@ class EditorApp {
   bool openProjectManagerModal_ = false;
 
   iota::export_video::ExportSettings exportCfg_;
+  iota::export_video::HardwareEncoderProbe encoderProbe_;
+  double exportStartWallSec_ = 0.0;
+  std::string exportModalError_;
+  std::string exportModalSuccess_;
   bool openExportModal_ = false;
   iota::core::UpdateChecker updateChecker_;
   bool openUpdateModal_ = false;

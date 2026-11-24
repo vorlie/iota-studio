@@ -249,6 +249,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
 
 void EditorApp::shutdown() {
   exportSession_.cancel();
+  encoderProbe_.cancel();
   updateChecker_.cancel();
   renderer_.shutdown();
   device_.shutdown();
@@ -337,22 +338,34 @@ int EditorApp::run() {
       playAccumTimeSec_ += dt;
     }
 
-    // Progress active offline video export incrementally so UI stays smooth
+    // Progress active offline video export in bounded time slices so GPU encoders run fast and UI stays responsive
     if (exportSession_.isActive()) {
       std::string err;
-      for (int batch = 0; batch < 2 && !exportSession_.isDone(); ++batch) {
+      const double sliceStart = glfwGetTime();
+      int stepped = 0;
+      while (exportSession_.isActive() && !exportSession_.isDone() && stepped < 12) {
         if (!exportSession_.stepFrame(device_, renderer_, project_, audio_, &err)) {
           exportSession_.cancel();
           statusBanner_ = "Export error: " + err;
+          exportModalError_ = err;
+          break;
+        }
+        ++stepped;
+        if (glfwGetTime() - sliceStart >= 0.025) {
           break;
         }
       }
-      if (exportSession_.isDone()) {
+      if (exportSession_.isActive() && exportSession_.isDone()) {
         std::string finErr;
         if (exportSession_.finish(&finErr)) {
-          statusBanner_ = "Export finished: " + iota::core::pathToUtf8(exportCfg_.outputPath);
+          const std::string doneMsg = "Export finished (" + exportSession_.activeEncoderDisplayName() +
+                                      "): " + iota::core::pathToUtf8(exportCfg_.outputPath);
+          statusBanner_ = doneMsg;
+          exportModalSuccess_ = doneMsg;
+          exportModalError_.clear();
         } else {
           statusBanner_ = "Export finish error: " + finErr;
+          exportModalError_ = finErr;
         }
       }
     } else {
@@ -1802,12 +1815,34 @@ void EditorApp::drawExportModal() {
   if (openExportModal_) {
     ImGui::OpenPopup("Export Video (MP4)");
     openExportModal_ = false;
+    exportModalError_.clear();
+    exportModalSuccess_.clear();
+    if (!encoderProbe_.snapshot().probed && !encoderProbe_.isProbing()) {
+      encoderProbe_.startAsync();
+    }
   }
 
+  if (openExportModal_ || ImGui::IsPopupOpen("Export Video (MP4)")) {
+    ImGui::SetNextWindowSizeConstraints(ImVec2(500.0f, 0.0f), ImVec2(660.0f, 820.0f));
+  }
   if (ImGui::BeginPopupModal("Export Video (MP4)", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     const bool exporting = exportSession_.isActive();
+    const auto hwCaps = encoderProbe_.snapshot();
+    const bool probingHw = encoderProbe_.isProbing();
+
+    auto showWrappedTooltip = [](const char* text) {
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(360.0f);
+        ImGui::TextWrapped("%s", text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+      }
+    };
+
     ImGui::BeginDisabled(exporting);
 
+    ImGui::SeparatorText("Resolution & Frame Rate");
     if (ImGui::Button("720p60")) {
       exportCfg_.width = 1280; exportCfg_.height = 720; exportCfg_.fps = 60; exportCfg_.videoBitrateKbps = 12000;
     }
@@ -1816,18 +1851,141 @@ void EditorApp::drawExportModal() {
       exportCfg_.width = 1920; exportCfg_.height = 1080; exportCfg_.fps = 60; exportCfg_.videoBitrateKbps = 18000;
     }
     ImGui::SameLine();
+    if (ImGui::Button("1440p60")) {
+      exportCfg_.width = 2560; exportCfg_.height = 1440; exportCfg_.fps = 60; exportCfg_.videoBitrateKbps = 28000;
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Shorts 1080x1920")) {
       exportCfg_.width = 1080; exportCfg_.height = 1920; exportCfg_.fps = 60; exportCfg_.videoBitrateKbps = 16000;
     }
 
-    ImGui::InputInt("Width", &exportCfg_.width);
-    ImGui::InputInt("Height", &exportCfg_.height);
-    ImGui::InputInt("FPS", &exportCfg_.fps);
-    ImGui::InputInt("Bitrate (kbps)", &exportCfg_.videoBitrateKbps);
-    ImGui::Checkbox("HEVC / H.265 (libx265)", &exportCfg_.useHevc);
+    ImGui::PushItemWidth(260.0f);
+    if (ImGui::InputInt("Width", &exportCfg_.width)) {
+      exportCfg_.width = std::clamp(exportCfg_.width, 64, 7680);
+    }
+    if (ImGui::InputInt("Height", &exportCfg_.height)) {
+      exportCfg_.height = std::clamp(exportCfg_.height, 64, 7680);
+    }
+    if (ImGui::InputInt("Frame Rate (FPS)", &exportCfg_.fps)) {
+      exportCfg_.fps = std::clamp(exportCfg_.fps, 1, 120);
+    }
+
+    ImGui::SeparatorText("Hardware & Video Encoder");
+
+    static constexpr iota::export_video::VideoCodec kCodecs[] = {
+        iota::export_video::VideoCodec::H264,
+        iota::export_video::VideoCodec::H265,
+    };
+    if (ImGui::BeginCombo("Video Codec", iota::export_video::videoCodecDisplayName(exportCfg_.codec))) {
+      for (auto codec : kCodecs) {
+        const bool sel = (exportCfg_.codec == codec);
+        if (ImGui::Selectable(iota::export_video::videoCodecDisplayName(codec), sel)) {
+          exportCfg_.codec = codec;
+        }
+        if (sel) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    showWrappedTooltip(
+        "H.264 / AVC offers maximum compatibility with Discord, YouTube, and mobile players.\n"
+        "H.265 / HEVC produces smaller files at the same bitrate, especially fast with GPU hardware.");
+
+    auto backendOptionLabel = [&](iota::export_video::VideoEncoderBackend b) -> std::string {
+      std::string lbl = iota::export_video::videoEncoderBackendDisplayName(b);
+      if (probingHw && !hwCaps.probed) {
+        lbl += "  [Detecting...]";
+      } else if (hwCaps.probed) {
+        if (!hwCaps.ffmpegAvailable) {
+          lbl += "  [FFmpeg Missing]";
+        } else if (b == iota::export_video::VideoEncoderBackend::Auto) {
+          lbl += hwCaps.hasAnyHardware() ? "  [GPU Ready]" : "  [CPU Mode]";
+        } else if (hwCaps.supports(b, exportCfg_.codec)) {
+          lbl += "  [Available]";
+        } else {
+          lbl += "  [Not Detected]";
+        }
+      }
+      return lbl;
+    };
+
+    static constexpr iota::export_video::VideoEncoderBackend kBackends[] = {
+        iota::export_video::VideoEncoderBackend::Auto,
+        iota::export_video::VideoEncoderBackend::NvidiaNvenc,
+        iota::export_video::VideoEncoderBackend::AmdAmf,
+        iota::export_video::VideoEncoderBackend::IntelQsv,
+        iota::export_video::VideoEncoderBackend::CpuSoftware,
+    };
+    const std::string curBackendLabel = backendOptionLabel(exportCfg_.encoderBackend);
+    if (ImGui::BeginCombo("Hardware / Encoder", curBackendLabel.c_str())) {
+      for (auto b : kBackends) {
+        const bool sel = (exportCfg_.encoderBackend == b);
+        const std::string optLabel = backendOptionLabel(b);
+        if (ImGui::Selectable(optLabel.c_str(), sel)) {
+          exportCfg_.encoderBackend = b;
+        }
+        if (sel) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    showWrappedTooltip(
+        "Auto uses GPU hardware acceleration (NVIDIA NVENC, AMD AMF, or Intel Quick Sync) when detected, "
+        "which significantly speeds up MP4 rendering and reduces CPU usage.\n"
+        "Select CPU Software (x264 / x265) for maximum software encoding quality.");
+
+    static constexpr iota::export_video::EncoderPreset kPresets[] = {
+        iota::export_video::EncoderPreset::Fast,
+        iota::export_video::EncoderPreset::Balanced,
+        iota::export_video::EncoderPreset::Quality,
+    };
+    if (ImGui::BeginCombo("Quality / Speed Preset",
+                          iota::export_video::encoderPresetDisplayName(exportCfg_.encoderPreset))) {
+      for (auto preset : kPresets) {
+        const bool sel = (exportCfg_.encoderPreset == preset);
+        if (ImGui::Selectable(iota::export_video::encoderPresetDisplayName(preset), sel)) {
+          exportCfg_.encoderPreset = preset;
+        }
+        if (sel) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    showWrappedTooltip(
+        "Controls the trade-off between export speed and compression efficiency for both GPU and CPU encoders.");
+
+    if (ImGui::InputInt("Video Bitrate (kbps)", &exportCfg_.videoBitrateKbps)) {
+      exportCfg_.videoBitrateKbps = std::clamp(exportCfg_.videoBitrateKbps, 500, 100000);
+    }
+
+    ImGui::Checkbox("Auto-fallback to CPU if hardware encoder fails", &exportCfg_.fallbackToCpuOnError);
+    showWrappedTooltip(
+        "When enabled, if a selected GPU encoder is unavailable on the current GPU or driver, export "
+        "automatically falls back to CPU Software (libx264 / libx265) instead of aborting.");
     ImGui::Checkbox("FXAA Anti-Aliasing", &exportCfg_.fxaa);
-    ImGui::InputDouble("Start (sec)", &exportCfg_.startSec, 0.5, 5.0, "%.2f");
-    ImGui::InputDouble("End (sec, 0=full)", &exportCfg_.endSec, 0.5, 5.0, "%.2f");
+
+    if (probingHw) {
+      ImGui::TextDisabled("Hardware Status: Detecting GPU hardware encoders...");
+    } else if (!hwCaps.ffmpegAvailable) {
+      ImGui::TextColored(ImVec4(1.0f, 0.40f, 0.40f, 1.0f),
+                         "FFmpeg not found — install ffmpeg.exe to export MP4 videos.");
+    } else if (hwCaps.hasAnyHardware()) {
+      ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.55f, 1.0f), "%s", hwCaps.summaryText().c_str());
+    } else {
+      ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                         "No GPU encoder detected — CPU Software encoding will be used.");
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(probingHw);
+    if (ImGui::SmallButton("Re-detect")) {
+      encoderProbe_.startAsync();
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Time Range & Output");
+    if (ImGui::InputDouble("Start Time (sec)", &exportCfg_.startSec, 0.5, 5.0, "%.2f")) {
+      exportCfg_.startSec = std::max(0.0, exportCfg_.startSec);
+    }
+    if (ImGui::InputDouble("End Time (sec, 0 = full)", &exportCfg_.endSec, 0.5, 5.0, "%.2f")) {
+      exportCfg_.endSec = std::max(0.0, exportCfg_.endSec);
+    }
 
     char outBuf[1024]{};
     const std::string outUtf8 = iota::core::pathToUtf8(exportCfg_.outputPath);
@@ -1835,6 +1993,7 @@ void EditorApp::drawExportModal() {
     if (ImGui::InputText("Output MP4", outBuf, sizeof(outBuf))) {
       exportCfg_.outputPath = iota::core::pathFromUtf8(outBuf);
     }
+    ImGui::PopItemWidth();
     ImGui::SameLine();
     if (ImGui::Button("Browse...") && window_) {
       if (auto chosen = showSaveFileDialog(glfwGetWin32Window(window_),
@@ -1850,29 +2009,72 @@ void EditorApp::drawExportModal() {
 
     ImGui::Separator();
     if (exporting) {
-      const float prog = exportSession_.totalFrames() > 0
-                             ? static_cast<float>(exportSession_.encodedFrames()) /
-                                   static_cast<float>(exportSession_.totalFrames())
-                             : 0.0f;
-      ImGui::ProgressBar(prog, ImVec2(320.0f, 0.0f));
+      ImGui::Text("Active Encoder: %s (%s)",
+                  exportSession_.activeEncoderDisplayName().c_str(),
+                  exportSession_.activeFfmpegEncoder().c_str());
+      if (exportSession_.usedCpuFallback()) {
+        const std::string notice = exportSession_.fallbackNotice();
+        ImGui::PushTextWrapPos(480.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "%s", notice.c_str());
+        ImGui::PopTextWrapPos();
+      }
+
+      const int encoded = exportSession_.encodedFrames();
+      const int total = exportSession_.totalFrames();
+      const float prog = total > 0 ? static_cast<float>(encoded) / static_cast<float>(total) : 0.0f;
+      ImGui::ProgressBar(prog, ImVec2(360.0f, 0.0f));
       ImGui::Text("Encoding frame %d / %d (pre-roll %d / %d)...",
-                  exportSession_.encodedFrames(),
-                  exportSession_.totalFrames(),
+                  encoded,
+                  total,
                   exportSession_.currentPreRollIndex(),
                   exportCfg_.preRollFrames);
+
+      const double elapsedSec = std::max(0.0, glfwGetTime() - exportStartWallSec_);
+      if (encoded > 0 && elapsedSec > 0.05) {
+        const double fpsSpeed = static_cast<double>(encoded) / elapsedSec;
+        const double rtMult = fpsSpeed / static_cast<double>(std::max(1, exportCfg_.fps));
+        const int etaTotalSec = static_cast<int>(std::llround(
+            static_cast<double>(std::max(0, total - encoded)) / std::max(0.05, fpsSpeed)));
+        ImGui::TextDisabled("Speed: %.1f fps (%.2fx realtime)  |  ETA %d:%02d",
+                            fpsSpeed,
+                            rtMult,
+                            etaTotalSec / 60,
+                            etaTotalSec % 60);
+      } else {
+        ImGui::TextDisabled("Warming up pre-roll & encoder...");
+      }
+
       if (ImGui::Button("Cancel Export")) {
         exportSession_.cancel();
         statusBanner_ = "Export cancelled";
       }
     } else {
+      if (!exportModalError_.empty()) {
+        ImGui::PushTextWrapPos(480.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.42f, 1.0f), "%s", exportModalError_.c_str());
+        ImGui::PopTextWrapPos();
+      } else if (!exportModalSuccess_.empty()) {
+        ImGui::PushTextWrapPos(480.0f);
+        ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.55f, 1.0f), "%s", exportModalSuccess_.c_str());
+        ImGui::PopTextWrapPos();
+      }
+
       if (ImGui::Button("Start Export")) {
         exportCfg_.visOffsetMs = visOffsetMs_;
+        exportStartWallSec_ = glfwGetTime();
+        exportModalError_.clear();
+        exportModalSuccess_.clear();
         std::string err;
         renderer_.resetSimulation();
-        if (exportSession_.begin(exportCfg_, audio_, &err)) {
-          statusBanner_ = "Exporting MP4...";
+        if (exportSession_.begin(exportCfg_, audio_, &err, hwCaps.probed ? &hwCaps : nullptr)) {
+          std::string msg = "Exporting MP4 (" + exportSession_.activeEncoderDisplayName() + ")";
+          if (exportSession_.usedCpuFallback() && !exportSession_.fallbackNotice().empty()) {
+            msg += " — " + exportSession_.fallbackNotice();
+          }
+          statusBanner_ = std::move(msg);
         } else {
           statusBanner_ = "Export failed to start: " + err;
+          exportModalError_ = std::move(err);
         }
       }
       ImGui::SameLine();

@@ -60,7 +60,7 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
 - **Projects, Presets, Bundled Assets & Video Export**
   - Load and save native `.iota` project archives alongside `.viz` presets and `.json` scenes, with embedded `local:<asset>` image resources, `ProjectMetadata`, and procedural `internalres:*` textures.
   - Cross-platform wide Unicode path handling (`utf8_path`) and UTF-8 sanitization for international filenames, legacy audio metadata tags, UTF-8 BOMs, ZIP archive entry names, and JSON serialization.
-  - Audio decoding via `ffmpeg`/`ffprobe` (with `miniaudio` fallback) and deterministic offline MP4 encoding (H.264 / H.265 + AAC) piped to `ffmpeg`.
+  - Audio decoding via `ffmpeg`/`ffprobe` (with `miniaudio` fallback) and deterministic offline MP4 video export (H.264 / H.265 + AAC) piped to `ffmpeg` with live GPU hardware encoder detection (`NVIDIA NVENC`, `AMD AMF`, `Intel Quick Sync`), `Fast` / `Balanced` / `Quality` presets, and automatic CPU (`libx264` / `libx265`) fallback.
 
 ## Architecture & Directory Layout
 

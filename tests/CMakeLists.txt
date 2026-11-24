@@ -8,6 +8,7 @@ add_executable(iota_tests
   test_update_checker.cpp
   test_property_docs.cpp
   test_engine_gl.cpp
+  test_video_export.cpp
 )
 
 target_link_libraries(iota_tests
@@ -20,6 +21,7 @@ target_link_libraries(iota_tests
     iota_rhi
     iota_rhi_gl45
     iota_engine
+    iota_export
     glfw
     doctest::doctest
 )
