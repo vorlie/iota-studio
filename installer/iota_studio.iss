@@ -2,15 +2,21 @@
 ; Compiles build/installer/IotaStudio-Setup-<AppVersion>.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.6.0"
+  #define AppVersion "1.7.0"
 #endif
 
 #ifndef IncludeMcp
   #define IncludeMcp 0
 #endif
 
+#if Int(IncludeMcp) != 0
+  #define McpEnabled 1
+#else
+  #define McpEnabled 0
+#endif
+
 #ifndef BuildDir
-  #if IncludeMcp
+  #if McpEnabled
     #define BuildDir "..\build\release-mcp"
   #else
     #define BuildDir "..\build\release"
@@ -29,7 +35,7 @@
 AppId={{8F6D3C91-4B27-4E9E-B84A-72F0D5A81C42}
 AppName={#AppName}
 AppVersion={#AppVersion}
-#if IncludeMcp
+#if McpEnabled
 AppVerName={#AppName} {#AppVersion} (MCP)
 #else
 AppVerName={#AppName} {#AppVersion}
@@ -52,7 +58,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 ArchiveExtraction=enhanced/nopassword
 OutputDir=..\build\installer
-#if IncludeMcp
+#if McpEnabled
 OutputBaseFilename=IotaStudio-MCP-Setup-{#AppVersion}
 #else
 OutputBaseFilename=IotaStudio-Setup-{#AppVersion}
@@ -66,7 +72,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#BuildDir}\apps\studio\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-#if IncludeMcp
+#if McpEnabled
 Source: "{#BuildDir}\apps\mcp\{#McpExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\MCP.md"; DestDir: "{app}"; DestName: "MCP.md"; Flags: ignoreversion
 #endif
@@ -75,7 +81,7 @@ Source: "{tmp}\{#FfmpegArchiveName}"; DestDir: "{tmp}\ffmpeg_extract"; Flags: ex
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-#if IncludeMcp
+#if McpEnabled
 Name: "{group}\MCP Setup Guide"; Filename: "{app}\MCP.md"
 #endif
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
@@ -88,7 +94,7 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 Type: files; Name: "{app}\ffmpeg.exe"
 Type: files; Name: "{app}\ffprobe.exe"
 
-#if !IncludeMcp
+#if McpEnabled == 0
 [InstallDelete]
 Type: files; Name: "{app}\{#McpExeName}"
 Type: files; Name: "{app}\MCP.md"
@@ -464,7 +470,7 @@ begin
   else
     DepMemo := DepMemo + Space + 'Action: Skip FFmpeg & FFprobe installation';
 
-#if IncludeMcp
+#if McpEnabled
   DepMemo := DepMemo + NewLine + NewLine +
              'MCP Support (Enabled):' + NewLine +
              Space + 'Installs MCP-enabled ' + '{#AppExeName}' + ', ' + '{#McpExeName}' + ', and MCP.md' + NewLine +
