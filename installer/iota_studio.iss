@@ -72,6 +72,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#BuildDir}\apps\studio\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\apps\studio\discord_partner_sdk.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 #if McpEnabled
 Source: "{#BuildDir}\apps\mcp\{#McpExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\MCP.md"; DestDir: "{app}"; DestName: "MCP.md"; Flags: ignoreversion

@@ -9,6 +9,7 @@ add_executable(iota_tests
   test_property_docs.cpp
   test_engine_gl.cpp
   test_video_export.cpp
+  test_discord_presence.cpp
 )
 
 target_link_libraries(iota_tests
@@ -22,6 +23,7 @@ target_link_libraries(iota_tests
     iota_rhi_gl45
     iota_engine
     iota_export
+    iota_discord
     glfw
     doctest::doctest
 )
@@ -33,6 +35,15 @@ if(IOTA_BUILD_MCP)
     IOTA_MCP_EXE_PATH="$<TARGET_FILE:iota_mcp_app>"
   )
   target_link_libraries(iota_tests PRIVATE iota_mcp)
+endif()
+
+if(IOTA_DISCORD_SDK_FOUND AND EXISTS "${IOTA_DISCORD_SDK_RUNTIME_LIB}")
+  add_custom_command(TARGET iota_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${IOTA_DISCORD_SDK_RUNTIME_LIB}"
+      "$<TARGET_FILE_DIR:iota_tests>"
+    COMMENT "Copying Discord Social SDK runtime library for tests"
+  )
 endif()
 
 iota_configure_target(iota_tests)

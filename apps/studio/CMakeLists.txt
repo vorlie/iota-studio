@@ -41,6 +41,7 @@ target_link_libraries(iota_studio
     iota_rhi_gl45
     iota_engine
     iota_export
+    iota_discord
     glfw
     imgui_docking
     imgui_color_text_edit_lib
@@ -51,6 +52,21 @@ target_link_libraries(iota_studio
 if(IOTA_BUILD_MCP)
   target_compile_definitions(iota_studio PRIVATE IOTA_ENABLE_MCP=1)
   target_link_libraries(iota_studio PRIVATE iota_mcp)
+endif()
+
+if(IOTA_DISCORD_SDK_FOUND AND EXISTS "${IOTA_DISCORD_SDK_RUNTIME_LIB}")
+  add_custom_command(TARGET iota_studio POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${IOTA_DISCORD_SDK_RUNTIME_LIB}"
+      "$<TARGET_FILE_DIR:iota_studio>"
+    COMMENT "Copying Discord Social SDK runtime library"
+  )
+  if(UNIX AND NOT APPLE)
+    set_target_properties(iota_studio PROPERTIES
+      BUILD_RPATH "$ORIGIN"
+      INSTALL_RPATH "$ORIGIN"
+    )
+  endif()
 endif()
 
 iota_configure_target(iota_studio)

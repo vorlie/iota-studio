@@ -248,6 +248,9 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   undoStack_.clear(project_);
   if (!isSmokeTest_) {
     projectLibrary_.load(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+    lastUserActivityWallSec_ = glfwGetTime();
+    discordPresence_.setExpanded(projectLibrary_.discordExpandedPresence());
+    discordPresence_.setEnabled(projectLibrary_.discordRichPresenceEnabled());
     updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
                                    iota::core::UpdateChecker::kDefaultRepoOwner,
                                    iota::core::UpdateChecker::kDefaultRepoName,
@@ -262,6 +265,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
 }
 
 void EditorApp::shutdown() {
+  discordPresence_.shutdown();
 #ifdef IOTA_ENABLE_MCP
   mcpBridgeHost_.stop();
 #endif
@@ -354,6 +358,7 @@ int EditorApp::run() {
 #ifdef IOTA_ENABLE_MCP
       pollMcpLiveBridge();
 #endif
+      updateDiscordPresence(lastWallTimeSec_, true);
       continue;
     }
 
@@ -451,6 +456,25 @@ int EditorApp::run() {
     drawExportModal();
     drawUpdateModal();
     drawVizImportNoticeModal();
+
+    {
+      const ImGuiIO& io = ImGui::GetIO();
+      const bool focused = (glfwGetWindowAttrib(window_, GLFW_FOCUSED) != 0);
+      bool hasMouseBtn = false;
+      for (int i = 0; i < ImGuiMouseButton_COUNT; ++i) {
+        if (io.MouseDown[i]) {
+          hasMouseBtn = true;
+          break;
+        }
+      }
+      const bool mouseMoved = (std::abs(io.MouseDelta.x) > 1.0f || std::abs(io.MouseDelta.y) > 1.0f);
+      const bool wheelMoved = (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f);
+      const bool keyOrText = (io.InputQueueCharacters.Size > 0 || io.KeyCtrl || io.KeyAlt || io.KeyShift);
+      if (focused && (hasMouseBtn || mouseMoved || wheelMoved || keyOrText || ImGui::IsAnyItemActive())) {
+        lastUserActivityWallSec_ = now;
+      }
+    }
+    updateDiscordPresence(now, false);
 
     ImGui::Render();
 
@@ -877,6 +901,55 @@ void EditorApp::drawMenuBar() {
     ImGui::MenuItem("Show Advanced Hidden Properties", nullptr, &showHiddenProps_);
     ImGui::MenuItem("Show Raw Property Keys", nullptr, &showRawPropertyKeys_);
     ImGui::MenuItem("Precise Numeric Inputs", nullptr, &preciseNumericInputs_);
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Discord Rich Presence")) {
+      const bool sdkAvailable = discordPresence_.isSdkAvailable();
+      bool rpcEnabled = projectLibrary_.discordRichPresenceEnabled();
+      if (!sdkAvailable) {
+        ImGui::BeginDisabled();
+      }
+      if (ImGui::MenuItem("Enable Discord Rich Presence", nullptr, &rpcEnabled)) {
+        projectLibrary_.setDiscordRichPresenceEnabled(rpcEnabled);
+        discordPresence_.setEnabled(rpcEnabled);
+        persistDiscordSettings();
+      }
+      if (!sdkAvailable) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip("Discord Social SDK runtime DLL is missing in this build.");
+        }
+      }
+
+      const bool canExpand = sdkAvailable && rpcEnabled;
+      bool expanded = projectLibrary_.discordExpandedPresence();
+      if (!canExpand) {
+        ImGui::BeginDisabled();
+      }
+      if (ImGui::MenuItem("Expanded Presence", nullptr, &expanded)) {
+        projectLibrary_.setDiscordExpandedPresence(expanded);
+        discordPresence_.setExpanded(expanded);
+        persistDiscordSettings();
+      }
+      if (!canExpand) {
+        ImGui::EndDisabled();
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(
+            "Shows active composition name and export progress.\n"
+            "Never shares file paths or private project metadata.");
+      }
+
+      ImGui::Separator();
+      ImGui::TextDisabled("Status: %s", discordPresence_.statusText().c_str());
+      if (rpcEnabled && sdkAvailable) {
+        const auto desired = discordPresence_.currentDesiredPayload();
+        ImGui::TextDisabled("%s", desired.details.c_str());
+        if (desired.state.has_value()) {
+          ImGui::TextDisabled("%s", desired.state->c_str());
+        }
+      }
+      ImGui::EndMenu();
+    }
     ImGui::EndMenu();
   }
 
@@ -3315,5 +3388,46 @@ void EditorApp::pollMcpLiveBridge() {
 }
 
 #endif  // IOTA_ENABLE_MCP
+
+std::string EditorApp::activeCompositionDisplayName() const {
+  if (project_.compositions.empty()) {
+    return {};
+  }
+  int idx = selectedCompIdx_;
+  if (idx < 0 || idx >= static_cast<int>(project_.compositions.size())) {
+    idx = 0;
+  }
+  return project_.compositions[static_cast<size_t>(idx)].displayName;
+}
+
+void EditorApp::persistDiscordSettings() {
+  if (!isSmokeTest_) {
+    projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+  }
+}
+
+void EditorApp::updateDiscordPresence(double nowWallSec, bool isMinimized) {
+  if (isSmokeTest_) {
+    return;
+  }
+  constexpr double kIdleTimeoutSec = 60.0;
+  iota::discord::PresenceSnapshot snapshot;
+  snapshot.compositionName = activeCompositionDisplayName();
+
+  if (exportSession_.isActive()) {
+    snapshot.state = iota::discord::PresenceActivityState::Exporting;
+    snapshot.exportEncodedFrames = exportSession_.encodedFrames();
+    snapshot.exportTotalFrames = exportSession_.totalFrames();
+  } else if (audio_.isPlaying()) {
+    snapshot.state = iota::discord::PresenceActivityState::Previewing;
+  } else if (isMinimized || (nowWallSec - lastUserActivityWallSec_ >= kIdleTimeoutSec)) {
+    snapshot.state = iota::discord::PresenceActivityState::Idle;
+  } else {
+    snapshot.state = iota::discord::PresenceActivityState::Editing;
+  }
+
+  discordPresence_.updateState(snapshot);
+  discordPresence_.tick(nowWallSec);
+}
 
 }  // namespace iota::studio

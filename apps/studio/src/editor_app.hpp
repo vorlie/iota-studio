@@ -9,6 +9,7 @@
 
 #include "iota/audio/audio_engine.hpp"
 #include "iota/core/update_checker.hpp"
+#include "iota/discord/discord_presence.hpp"
 #include "iota/engine/scene_renderer.hpp"
 #include "iota/export/video_exporter.hpp"
 #include "iota/model/command_stack.hpp"
@@ -91,6 +92,9 @@ class EditorApp {
   void actionSavePreset(bool asViz);
   void actionOpenAudio();
   void actionLoadBuiltinTestTone(float freqHz);
+  void updateDiscordPresence(double nowWallSec, bool isMinimized);
+  void persistDiscordSettings();
+  [[nodiscard]] std::string activeCompositionDisplayName() const;
 
 #ifdef IOTA_ENABLE_MCP
   friend class EditorLiveStudioTarget;
@@ -174,6 +178,8 @@ class EditorApp {
   std::filesystem::path mcpOriginalProjectPath_;
 #endif
   iota::core::UpdateChecker updateChecker_;
+  iota::discord::DiscordPresence discordPresence_;
+  double lastUserActivityWallSec_ = 0.0;
   bool openUpdateModal_ = false;
   bool updateBannerNotified_ = false;
   bool openVizImportNoticeModal_ = false;

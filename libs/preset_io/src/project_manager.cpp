@@ -190,6 +190,8 @@ std::filesystem::path ProjectLibrary::defaultRegistryPath() {
 bool ProjectLibrary::load(const std::filesystem::path& path) {
   entries_.clear();
   suppressVizImportNotice_ = false;
+  discordRichPresenceEnabled_ = false;
+  discordExpandedPresence_ = false;
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in.is_open()) {
     return false;
@@ -223,6 +225,12 @@ bool ProjectLibrary::load(const std::filesystem::path& path) {
   }
   if (auto supIt = root.find("suppressVizImportNotice"); supIt != root.end() && supIt->is_boolean()) {
     suppressVizImportNotice_ = supIt->get<bool>();
+  }
+  if (auto drpIt = root.find("discordRichPresenceEnabled"); drpIt != root.end() && drpIt->is_boolean()) {
+    discordRichPresenceEnabled_ = drpIt->get<bool>();
+  }
+  if (auto expIt = root.find("discordExpandedPresence"); expIt != root.end() && expIt->is_boolean()) {
+    discordExpandedPresence_ = expIt->get<bool>();
   }
   auto recIt = root.find("recent");
   if (recIt == root.end() || !recIt->is_array()) {
@@ -265,6 +273,8 @@ bool ProjectLibrary::save(const std::filesystem::path& path) const {
   Json root = {
       {"version", 1},
       {"suppressVizImportNotice", suppressVizImportNotice_},
+      {"discordRichPresenceEnabled", discordRichPresenceEnabled_},
+      {"discordExpandedPresence", discordExpandedPresence_},
       {"recent", std::move(arr)},
   };
   std::ofstream out(path, std::ios::binary | std::ios::trunc);

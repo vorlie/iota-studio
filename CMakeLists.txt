@@ -12,6 +12,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(IOTA_BUILD_TESTS "Build automated doctest suite" ON)
 option(IOTA_BUILD_MCP "Build optional MCP server and Studio live bridge" OFF)
+option(IOTA_ENABLE_DISCORD_RPC "Enable optional Discord Rich Presence via Discord Social SDK" ON)
+set(IOTA_DISCORD_SDK_DIR "" CACHE PATH "Path to extracted Discord Social SDK directory")
 
 include(FetchContent)
 
@@ -177,6 +179,90 @@ function(iota_configure_target target_name)
   endif()
 endfunction()
 
+# --- Optional Discord Social SDK detection (non-fatal if absent) ---
+set(IOTA_DISCORD_SDK_FOUND FALSE)
+set(IOTA_DISCORD_SDK_RUNTIME_LIB "")
+if(IOTA_ENABLE_DISCORD_RPC)
+  set(_discord_candidates "")
+  if(IOTA_DISCORD_SDK_DIR)
+    list(APPEND _discord_candidates "${IOTA_DISCORD_SDK_DIR}")
+  endif()
+  list(APPEND _discord_candidates
+    "${CMAKE_SOURCE_DIR}/local/discord_social_sdk"
+    "${CMAKE_SOURCE_DIR}/third_party/discord_social_sdk"
+  )
+
+  set(_discord_sdk_root "")
+  foreach(_cand IN LISTS _discord_candidates)
+    if(EXISTS "${_cand}/include/discordpp.h")
+      set(_discord_sdk_root "${_cand}")
+      break()
+    endif()
+  endforeach()
+
+  if(_discord_sdk_root)
+    string(TOLOWER "${CMAKE_BUILD_TYPE}" _iota_build_type_lower)
+    if(_iota_build_type_lower STREQUAL "debug")
+      set(_discord_cfg "debug")
+    else()
+      set(_discord_cfg "release")
+    endif()
+
+    if(WIN32)
+      set(_discord_imp "${_discord_sdk_root}/lib/${_discord_cfg}/discord_partner_sdk.lib")
+      set(_discord_dll "${_discord_sdk_root}/bin/${_discord_cfg}/discord_partner_sdk.dll")
+      if(NOT EXISTS "${_discord_imp}" OR NOT EXISTS "${_discord_dll}")
+        set(_discord_imp "${_discord_sdk_root}/lib/release/discord_partner_sdk.lib")
+        set(_discord_dll "${_discord_sdk_root}/bin/release/discord_partner_sdk.dll")
+      endif()
+      if(EXISTS "${_discord_imp}" AND EXISTS "${_discord_dll}")
+        add_library(discord_social_sdk SHARED IMPORTED GLOBAL)
+        set_target_properties(discord_social_sdk PROPERTIES
+          IMPORTED_IMPLIB "${_discord_imp}"
+          IMPORTED_LOCATION "${_discord_dll}"
+          INTERFACE_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
+        )
+        set(IOTA_DISCORD_SDK_FOUND TRUE)
+        set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_dll}")
+      endif()
+    elseif(APPLE)
+      set(_discord_dylib "${_discord_sdk_root}/lib/${_discord_cfg}/libdiscord_partner_sdk.dylib")
+      if(NOT EXISTS "${_discord_dylib}")
+        set(_discord_dylib "${_discord_sdk_root}/lib/release/libdiscord_partner_sdk.dylib")
+      endif()
+      if(EXISTS "${_discord_dylib}")
+        add_library(discord_social_sdk SHARED IMPORTED GLOBAL)
+        set_target_properties(discord_social_sdk PROPERTIES
+          IMPORTED_LOCATION "${_discord_dylib}"
+          INTERFACE_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
+        )
+        set(IOTA_DISCORD_SDK_FOUND TRUE)
+        set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_dylib}")
+      endif()
+    elseif(UNIX)
+      set(_discord_so "${_discord_sdk_root}/lib/${_discord_cfg}/libdiscord_partner_sdk.so")
+      if(NOT EXISTS "${_discord_so}")
+        set(_discord_so "${_discord_sdk_root}/lib/release/libdiscord_partner_sdk.so")
+      endif()
+      if(EXISTS "${_discord_so}")
+        add_library(discord_social_sdk SHARED IMPORTED GLOBAL)
+        set_target_properties(discord_social_sdk PROPERTIES
+          IMPORTED_LOCATION "${_discord_so}"
+          INTERFACE_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
+        )
+        set(IOTA_DISCORD_SDK_FOUND TRUE)
+        set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_so}")
+      endif()
+    endif()
+  endif()
+
+  if(IOTA_DISCORD_SDK_FOUND)
+    message(STATUS "Discord Social SDK enabled: ${_discord_sdk_root} (${IOTA_DISCORD_SDK_RUNTIME_LIB})")
+  else()
+    message(STATUS "Discord Social SDK not found; building iota_discord in stub mode")
+  endif()
+endif()
+
 # --- Project modules ---
 add_subdirectory(libs/core)
 add_subdirectory(libs/model)
@@ -187,6 +273,7 @@ add_subdirectory(libs/rhi)
 add_subdirectory(libs/rhi_gl45)
 add_subdirectory(libs/engine)
 add_subdirectory(libs/export)
+add_subdirectory(libs/discord)
 if(IOTA_BUILD_MCP)
   add_subdirectory(libs/mcp)
   add_subdirectory(apps/mcp)
