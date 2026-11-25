@@ -15,6 +15,7 @@ enum class BrowserItemKind {
   None = 0,
   LocalImage,
   InternalTexture,
+  BuiltinShader,
   CompositionRef,
   AudioTrack,
 };

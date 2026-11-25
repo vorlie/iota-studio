@@ -2567,10 +2567,25 @@ struct SceneRenderer::Impl {
                                  int compIdx,
                                  int elemIdx,
                                  const iota::model::Element& el,
+                                 iota::rhi::RenderTargetHandle currentTargetRt,
                                  const iota::dsp::MVarEvalContext& mctx,
                                  RenderFrameStats* stats) {
     const auto& p = el.props;
-    const auto target = resolveTextureUri(project, getStringCI(p, "TargetImage", "composition:1"));
+    const std::string targetUri = getStringCI(p, "TargetImage", "composition:1");
+    const auto compRef = parseCompositionRef(targetUri);
+    const bool useCanvasBelow =
+        (compRef && (*compRef <= 0 || *compRef >= static_cast<int>(compTargets.size()) || *compRef == compIdx));
+
+    ResolvedTexture target{};
+    if (useCanvasBelow) {
+      target.tex = captureCanvasSnapshot(currentTargetRt, stats);
+      target.texW = width;
+      target.texH = height;
+      target.isFbo = true;
+      device->bindRenderTarget(currentTargetRt, width, height);
+    } else {
+      target = resolveTextureUri(project, targetUri);
+    }
     const LayoutSpec layout = extractLayoutSpec(project, compIdx, elemIdx, el, mvarEval, mctx);
     const iota::core::RectF rect = computeElementRect(layout, width, height);
     const glm::mat4 projView = makeRotatedOrthoProjView(
@@ -2995,7 +3010,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
           impl_->renderMirrorEffect(project, compIdx, elemIdx, el, mctx, outStats);
           break;
         case iota::model::ElementType::CustomShader:
-          impl_->renderCustomShaderElement(project, compIdx, elemIdx, el, mctx, outStats);
+          impl_->renderCustomShaderElement(project, compIdx, elemIdx, el, rt, mctx, outStats);
           break;
         default:
           break;

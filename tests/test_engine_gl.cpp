@@ -3,6 +3,7 @@
 #include "iota/audio/audio_decoder.hpp"
 #include "iota/audio/audio_engine.hpp"
 #include "iota/core/utf8_path.hpp"
+#include "iota/engine/builtin_shader_library.hpp"
 #include "iota/engine/font_atlas.hpp"
 #include "iota/engine/layout.hpp"
 #include "iota/engine/scene_renderer.hpp"
@@ -1762,6 +1763,51 @@ TEST_CASE("GL45 HDR additive alpha clamp, CustomShader error persistence, and GL
     REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.04, 0.04, true, 0.0f, false, 60.0f},
                                  kW, kH, {}, &st));
     CHECK(st.lastError.find("local:rain.glsl") != std::string::npos);
+  }
+
+  SUBCASE("BuiltinShaderLibrary presets compile cleanly on OpenGL 4.5 and support canvas-below capture") {
+    const auto& presets = iota::engine::listBuiltinShaderPresets();
+    CHECK(presets.size() == 15);
+
+    iota::model::Project dedupProj;
+    const auto* grain = iota::engine::findBuiltinShaderPreset("film_grain");
+    REQUIRE(grain != nullptr);
+    CHECK(iota::engine::instantiateBuiltinShaderAsset(dedupProj, *grain) == "FilmGrain.glsl");
+    CHECK(iota::engine::instantiateBuiltinShaderAsset(dedupProj, *grain) == "FilmGrain_2.glsl");
+    CHECK(dedupProj.localAssets.size() == 2);
+
+    for (const auto& preset : presets) {
+      INFO("Testing built-in shader preset: " << preset.id);
+      iota::model::Project proj;
+      proj.compositions.push_back(iota::model::createDefaultComposition(0));
+
+      // Render a bright white layer underneath so Post-FX shaders targeting composition:0 have input.
+      auto bg = iota::model::createDefaultElement(iota::model::ElementType::Image);
+      bg.props.setString("customImage", "internalres:white", "img", "1_image");
+      bg.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+      proj.compositions[0].elements.push_back(std::move(bg));
+
+      const std::string assetName = iota::engine::instantiateBuiltinShaderAsset(proj, preset);
+      auto cs = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+      cs.displayName = std::string(preset.displayName);
+      REQUIRE(iota::model::assignAssetToElement(cs, "local:" + assetName, false));
+      cs.props.getOrAdd("TargetImage").value = std::string(preset.defaultTarget);
+      cs.props.getOrAdd("blendMode").value = std::string(preset.defaultBlendMode);
+      cs.props.setVec2("scale", {1.0f, 1.0f}, 0.0f, 2.0f, "0_general");
+      proj.compositions[0].elements.push_back(std::move(cs));
+
+      renderer.resetSimulation();
+      iota::engine::RenderFrameStats st;
+      REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, 0.25, 0.25, true, 0.0f, false, 60.0f},
+                                   kW, kH, {}, &st));
+      CHECK_MESSAGE(st.lastError.empty(), "GLSL compile/render error in " << preset.id << ": " << st.lastError);
+      CHECK(st.drawCalls >= 2);
+      if (preset.id == "film_grain") {
+        const auto px = readRgba();
+        const size_t c = (static_cast<size_t>(kH / 2) * kW + static_cast<size_t>(kW / 2)) * 4u;
+        CHECK(static_cast<int>(px[c + 0]) > 200);
+      }
+    }
   }
 
   renderer.shutdown();

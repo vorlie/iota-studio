@@ -2,6 +2,7 @@
 
 #include "iota/core/procedural_assets.hpp"
 #include "iota/core/utf8_path.hpp"
+#include "iota/engine/builtin_shader_library.hpp"
 
 #include "imgui.h"
 
@@ -163,6 +164,50 @@ void addCustomShaderLayerWithAsset(iota::model::Project& project,
   actions.editLabel = "Add CustomShader from Asset";
 }
 
+void copyBuiltinShaderAndEdit(iota::model::Project& project,
+                              AssetBrowserState& state,
+                              const iota::engine::BuiltinShaderPreset& preset,
+                              AssetBrowserActions& actions) {
+  const std::string fileName = iota::engine::instantiateBuiltinShaderAsset(project, preset);
+  state.selectedKind = BrowserItemKind::LocalImage;
+  state.selectedLabel = fileName;
+  state.selectedUri = "local:" + fileName;
+  actions.invalidateLocalAssets = true;
+  actions.requestEditShader = true;
+  actions.editShaderAssetName = fileName;
+  actions.modified = true;
+  actions.undoSnapshotNeeded = true;
+  actions.editLabel = "Add Built-in Shader " + fileName;
+}
+
+void addCustomShaderLayerFromBuiltin(iota::model::Project& project,
+                                     int selectedCompIdx,
+                                     const iota::engine::BuiltinShaderPreset& preset,
+                                     AssetBrowserActions& actions) {
+  if (project.compositions.empty()) return;
+  const std::string fileName = iota::engine::instantiateBuiltinShaderAsset(project, preset);
+  const int compIdx = std::clamp(selectedCompIdx, 0, static_cast<int>(project.compositions.size()) - 1);
+  auto el = iota::model::createDefaultElement(iota::model::ElementType::CustomShader);
+  el.displayName = std::string(preset.displayName);
+  iota::model::assignAssetToElement(el, "local:" + fileName, false);
+  if (!preset.defaultTarget.empty()) {
+    el.props.getOrAdd("TargetImage").value = std::string(preset.defaultTarget);
+  }
+  if (!preset.defaultBlendMode.empty()) {
+    el.props.getOrAdd("blendMode").value = std::string(preset.defaultBlendMode);
+  }
+  auto& elems = project.compositions[static_cast<size_t>(compIdx)].elements;
+  elems.push_back(std::move(el));
+  actions.selectCompIdx = compIdx;
+  actions.selectElemIdx = static_cast<int>(elems.size()) - 1;
+  actions.invalidateLocalAssets = true;
+  actions.requestEditShader = true;
+  actions.editShaderAssetName = fileName;
+  actions.modified = true;
+  actions.undoSnapshotNeeded = true;
+  actions.editLabel = "Add " + std::string(preset.displayName) + " Shader Layer";
+}
+
 void applyAssetToSelectedElement(iota::model::Project& project,
                                  int selectedCompIdx,
                                  int selectedElemIdx,
@@ -242,6 +287,10 @@ void renderAssetBrowserPanel(iota::model::Project& project,
 
   // --- After Effects-style Top Preview Header ---
   if (state.selectedKind != BrowserItemKind::None) {
+    const auto* selectedBuiltinShader =
+        (state.selectedKind == BrowserItemKind::BuiltinShader)
+            ? iota::engine::findBuiltinShaderPreset(state.selectedUri)
+            : nullptr;
     const bool selectedIsShader =
         (state.selectedKind == BrowserItemKind::LocalImage && isShaderAssetName(state.selectedLabel));
     const bool isVisual = (state.selectedKind == BrowserItemKind::LocalImage && !selectedIsShader) ||
@@ -250,15 +299,32 @@ void renderAssetBrowserPanel(iota::model::Project& project,
     const bool validPreviewUri =
         (state.selectedKind != BrowserItemKind::CompositionRef || state.selectedUri != "composition:0");
 
-    drawFittedThumbnailBox(device, renderer, project, state.selectedUri, 56.0f,
-                           isVisual && validPreviewUri,
-                           selectedIsShader ? "GLSL" : "AUD",
-                           selectedIsShader ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 205, 250, 255));
+    const char* badgeTag = "AUD";
+    ImU32 badgeCol = IM_COL32(95, 205, 250, 255);
+    if (selectedIsShader) {
+      badgeTag = "GLSL";
+      badgeCol = IM_COL32(250, 195, 90, 255);
+    } else if (selectedBuiltinShader != nullptr) {
+      badgeTag = "GLSL";
+      badgeCol = (selectedBuiltinShader->kind == iota::engine::BuiltinShaderKind::PostFx)
+                     ? IM_COL32(250, 195, 90, 255)
+                     : IM_COL32(95, 225, 195, 255);
+    }
+
+    drawFittedThumbnailBox(device, renderer, project,
+                           selectedBuiltinShader ? std::string_view{} : std::string_view(state.selectedUri),
+                           56.0f, isVisual && validPreviewUri, badgeTag, badgeCol);
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::TextUnformatted(state.selectedLabel.c_str());
 
-    if (selectedIsShader) {
+    if (selectedBuiltinShader != nullptr) {
+      const char* kindStr =
+          (selectedBuiltinShader->kind == iota::engine::BuiltinShaderKind::PostFx) ? "Post-FX" : "Generator";
+      const std::string catName(iota::engine::builtinShaderCategoryName(selectedBuiltinShader->category));
+      ImGui::TextDisabled("%s  %s  (%s)", catName.c_str(), kindStr,
+                          std::string(selectedBuiltinShader->defaultFileName).c_str());
+    } else if (selectedIsShader) {
       const auto assetIt = project.localAssets.find(state.selectedLabel);
       const size_t bytes = (assetIt != project.localAssets.end()) ? assetIt->second.size() : 0;
       const int refs = iota::model::countAssetReferences(project, state.selectedUri);
@@ -281,7 +347,15 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       ImGui::TextDisabled("%s", audioName.c_str());
     }
 
-    if (selectedIsShader) {
+    if (selectedBuiltinShader != nullptr) {
+      if (ImGui::SmallButton("Add & Edit")) {
+        copyBuiltinShaderAndEdit(project, state, *selectedBuiltinShader, actions);
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("+ Layer")) {
+        addCustomShaderLayerFromBuiltin(project, selectedCompIdx, *selectedBuiltinShader, actions);
+      }
+    } else if (selectedIsShader) {
       if (ImGui::SmallButton("Edit")) {
         actions.requestEditShader = true;
         actions.editShaderAssetName = state.selectedLabel;
@@ -565,6 +639,20 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       }
     }
     if (showBuiltin) {
+      for (const auto& preset : iota::engine::listBuiltinShaderPresets()) {
+        const std::string catName(iota::engine::builtinShaderCategoryName(preset.category));
+        if (!matchesSearch(preset.displayName, state.searchFilter) &&
+            !matchesSearch(preset.defaultFileName, state.searchFilter) &&
+            !matchesSearch(catName, state.searchFilter) &&
+            !matchesSearch(preset.description, state.searchFilter)) {
+          continue;
+        }
+        gridItems.push_back({BrowserItemKind::BuiltinShader,
+                             std::string(preset.displayName),
+                             std::string(preset.id),
+                             false,
+                             false});
+      }
       for (std::string_view uri : iota::core::listInternalResources()) {
         std::string name(uri.substr(12));
         if (!matchesSearch(name, state.searchFilter)) continue;
@@ -583,10 +671,25 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       ImGui::BeginGroup();
       const bool selected = (state.selectedKind == gi.kind && state.selectedUri == gi.uri);
       const ImVec2 tileOrigin = ImGui::GetCursorScreenPos();
+      const auto* giBuiltinShader =
+          (gi.kind == BrowserItemKind::BuiltinShader)
+              ? iota::engine::findBuiltinShaderPreset(gi.uri)
+              : nullptr;
       const bool giIsShader = (gi.kind == BrowserItemKind::LocalImage && isShaderAssetName(gi.label));
+      const bool showGlslBadge = giIsShader || giBuiltinShader != nullptr;
+      ImU32 giBadgeCol = IM_COL32(95, 205, 250, 255);
+      if (giIsShader) {
+        giBadgeCol = IM_COL32(250, 195, 90, 255);
+      } else if (giBuiltinShader != nullptr) {
+        giBadgeCol = (giBuiltinShader->kind == iota::engine::BuiltinShaderKind::PostFx)
+                         ? IM_COL32(250, 195, 90, 255)
+                         : IM_COL32(95, 225, 195, 255);
+      }
       drawFittedThumbnailBox(device, renderer, project, gi.uri, cellW, gi.validThumb,
-                             giIsShader ? "GLSL" : "AUD",
-                             giIsShader ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 205, 250, 255));
+                             showGlslBadge ? "GLSL" : "AUD", giBadgeCol);
+      if (ImGui::IsItemHovered() && giBuiltinShader != nullptr && !giBuiltinShader->description.empty()) {
+        ImGui::SetTooltip("%s", std::string(giBuiltinShader->description).c_str());
+      }
       if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         state.selectedKind = gi.kind;
         state.selectedUri = gi.uri;
@@ -599,6 +702,8 @@ void renderAssetBrowserPanel(iota::model::Project& project,
         } else if (gi.kind == BrowserItemKind::CompositionRef) {
           actions.selectCompIdx = std::atoi(gi.uri.c_str() + 12);
           actions.selectElemIdx = -1;
+        } else if (giBuiltinShader != nullptr) {
+          copyBuiltinShaderAndEdit(project, state, *giBuiltinShader, actions);
         } else if (giIsShader) {
           actions.requestEditShader = true;
           actions.editShaderAssetName = gi.label;
@@ -613,6 +718,14 @@ void renderAssetBrowserPanel(iota::model::Project& project,
       }
       if (gi.kind == BrowserItemKind::LocalImage) {
         drawLocalAssetContextMenu(gi.label, gi.uri);
+      } else if (giBuiltinShader != nullptr && ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem("Copy to Project & Edit")) {
+          copyBuiltinShaderAndEdit(project, state, *giBuiltinShader, actions);
+        }
+        if (ImGui::MenuItem("Add as Layer & Edit")) {
+          addCustomShaderLayerFromBuiltin(project, selectedCompIdx, *giBuiltinShader, actions);
+        }
+        ImGui::EndPopup();
       }
       if (selected) {
         ImGui::GetWindowDrawList()->AddRect(tileOrigin,
@@ -765,6 +878,50 @@ void renderAssetBrowserPanel(iota::model::Project& project,
         actions.modified = true;
         actions.undoSnapshotNeeded = true;
         actions.editLabel = "Remove Audio Reference";
+      }
+      ImGui::TreePop();
+    }
+
+    if (showBuiltin && ImGui::TreeNodeEx("Built-in Shaders", ImGuiTreeNodeFlags_DefaultOpen)) {
+      for (const auto& preset : iota::engine::listBuiltinShaderPresets()) {
+        const std::string catName(iota::engine::builtinShaderCategoryName(preset.category));
+        if (!matchesSearch(preset.displayName, state.searchFilter) &&
+            !matchesSearch(preset.defaultFileName, state.searchFilter) &&
+            !matchesSearch(catName, state.searchFilter) &&
+            !matchesSearch(preset.description, state.searchFilter)) {
+          continue;
+        }
+        ImGui::PushID(preset.id.data(), preset.id.data() + preset.id.size());
+        const bool isPostFx = (preset.kind == iota::engine::BuiltinShaderKind::PostFx);
+        drawFittedThumbnailBox(device, renderer, project, {}, 18.0f, false, "GLSL",
+                               isPostFx ? IM_COL32(250, 195, 90, 255) : IM_COL32(95, 225, 195, 255));
+        ImGui::SameLine();
+        const bool selected = (state.selectedKind == BrowserItemKind::BuiltinShader &&
+                               state.selectedUri == preset.id);
+        const std::string rowLbl =
+            std::string(preset.displayName) + (isPostFx ? "  [Post-FX]" : "  [BG]");
+        if (ImGui::Selectable(rowLbl.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+          state.selectedKind = BrowserItemKind::BuiltinShader;
+          state.selectedUri = std::string(preset.id);
+          state.selectedLabel = std::string(preset.displayName);
+          if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            copyBuiltinShaderAndEdit(project, state, preset, actions);
+          }
+        }
+        if (ImGui::IsItemHovered() && !preset.description.empty()) {
+          ImGui::SetTooltip("%s\n(%s - double-click to copy to project & edit)",
+                            std::string(preset.description).c_str(), catName.c_str());
+        }
+        if (ImGui::BeginPopupContextItem()) {
+          if (ImGui::MenuItem("Copy to Project & Edit")) {
+            copyBuiltinShaderAndEdit(project, state, preset, actions);
+          }
+          if (ImGui::MenuItem("Add as Layer & Edit")) {
+            addCustomShaderLayerFromBuiltin(project, selectedCompIdx, preset, actions);
+          }
+          ImGui::EndPopup();
+        }
+        ImGui::PopID();
       }
       ImGui::TreePop();
     }

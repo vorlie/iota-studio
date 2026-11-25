@@ -2804,6 +2804,9 @@ void EditorApp::drawShaderEditorPanel() {
   if (!actions.statusMessage.empty()) {
     statusBanner_ = actions.statusMessage;
   }
+  if (!actions.requestOpenUrl.empty()) {
+    openExternalUrl(actions.requestOpenUrl);
+  }
 }
 
 void EditorApp::drawDocsPanel() {

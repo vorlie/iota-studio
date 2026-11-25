@@ -17,6 +17,7 @@ struct ShaderEditorActions {
   bool requestImportShader = false;
   bool requestAddCustomShaderLayer = false;
   std::string addLayerAssetName;
+  std::string requestOpenUrl;
   std::string statusMessage;
 };
 

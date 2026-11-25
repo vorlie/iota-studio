@@ -1,5 +1,7 @@
 #include "shader_editor_panel.hpp"
 
+#include "iota/engine/builtin_shader_library.hpp"
+
 #include "ImGuiColorTextEdit.h"
 #include "imgui.h"
 
@@ -328,17 +330,60 @@ void ShaderEditorPanel::render(iota::model::Project& project,
 
   ImGui::SameLine();
   if (ImGui::Button("+ New")) {
-    const std::string newName = makeUniqueShaderName(project);
-    writeStringToAsset(project, newName, kStarterFragmentShader);
-    impl_->activeAssetName = newName;
-    impl_->loadTextIntoEditor(kStarterFragmentShader, true);
-    actions.modified = true;
-    actions.undoSnapshotNeeded = true;
-    actions.editLabel = "Create Shader " + newName;
-    actions.statusMessage = "Created local:" + newName;
+    ImGui::OpenPopup("##NewShaderTemplatePopup");
   }
   if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("Create a new starter GLSL fragment shader asset");
+    ImGui::SetTooltip("Create a blank shader or add an editable built-in shader preset");
+  }
+  if (ImGui::BeginPopup("##NewShaderTemplatePopup")) {
+    if (ImGui::MenuItem("Blank Starter Shader")) {
+      const std::string newName = makeUniqueShaderName(project);
+      writeStringToAsset(project, newName, kStarterFragmentShader);
+      impl_->activeAssetName = newName;
+      impl_->loadTextIntoEditor(kStarterFragmentShader, true);
+      actions.modified = true;
+      actions.undoSnapshotNeeded = true;
+      actions.editLabel = "Create Shader " + newName;
+      actions.statusMessage = "Created local:" + newName;
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Built-in Shader Presets");
+    const auto& presets = iota::engine::listBuiltinShaderPresets();
+    static constexpr iota::engine::BuiltinShaderCategory kCats[] = {
+        iota::engine::BuiltinShaderCategory::AudioReactive,
+        iota::engine::BuiltinShaderCategory::Procedural,
+        iota::engine::BuiltinShaderCategory::CinematicLens,
+        iota::engine::BuiltinShaderCategory::GeometricSciFi,
+        iota::engine::BuiltinShaderCategory::RetroArtistic,
+    };
+    for (const auto cat : kCats) {
+      const std::string catLabel(iota::engine::builtinShaderCategoryName(cat));
+      if (ImGui::BeginMenu(catLabel.c_str())) {
+        for (const auto& preset : presets) {
+          if (preset.category != cat) continue;
+          const char* kindTag =
+              (preset.kind == iota::engine::BuiltinShaderKind::PostFx) ? "[Post-FX]" : "[BG]";
+          const std::string itemLabel = std::string(preset.displayName) + "  " + kindTag;
+          if (ImGui::MenuItem(itemLabel.c_str())) {
+            const std::string newName = iota::engine::instantiateBuiltinShaderAsset(project, preset);
+            impl_->activeAssetName = newName;
+            const auto it = project.localAssets.find(newName);
+            if (it != project.localAssets.end()) {
+              impl_->loadTextIntoEditor(bytesToUtf8StrippingBom(it->second), true);
+            }
+            actions.modified = true;
+            actions.undoSnapshotNeeded = true;
+            actions.editLabel = "Add Built-in Shader " + newName;
+            actions.statusMessage = "Added local:" + newName;
+          }
+          if (ImGui::IsItemHovered() && !preset.description.empty()) {
+            ImGui::SetTooltip("%s", std::string(preset.description).c_str());
+          }
+        }
+        ImGui::EndMenu();
+      }
+    }
+    ImGui::EndPopup();
   }
 
   ImGui::SameLine();
@@ -402,6 +447,10 @@ void ShaderEditorPanel::render(iota::model::Project& project,
     ImGui::Separator();
     if (ImGui::MenuItem("Show Whitespace", nullptr, &impl_->showWhitespace)) {
       impl_->editor.SetShowWhitespaces(impl_->showWhitespace);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Open GLSL Palette Manager (Web)...")) {
+      actions.requestOpenUrl = "https://vorlie.github.io/iota-studio/";
     }
     ImGui::EndPopup();
   }
