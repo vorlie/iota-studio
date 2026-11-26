@@ -51,6 +51,52 @@
         "CMAKE_CXX_COMPILER": "cl",
         "IOTA_BUILD_MCP": "ON"
       }
+    },
+    {
+      "name": "linux-gcc-ninja-release",
+      "displayName": "Linux GCC Ninja Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-gcc-ninja-debug",
+      "displayName": "Linux GCC Ninja Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-gcc-ninja-release-mcp",
+      "displayName": "Linux GCC Ninja Release (MCP Enabled)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release-mcp",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "IOTA_BUILD_MCP": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc-ninja-debug-mcp",
+      "displayName": "Linux GCC Ninja Debug (MCP Enabled)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug-mcp",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "IOTA_BUILD_MCP": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -69,6 +115,22 @@
     {
       "name": "debug-mcp",
       "configurePreset": "windows-msvc-ninja-debug-mcp"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-gcc-ninja-release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-gcc-ninja-debug"
+    },
+    {
+      "name": "linux-release-mcp",
+      "configurePreset": "linux-gcc-ninja-release-mcp"
+    },
+    {
+      "name": "linux-debug-mcp",
+      "configurePreset": "linux-gcc-ninja-debug-mcp"
     }
   ]
 }
