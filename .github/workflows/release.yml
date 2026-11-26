@@ -1,0 +1,220 @@
+name: Release Packaging
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag name (defaults to v<CMakeLists version>)'
+        required: false
+        type: string
+        default: ''
+      draft:
+        description: 'Create release as draft'
+        required: false
+        type: boolean
+        default: true
+      prerelease:
+        description: 'Mark release as prerelease'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows Installers (Standard + MCP)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC x64 Developer Environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure & Build Standard + MCP
+        run: |
+          cmake --preset windows-msvc-ninja-release
+          cmake --build --preset release --parallel
+          cmake --preset windows-msvc-ninja-release-mcp
+          cmake --build --preset release-mcp --parallel
+
+      - name: Run non-GL unit tests (MCP build)
+        run: .\build\release-mcp\tests\iota_tests.exe "-tce=*OpenGL*,*GL*,*VideoExportSession*,*render_preview_frame*"
+
+      - name: Ensure Inno Setup 6 is installed
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc -and -not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") -and -not (Test-Path "C:\Program Files\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build Windows Installers
+        run: .\installer\build_installer.ps1 -Variant All
+
+      - name: Upload Windows Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: build/installer/*.exe
+          if-no-files-found: error
+
+  linux:
+    name: Linux Tarballs & AppImages (Standard + MCP)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build, runtime, and AppImage dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-12 \
+            g++-12 \
+            ninja-build \
+            pkg-config \
+            curl \
+            ca-certificates \
+            file \
+            imagemagick \
+            libgl1-mesa-dev \
+            libgl1-mesa-dri \
+            mesa-utils \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            wayland-protocols \
+            libfreetype-dev \
+            libfontconfig1-dev \
+            libharfbuzz-dev \
+            libcurl4-openssl-dev \
+            libasound2-dev \
+            ffmpeg \
+            xvfb \
+            desktop-file-utils
+
+      - name: Install CMake 3.31 (Ubuntu 22.04 apt provides 3.22)
+        run: |
+          curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz \
+            | sudo tar -xz -C /usr/local --strip-components=1
+          cmake --version
+
+      - name: Configure & Build Standard
+        run: |
+          cmake -S . -B build/linux-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DIOTA_BUILD_MCP=OFF
+          cmake --build build/linux-release --parallel
+
+      - name: Configure & Build MCP
+        run: |
+          cmake -S . -B build/linux-release-mcp -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-12 \
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DIOTA_BUILD_MCP=ON
+          cmake --build build/linux-release-mcp --parallel
+
+      - name: Run full CTest suite (Xvfb + Mesa llvmpipe GL 4.5)
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" \
+            env LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=4.5 MESA_GLSL_VERSION_OVERRIDE=450 \
+            ctest --test-dir build/linux-release-mcp --output-on-failure
+
+      - name: Download linuxdeploy
+        run: |
+          curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage \
+            -o /tmp/linuxdeploy-x86_64.AppImage
+          chmod +x /tmp/linuxdeploy-x86_64.AppImage
+
+      - name: Package Linux Tarballs and AppImages
+        env:
+          LINUXDEPLOY: /tmp/linuxdeploy-x86_64.AppImage
+        run: |
+          ./packaging/linux/build_release.sh \
+            --variant all \
+            --build-dir build/linux-release \
+            --mcp-build-dir build/linux-release-mcp \
+            --out-dir build/release-artifacts \
+            --appimage
+
+      - name: Smoke-test packaged AppImages (Xvfb + Mesa llvmpipe)
+        run: |
+          for img in build/release-artifacts/*.AppImage; do
+            echo "Smoke testing ${img}..."
+            xvfb-run -a -s "-screen 0 1280x720x24" \
+              env LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=4.5 MESA_GLSL_VERSION_OVERRIDE=450 \
+              "${img}" --appimage-extract-and-run --smoke-test
+          done
+
+      - name: Upload Linux Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets
+          path: |
+            build/release-artifacts/*.tar.gz
+            build/release-artifacts/*.AppImage
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows assets
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release-assets
+          path: dist
+
+      - name: Download Linux assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets
+          path: dist
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          ls -lh dist
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Create or Update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VER="$(sed -nE 's/^[[:space:]]*project\([[:space:]]*IotaStudio[[:space:]]+VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -n1)"
+            TAG="v${VER}"
+          fi
+
+          FLAGS=(--title "Iota Studio ${TAG}" --generate-notes)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.draft }}" == "true" ]]; then
+            FLAGS+=(--draft)
+          fi
+          if [[ "${{ inputs.prerelease }}" == "true" || "${TAG}" == *-* ]]; then
+            FLAGS+=(--prerelease)
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Updating existing release ${TAG}..."
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            echo "Creating release ${TAG}..."
+            gh release create "${TAG}" dist/* "${FLAGS[@]}"
+          fi

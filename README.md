@@ -216,6 +216,11 @@ ctest --preset linux-release --output-on-failure
 
 # Stage or system install (binaries, .desktop, AppStream metainfo, and icon):
 cmake --install build/linux-release --prefix ~/.local
+
+# Build portable Linux release tarballs (and optional AppImages with --appimage):
+./packaging/linux/build_release.sh --variant all --appimage
 ```
+
+Automated Windows (`.exe` Inno Setup installers) and Linux (`.tar.gz` + `.AppImage`) release assets are built and published via [release.yml](.github/workflows/release.yml) on `v*` tag pushes or manual **Release Packaging** workflow dispatches.
 
 See [docs/MCP.md](docs/MCP.md) for details on the MCP edition and client setup.
