@@ -1,0 +1,80 @@
+# Maintainer: Charlie <99135647+vorlie@users.noreply.github.com>
+
+pkgname=iota-studio-git
+pkgver=1.13.0
+pkgrel=1
+pkgdesc="Native desktop studio and OpenGL 4.5 engine for designing and exporting audio-reactive music visualizers"
+arch=('x86_64')
+url="https://github.com/vorlie/iota-studio"
+license=('GPL-3.0-or-later')
+depends=(
+  'alsa-lib'
+  'curl'
+  'fontconfig'
+  'freetype2'
+  'gcc-libs'
+  'glibc'
+  'harfbuzz'
+  'hicolor-icon-theme'
+  'libglvnd'
+  'libx11'
+)
+makedepends=(
+  'cmake'
+  'git'
+  'libxcursor'
+  'libxi'
+  'libxinerama'
+  'libxkbcommon'
+  'libxrandr'
+  'mesa'
+  'ninja'
+  'pkgconf'
+  'wayland'
+  'wayland-protocols'
+)
+optdepends=(
+  'ffmpeg: MP4 video export and extended audio decoding'
+  'zenity: native GTK file open/save dialogs'
+  'kdialog: native KDE/Plasma file open/save dialogs'
+  'xdg-utils: open release links in default browser'
+  'libva: hardware-accelerated VA-API video export via FFmpeg'
+)
+provides=('iota-studio')
+conflicts=('iota-studio')
+source=("${pkgname}::git+https://github.com/vorlie/iota-studio.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${srcdir}/${pkgname}"
+  local base_ver
+  base_ver="$(sed -nE 's/^[[:space:]]*project\([[:space:]]*IotaStudio[[:space:]]+VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -n1)"
+  printf "%s.r%s.g%s" "${base_ver:-1.13.0}" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  local _enable_mcp="${IOTA_BUILD_MCP:-OFF}"
+  cmake -S "${pkgname}" -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DIOTA_BUILD_TESTS=ON \
+    -DIOTA_BUILD_MCP="${_enable_mcp}" \
+    -DIOTA_ENABLE_DISCORD_RPC=OFF \
+    -Wno-dev
+  cmake --build build
+}
+
+check() {
+  "${srcdir}/build/tests/iota_tests" \
+    "-tce=*OpenGL*,*GL*,*VideoExportSession*,*render_preview_frame*"
+}
+
+package() {
+  DESTDIR="${pkgdir}" cmake --install build
+  install -Dm644 "${srcdir}/${pkgname}/README.md" \
+    "${pkgdir}/usr/share/doc/iota-studio/README.md"
+  if [[ "${IOTA_BUILD_MCP:-OFF}" == "ON" ]]; then
+    install -Dm644 "${srcdir}/${pkgname}/docs/MCP.md" \
+      "${pkgdir}/usr/share/doc/iota-studio/MCP.md"
+  fi
+}

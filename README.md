@@ -221,6 +221,8 @@ cmake --install build/linux-release --prefix ~/.local
 ./packaging/linux/build_release.sh --variant all --appimage
 ```
 
+On Arch Linux, an `iota-studio-git` `PKGBUILD` is provided at [packaging/arch/PKGBUILD](packaging/arch/PKGBUILD) (pass `IOTA_BUILD_MCP=ON makepkg -si` to include the optional MCP server and Live Bridge).
+
 Automated Windows (`.exe` Inno Setup installers) and Linux (`.tar.gz` + `.AppImage`) release assets are built and published via [release.yml](.github/workflows/release.yml) on `v*` tag pushes or manual **Release Packaging** workflow dispatches.
 
 See [docs/MCP.md](docs/MCP.md) for details on the MCP edition and client setup.

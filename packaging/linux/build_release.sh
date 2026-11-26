@@ -203,6 +203,7 @@ EOF
     local ld_args=(
       --appimage-extract-and-run
       --appdir "${appdir}"
+      --executable "${appdir}/usr/bin/iota_studio"
       --desktop-file "${appdir}/usr/share/applications/io.github.vorlie.iota_studio.desktop"
       --icon-file "${icon_file}"
       --custom-apprun "${apprun}"
