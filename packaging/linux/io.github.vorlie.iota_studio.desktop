@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Iota Studio
+GenericName=Audio-Reactive Music Visualizer
+Comment=Design, preview, and export audio-reactive music visualizers
+Exec=iota_studio %f
+Icon=iota-studio
+Terminal=false
+Categories=AudioVideo;Audio;Video;
+Keywords=visualizer;audio;music;spectrum;video;shader;
+StartupNotify=true
+StartupWMClass=iota-studio

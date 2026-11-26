@@ -52,10 +52,10 @@ if(IOTA_BUILD_MCP)
   target_link_libraries(iota_tests PRIVATE iota_mcp)
 endif()
 
-if(IOTA_DISCORD_SDK_FOUND AND EXISTS "${IOTA_DISCORD_SDK_RUNTIME_LIB}")
+if(IOTA_DISCORD_SDK_FOUND)
   add_custom_command(TARGET iota_tests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${IOTA_DISCORD_SDK_RUNTIME_LIB}"
+      "$<TARGET_FILE:discord_social_sdk>"
       "$<TARGET_FILE_DIR:iota_tests>"
     COMMENT "Copying Discord Social SDK runtime library for tests"
   )
@@ -70,3 +70,4 @@ endif()
 iota_configure_target(iota_tests)
 
 add_test(NAME iota_tests COMMAND iota_tests)
+add_test(NAME iota_studio_smoke_test COMMAND $<TARGET_FILE:iota_studio> --smoke-test)

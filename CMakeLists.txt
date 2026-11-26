@@ -31,6 +31,7 @@ option(IOTA_ENABLE_DISCORD_RPC "Enable optional Discord Rich Presence via Discor
 set(IOTA_DISCORD_SDK_DIR "" CACHE PATH "Path to extracted Discord Social SDK directory")
 
 include(FetchContent)
+include(GNUInstallDirs)
 
 find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
@@ -61,6 +62,7 @@ set(KISSFFT_DATATYPE "float" CACHE STRING "" FORCE)
 
 set(DOCTEST_WITH_TESTS OFF CACHE BOOL "" FORCE)
 set(DOCTEST_NO_INSTALL ON CACHE BOOL "" FORCE)
+set(MINIAUDIO_INSTALL OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   nlohmann_json
@@ -234,30 +236,50 @@ if(IOTA_ENABLE_DISCORD_RPC)
 
     if(WIN32)
       if(_iota_arch_lower MATCHES "^(arm64|aarch64)$")
-        set(_discord_imp "${_discord_sdk_root}/lib/${_discord_cfg}/arm64/discord_partner_sdk.lib")
-        set(_discord_dll "${_discord_sdk_root}/bin/${_discord_cfg}/arm64/discord_partner_sdk.dll")
-        if(NOT EXISTS "${_discord_imp}" OR NOT EXISTS "${_discord_dll}")
-          set(_discord_imp "${_discord_sdk_root}/lib/release/arm64/discord_partner_sdk.lib")
-          set(_discord_dll "${_discord_sdk_root}/bin/release/arm64/discord_partner_sdk.dll")
-        endif()
+        set(_discord_arch_dir "/arm64")
       else()
-        set(_discord_imp "${_discord_sdk_root}/lib/${_discord_cfg}/discord_partner_sdk.lib")
-        set(_discord_dll "${_discord_sdk_root}/bin/${_discord_cfg}/discord_partner_sdk.dll")
-        if(NOT EXISTS "${_discord_imp}" OR NOT EXISTS "${_discord_dll}")
-          set(_discord_imp "${_discord_sdk_root}/lib/release/discord_partner_sdk.lib")
-          set(_discord_dll "${_discord_sdk_root}/bin/release/discord_partner_sdk.dll")
-        endif()
+        set(_discord_arch_dir "")
       endif()
-      if(EXISTS "${_discord_imp}" AND EXISTS "${_discord_dll}")
+      set(_discord_imp_rel "${_discord_sdk_root}/lib/release${_discord_arch_dir}/discord_partner_sdk.lib")
+      set(_discord_dll_rel "${_discord_sdk_root}/bin/release${_discord_arch_dir}/discord_partner_sdk.dll")
+      set(_discord_imp_dbg "${_discord_sdk_root}/lib/debug${_discord_arch_dir}/discord_partner_sdk.lib")
+      set(_discord_dll_dbg "${_discord_sdk_root}/bin/debug${_discord_arch_dir}/discord_partner_sdk.dll")
+      if(NOT EXISTS "${_discord_imp_dbg}" OR NOT EXISTS "${_discord_dll_dbg}")
+        set(_discord_imp_dbg "${_discord_imp_rel}")
+        set(_discord_dll_dbg "${_discord_dll_rel}")
+      endif()
+      if(EXISTS "${_discord_imp_rel}" AND EXISTS "${_discord_dll_rel}")
         add_library(discord_social_sdk SHARED IMPORTED GLOBAL)
         set_target_properties(discord_social_sdk PROPERTIES
-          IMPORTED_IMPLIB "${_discord_imp}"
-          IMPORTED_LOCATION "${_discord_dll}"
+          IMPORTED_IMPLIB "${_discord_imp_rel}"
+          IMPORTED_LOCATION "${_discord_dll_rel}"
+          IMPORTED_IMPLIB_RELEASE "${_discord_imp_rel}"
+          IMPORTED_LOCATION_RELEASE "${_discord_dll_rel}"
+          IMPORTED_IMPLIB_RELWITHDEBINFO "${_discord_imp_rel}"
+          IMPORTED_LOCATION_RELWITHDEBINFO "${_discord_dll_rel}"
+          IMPORTED_IMPLIB_MINSIZEREL "${_discord_imp_rel}"
+          IMPORTED_LOCATION_MINSIZEREL "${_discord_dll_rel}"
+          IMPORTED_IMPLIB_DEBUG "${_discord_imp_dbg}"
+          IMPORTED_LOCATION_DEBUG "${_discord_dll_dbg}"
           INTERFACE_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
           INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
         )
         set(IOTA_DISCORD_SDK_FOUND TRUE)
-        set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_dll}")
+        if(_iota_build_type_lower STREQUAL "debug")
+          set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_dll_dbg}")
+        else()
+          set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_dll_rel}")
+        endif()
+      elseif(EXISTS "${_discord_imp_dbg}" AND EXISTS "${_discord_dll_dbg}")
+        add_library(discord_social_sdk SHARED IMPORTED GLOBAL)
+        set_target_properties(discord_social_sdk PROPERTIES
+          IMPORTED_IMPLIB "${_discord_imp_dbg}"
+          IMPORTED_LOCATION "${_discord_dll_dbg}"
+          INTERFACE_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
+          INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_discord_sdk_root}/include"
+        )
+        set(IOTA_DISCORD_SDK_FOUND TRUE)
+        set(IOTA_DISCORD_SDK_RUNTIME_LIB "${_discord_dll_dbg}")
       endif()
     elseif(APPLE)
       set(_discord_dylib "${_discord_sdk_root}/lib/${_discord_cfg}/libdiscord_partner_sdk.dylib")

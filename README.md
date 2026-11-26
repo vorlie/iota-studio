@@ -1,6 +1,6 @@
 # Iota Studio
 
-**Iota Studio** is a native Windows desktop application and modular C++20 engine for designing, previewing, and exporting audio-reactive music visualizers.
+**Iota Studio** is a cross-platform Windows and Linux desktop application and modular C++20 engine for designing, previewing, and exporting audio-reactive music visualizers.
 
 > [!WARNING]
 > **Template Compatibility Disclaimer:** Any Avee Player template (`.viz`) saved or overwritten in Iota Studio will no longer be valid or loadable in Avee Player. Always keep a backup of your original Avee Player `.viz` files or save edits to a new `.iota` / `.viz` file instead of overwriting them.
@@ -46,7 +46,7 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
   - 6-mip Jimenez 2014 energy-conserving **Physical Bloom** pyramid with Karis anti-flicker prefiltering, soft-knee threshold (`bloomThreshold`, `bloomSoftKnee`), `bloomRadius`, optional anamorphic stretch (`bloomAnamorphic`), `bloomTint`, and audio-reactive `measureBloomIntensity`.
   - Filmic **Tonemapping** (`ACES` RRT+ODT, `AgX`, `PBRNeutral`, `Reinhard`, or `None`) with `exposureEv`, `contrast`, `saturation`, `gamma`, `vignette`, 8-bit IGN dithering, and 1-click Composition 0 HDR presets (`Clean SDR`, `ACES Cinema`, `AgX Neon`, `Anamorphic Flare`, `Audio Pulse Bloom`).
 - **Unicode Typography & Dynamic GPU Font Atlas**
-  - DirectWrite-shaped `FontAtlasCache` with automatic multi-script OS font fallback (Latin-Ext, Cyrillic, Greek, Japanese/Chinese CJK, Korean Hangul, Arabic/Hebrew RTL BiDi shaping, and symbol sets) plus safe `U+FFFD` sanitization for malformed UTF-8 sequences.
+  - Shaped `FontAtlasCache` using **Windows DirectWrite** on Windows and **FreeType + HarfBuzz + Fontconfig** on Linux, with automatic multi-script OS font fallback (Latin-Ext, Cyrillic, Greek, Japanese/Chinese CJK, Korean Hangul, Arabic/Hebrew RTL BiDi shaping, and symbol sets) plus safe `U+FFFD` sanitization for malformed UTF-8 sequences.
   - Dynamic 2048×2048 shelf-packed GPU glyph atlas with quantized resolution buckets, sub-region texture uploads (`updateTexture2DRegion`), custom `.ttf`/`.otf`/`.ttc` and bundled `local:` font loading, single-draw-call circularly dilated outlines & drop shadows, weight/italic/alignment/tracking/line-spacing/word-wrap controls, and 1-click typography presets (`Clean Title`, `Neon Glow`, `Bold Outline`, `Cinema Wide`).
 - **Docking Studio Editor UI**
   - Multi-panel Dear ImGui workspace (`IMGUI_USE_WCHAR32` with merged Unicode system UI fonts) featuring **Viewport** (720p, 1080p, 9:16, 1:1 presets, optional FXAA, HDR16F/Bloom/Tonemapping toggles), **Hierarchy**, **Assets**, **Inspector**, **Audio & Timeline**, and **Sound Keys**.
@@ -56,11 +56,11 @@ Iota Studio provides a responsive, standalone desktop environment for creating l
   - Built-in asynchronous GitHub Release **Update Checker** (`Help -> Check for Updates...` and automatic startup check) with a menu-bar notification badge and clickable release page / asset download links.
 - **Asset Browser & Project Manager**
   - **Assets** panel (`Viewport -> Asset Browser`) with live thumbnail preview header, layer reference usage counts, Grid/List views, category filters (`All`, `Project`, `Audio`, `Comps`, `Built-in`), live search, custom virtual bins, multi-file image import, rename/replace/unused-asset cleanup, and drag-and-drop onto Hierarchy layers or Inspector image/mask fields.
-  - **Project Manager** (`File -> Project Manager...` / `Ctrl+N`) with starter templates (`Minimal Circular`, `Dual Composition Glow`, `Horizontal Spectrum Bar`, `Blank Project`), persistent recent-project history (`%LOCALAPPDATA%/IotaStudio/projects.json`), missing-file pruning, and per-project resolution/FPS/audio/notes metadata.
+  - **Project Manager** (`File -> Project Manager...` / `Ctrl+N`) with starter templates (`Minimal Circular`, `Dual Composition Glow`, `Horizontal Spectrum Bar`, `Blank Project`), persistent recent-project history (`%LOCALAPPDATA%/IotaStudio/projects.json` on Windows, `$XDG_DATA_HOME/IotaStudio/projects.json` or `~/.local/share/IotaStudio/projects.json` on Linux), missing-file pruning, and per-project resolution/FPS/audio/notes metadata.
 - **Projects, Presets, Bundled Assets & Video Export**
   - Load and save native `.iota` project archives alongside `.viz` presets and `.json` scenes, with embedded `local:<asset>` image resources, `ProjectMetadata`, and procedural `internalres:*` textures.
   - Cross-platform wide Unicode path handling (`utf8_path`) and UTF-8 sanitization for international filenames, legacy audio metadata tags, UTF-8 BOMs, ZIP archive entry names, and JSON serialization.
-  - Audio decoding via `ffmpeg`/`ffprobe` (with `miniaudio` fallback) and deterministic offline MP4 video export (H.264 / H.265 + AAC) piped to `ffmpeg` with live GPU hardware encoder detection (`NVIDIA NVENC`, `AMD AMF`, `Intel Quick Sync`), `Fast` / `Balanced` / `Quality` presets, and automatic CPU (`libx264` / `libx265`) fallback.
+  - Audio decoding via `ffmpeg`/`ffprobe` (with `miniaudio` fallback) and deterministic offline MP4 video export (H.264 / H.265 + AAC) piped to `ffmpeg` with live GPU hardware encoder detection (`NVIDIA NVENC`, `Linux VA-API`, `AMD AMF`, `Intel Quick Sync`), `Fast` / `Balanced` / `Quality` presets, and automatic CPU (`libx264` / `libx265`) fallback.
 
 ## Architecture & Directory Layout
 
@@ -87,11 +87,11 @@ Core logic lives in UI-agnostic C++20 libraries under `libs/`, consumed by the d
 
 | Area | Technology |
 |---|---|
-| Language & Build | C++20, CMake 3.24+, Ninja (`CMakePresets.json`), MSVC x64 |
-| UI & Typography | Dear ImGui (`v1.93.0-docking`, `IMGUI_USE_WCHAR32`), GLFW 3.4, Windows DirectWrite |
+| Language & Build | C++20, CMake 3.24+, Ninja (`CMakePresets.json`), MSVC x64 (Windows) / GCC & Clang (Linux) |
+| UI & Typography | Dear ImGui (`v1.93.0-docking`, `IMGUI_USE_WCHAR32`), GLFW 3.4, DirectWrite (Win) / FreeType + HarfBuzz + Fontconfig (Linux) |
 | Graphics | OpenGL 4.5 via `iota_rhi` + GLM 1.0.1 |
-| Audio Playback & Analysis | `miniaudio`, `kissfft` (`float`), custom DFT filterbank |
-| Media & Packaging | `ffmpeg` / `ffprobe` (external CLI in `PATH`), `miniz`, `nlohmann/json`, `stb` |
+| Audio Playback & Analysis | `miniaudio` (WASAPI / PipeWire / PulseAudio / ALSA), `kissfft` (`float`), custom DFT filterbank |
+| Media & Networking | `ffmpeg` / `ffprobe` (`PATH`), `miniz`, `nlohmann/json`, `stb`, WinHTTP (Win) / `libcurl` (Linux) |
 | Testing | `doctest` (`v2.4.12`) |
 
 Third-party C/C++ libraries are fetched automatically at configure time via CMake `FetchContent`.
@@ -100,12 +100,12 @@ Third-party C/C++ libraries are fetched automatically at configure time via CMak
 
 | Component | Minimum (720p/1080p SDR, standard templates) | Recommended (1080p–4K, HDR16F + Bloom, heavy templates & fast export) |
 |---|---|---|
-| **OS** | Windows 10 / 11 (64-bit) | Windows 10 / 11 (64-bit) |
+| **OS** | Windows 10 / 11 (64-bit) or Linux x86_64 | Windows 10 / 11 (64-bit) or modern Linux x86_64 (X11 / Wayland) |
 | **CPU** | 64-bit dual/quad-core CPU (e.g., Intel Core i3 6th-gen+ / AMD Ryzen 3) | 6+ core modern CPU (e.g., Intel Core i5 10th-gen+ / AMD Ryzen 5 3600+) for stacked multi-provider `Spectrum2` DFTs, high particle counts, and FFmpeg encoding |
 | **GPU** | **OpenGL 4.5**-capable GPU with 1 GB VRAM (e.g., Intel HD 520 / UHD 620+, NVIDIA GTX 650 / 750 Ti+, AMD R7 260 / Vega iGPU+) | Dedicated **OpenGL 4.5+** GPU with 4 GB+ VRAM (e.g., NVIDIA GTX 1060 / 1650+, AMD RX 570 / 5500 XT+) for multi-composition `RGBA16F` HDR, 6-mip Bloom, and motion/shake effects |
 | **RAM** | 4 GB | 8 GB+ (16 GB for large 4K projects with high-resolution assets) |
 | **Storage** | ~50 MB for the application + space for audio/video exports | SSD with free space for project assets and exported MP4s |
-| **Runtime** | Microsoft Visual C++ 2015–2022 Redistributable (x64); optional `ffmpeg.exe` & `ffprobe.exe` on `PATH` | Same (`ffmpeg.exe` & `ffprobe.exe` on `PATH` for broad audio decoding and MP4 export) |
+| **Runtime** | Windows: MSVC 2015–2022 Redistributable (x64); Linux: FreeType, Fontconfig, HarfBuzz, libcurl, OpenGL 4.5 driver, `zenity`/`kdialog` for native file dialogs; optional `ffmpeg`/`ffprobe` on `PATH` | Same (with VA-API / NVENC drivers and `ffmpeg` / `ffprobe` on `PATH` for GPU video export) |
 
 > [!NOTE]
 > Older integrated GPUs capped at OpenGL 4.0–4.3 on Windows (such as Intel HD 4000 / 4th-gen Haswell) are not supported because Iota Studio requires an OpenGL 4.5 Core Profile context.
@@ -179,4 +179,43 @@ With [Inno Setup 6](https://jrsoftware.org/isinfo.php) installed alongside Relea
 .\installer\build_installer.ps1 -Variant All
 ```
 
-The installer checks whether `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH` or in the target folder and provides a toggleable option (pre-checked when missing, optional when present; also controllable via `/INSTALLFFMPEG` or `/NOFFMPEG`) to download and extract the essentials FFmpeg build alongside `iota_studio.exe`. See [docs/MCP.md](docs/MCP.md) for details on the MCP edition and client setup.
+The installer checks whether `ffmpeg.exe` and `ffprobe.exe` are already available on `PATH` or in the target folder and provides a toggleable option (pre-checked when missing, optional when present; also controllable via `/INSTALLFFMPEG` or `/NOFFMPEG`) to download and extract the essentials FFmpeg build alongside `iota_studio.exe`.
+
+## Building & Running (Linux)
+
+### Prerequisites
+
+Install a C++20 compiler, CMake 3.24+, Ninja, OpenGL/X11/Wayland development headers, typography & curl libraries, and optional FFmpeg / native dialog tools:
+
+```bash
+# Ubuntu / Debian
+sudo apt install build-essential cmake ninja-build pkg-config \
+  libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+  libwayland-dev libxkbcommon-dev wayland-protocols \
+  libfreetype-dev libfontconfig1-dev libharfbuzz-dev libcurl4-openssl-dev libasound2-dev \
+  ffmpeg zenity
+
+# Arch Linux
+sudo pacman -S base-devel cmake ninja pkgconf mesa libx11 libxrandr libxinerama \
+  libxcursor libxi wayland libxkbcommon wayland-protocols \
+  freetype2 fontconfig harfbuzz curl alsa-lib ffmpeg zenity
+```
+
+### Configure, Build, Test & Install
+
+```bash
+cmake --preset linux-gcc-ninja-release        # or linux-gcc-ninja-release-mcp
+cmake --build --preset linux-release --parallel
+
+# Run Studio & headless smoke test:
+./build/linux-release/apps/studio/iota_studio
+./build/linux-release/apps/studio/iota_studio --smoke-test
+
+# Run automated tests via CTest (includes iota_tests and iota_studio_smoke_test):
+ctest --preset linux-release --output-on-failure
+
+# Stage or system install (binaries, .desktop, AppStream metainfo, and icon):
+cmake --install build/linux-release --prefix ~/.local
+```
+
+See [docs/MCP.md](docs/MCP.md) for details on the MCP edition and client setup.

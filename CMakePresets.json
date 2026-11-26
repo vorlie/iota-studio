@@ -2,13 +2,18 @@
   "version": 6,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 23,
+    "minor": 24,
     "patch": 0
   },
   "configurePresets": [
     {
       "name": "windows-msvc-ninja-release",
       "displayName": "Windows MSVC x64 Ninja Release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
@@ -20,6 +25,11 @@
     {
       "name": "windows-msvc-ninja-debug",
       "displayName": "Windows MSVC x64 Ninja Debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
@@ -31,6 +41,11 @@
     {
       "name": "windows-msvc-ninja-release-mcp",
       "displayName": "Windows MSVC x64 Ninja Release (MCP Enabled)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/release-mcp",
       "cacheVariables": {
@@ -43,6 +58,11 @@
     {
       "name": "windows-msvc-ninja-debug-mcp",
       "displayName": "Windows MSVC x64 Ninja Debug (MCP Enabled)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/debug-mcp",
       "cacheVariables": {
@@ -55,6 +75,11 @@
     {
       "name": "linux-gcc-ninja-release",
       "displayName": "Linux GCC Ninja Release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-release",
       "cacheVariables": {
@@ -66,6 +91,11 @@
     {
       "name": "linux-gcc-ninja-debug",
       "displayName": "Linux GCC Ninja Debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-debug",
       "cacheVariables": {
@@ -77,6 +107,11 @@
     {
       "name": "linux-gcc-ninja-release-mcp",
       "displayName": "Linux GCC Ninja Release (MCP Enabled)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-release-mcp",
       "cacheVariables": {
@@ -89,6 +124,11 @@
     {
       "name": "linux-gcc-ninja-debug-mcp",
       "displayName": "Linux GCC Ninja Debug (MCP Enabled)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-debug-mcp",
       "cacheVariables": {
@@ -131,6 +171,28 @@
     {
       "name": "linux-debug-mcp",
       "configurePreset": "linux-gcc-ninja-debug-mcp"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-msvc-ninja-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-release-mcp",
+      "configurePreset": "windows-msvc-ninja-release-mcp",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-gcc-ninja-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-release-mcp",
+      "configurePreset": "linux-gcc-ninja-release-mcp",
+      "output": { "outputOnFailure": true }
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Iota Studio MCP Support (Opt-In)
 
-Iota Studio includes an optional **Model Context Protocol (MCP)** server (`iota_mcp.exe`) and a local **Live Studio Bridge** inside `iota_studio.exe` so AI coding/creative agents can inspect, build, preview, and export visualizers.
+Iota Studio includes an optional **Model Context Protocol (MCP)** server (`iota_mcp` on Linux, `iota_mcp.exe` on Windows) and a local **Live Studio Bridge** inside `iota_studio` (`iota_studio.exe`) so AI coding/creative agents can inspect, build, preview, and export visualizers.
 
 By default, MCP is **disabled** (`IOTA_BUILD_MCP=OFF`) so standard desktop builds have zero extra code, runtime overhead, or UI items.
 
@@ -26,19 +26,29 @@ Release assets include a dedicated **`IotaStudio-MCP-Setup-<version>.exe`** inst
 
 ### Standard Build (No MCP Bloat — Default)
 ```pwsh
+# Windows:
 cmake --preset windows-msvc-ninja-release
 cmake --build --preset release --parallel
+
+# Linux:
+cmake --preset linux-gcc-ninja-release
+cmake --build --preset linux-release --parallel
 ```
-Only `iota_studio.exe` and the core libraries are built (`build/release/`).
+Only `iota_studio` (`iota_studio.exe`) and the core libraries are built.
 
 ### MCP-Enabled Build (`IOTA_BUILD_MCP=ON`)
 ```pwsh
+# Windows -> build/release-mcp/:
 cmake --preset windows-msvc-ninja-release-mcp
 cmake --build --preset release-mcp --parallel
+
+# Linux -> build/linux-release-mcp/:
+cmake --preset linux-gcc-ninja-release-mcp
+cmake --build --preset linux-release-mcp --parallel
 ```
-Outputs in `build/release-mcp/`:
-- `apps/mcp/iota_mcp.exe` — Standalone stdio MCP server (`stdin`/`stdout` JSON-RPC 2.0)
-- `apps/studio/iota_studio.exe` — Built with `IOTA_ENABLE_MCP=1` (includes the opt-in **MCP** menu)
+Outputs:
+- `apps/mcp/iota_mcp` (`iota_mcp.exe`) — Standalone stdio MCP server (`stdin`/`stdout` JSON-RPC 2.0)
+- `apps/studio/iota_studio` (`iota_studio.exe`) — Built with `IOTA_ENABLE_MCP=1` (includes the opt-in **MCP** menu)
 
 ---
 
@@ -51,20 +61,20 @@ Outputs in `build/release-mcp/`:
    - In the MCP-enabled `iota_studio.exe`, click **MCP -> Enable Live Studio Bridge**.
    - **Automatic Working-Copy Safety:** If an existing project (`.iota`, `.viz`, `.json`) is open, Studio immediately creates a sibling copy named **`<name>.mcp.iota`** (incrementing to `.mcp_2.iota` if needed) and switches the open session onto that copy before listening. Your original `.iota` / `.viz` file is never touched by agent edits or saves.
    - If you open a different file manually in Studio, Live Bridge automatically turns off so newly opened originals stay protected until you re-enable it.
-   - Agents connect over the per-user local Windows Named Pipe (`\\.\pipe\iota_studio_mcp_<user>`) either by passing `--attach` on startup or calling the `studio_connect` tool, and can disconnect back to headless mode via `studio_disconnect`.
+   - Agents connect over the per-user local IPC endpoint — a Windows Named Pipe (`\\.\pipe\iota_studio_mcp_<user>`) on Windows, or a `0600`-permission Unix domain socket (`$XDG_RUNTIME_DIR/iota_studio_mcp.sock`, falling back to `/tmp/iota_studio_mcp_<uid>.sock`) on Linux — either by passing `--attach` on startup or calling `studio_connect`, and can disconnect back to headless mode via `studio_disconnect`.
    - Every agent mutation pushes an Undo checkpoint onto Studio's `Ctrl+Z` / `Ctrl+Y` stack.
 
 ---
 
 ## MCP Client Configuration
 
-Add `iota_mcp.exe` to your MCP client (e.g. Antigravity, Claude Desktop, or Cursor):
+Add `iota_mcp` (or `iota_mcp.exe` on Windows) to your MCP client (e.g. Antigravity, Claude Desktop, or Cursor):
 
 ```json
 {
   "mcpServers": {
     "iota-studio": {
-      "command": "PATH-TO/iota_mcp.exe",
+      "command": "/path/to/iota_mcp",
       "args": []
     }
   }

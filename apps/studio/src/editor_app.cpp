@@ -134,6 +134,13 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   }
   imguiInitialized_ = true;
 
+  if (!headlessSmokeTest) {
+    const float rawScale = ImGui_ImplGlfw_GetContentScaleForWindow(window_);
+    if (rawScale > 0.0f) {
+      applyUiDpiScale(rawScale);
+    }
+  }
+
   project_ = iota::model::createStarterProject();
   if (!project_.compositions.empty() && project_.compositions[0].elements.size() > 4) {
     setSingleSelection(0, 4);  // Circular Spectrum default selection
@@ -182,6 +189,16 @@ void EditorApp::shutdown() {
     glfwTerminate();
   }
   platform::destroyWindowIcons(appIconBig_, appIconSmall_);
+}
+
+void EditorApp::applyUiDpiScale(float scale) {
+  const float clamped = std::clamp(scale, 1.0f, 3.0f);
+  ImGuiStyle& style = ImGui::GetStyle();
+  style = ImGuiStyle();
+  applyStudioTheme();
+  style.ScaleAllSizes(clamped);
+  style.FontScaleDpi = clamped;
+  uiDpiScale_ = clamped;
 }
 
 void EditorApp::applyStudioTheme() {
@@ -319,6 +336,16 @@ int EditorApp::run() {
       timing.fxaaEnabled = fxaaEnabled_;
       timing.fpsStat = ImGui::GetIO().Framerate;
       renderer_.renderFrame(project_, audio_, timing, lastLiveRenderW_, lastLiveRenderH_, {}, &frameStats_);
+    }
+
+    if (!isSmokeTest_) {
+      const float rawScale = ImGui_ImplGlfw_GetContentScaleForWindow(window_);
+      if (rawScale > 0.0f) {
+        const float clamped = std::clamp(rawScale, 1.0f, 3.0f);
+        if (std::abs(clamped - uiDpiScale_) > 0.05f) {
+          applyUiDpiScale(clamped);
+        }
+      }
     }
 
     ImGui_ImplOpenGL3_NewFrame();

@@ -223,7 +223,12 @@ std::filesystem::path findBundledAssetPath(std::string_view relPath) {
   const ssize_t n = readlink("/proc/self/exe", exeBuf, sizeof(exeBuf) - 1);
   if (n > 0) {
     exeBuf[n] = '\0';
-    std::filesystem::path dir = std::filesystem::path(exeBuf).parent_path();
+    const std::filesystem::path exeDir = std::filesystem::path(exeBuf).parent_path();
+    const std::filesystem::path prefixAsset = (exeDir / "../share/iota-studio" / relPath).lexically_normal();
+    if (iota::core::pathExistsNoThrow(prefixAsset)) {
+      return prefixAsset;
+    }
+    std::filesystem::path dir = exeDir;
     for (int depth = 0; depth < 5 && !dir.empty(); ++depth) {
       const auto cand = dir / relPath;
       if (iota::core::pathExistsNoThrow(cand)) {
@@ -232,6 +237,10 @@ std::filesystem::path findBundledAssetPath(std::string_view relPath) {
       if (!dir.has_parent_path() || dir == dir.parent_path()) break;
       dir = dir.parent_path();
     }
+  }
+  const std::filesystem::path systemAsset = std::filesystem::path("/usr/share/iota-studio") / relPath;
+  if (iota::core::pathExistsNoThrow(systemAsset)) {
+    return systemAsset;
   }
   const auto cwdCand = std::filesystem::current_path(ec) / relPath;
   if (!ec && iota::core::pathExistsNoThrow(cwdCand)) {
@@ -533,6 +542,7 @@ bool openExternalUrl(GLFWwindow* owner, const std::string& url) {
 }
 
 void applyWindowHintsBeforeCreate() {
+  glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
 #if !defined(_WIN32) && defined(GLFW_WAYLAND_APP_ID)
   glfwWindowHintString(GLFW_WAYLAND_APP_ID, "iota-studio");
 #endif

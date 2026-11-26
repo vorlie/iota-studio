@@ -27,3 +27,5 @@ target_link_libraries(iota_mcp_app
 )
 
 iota_configure_target(iota_mcp_app)
+
+install(TARGETS iota_mcp_app RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

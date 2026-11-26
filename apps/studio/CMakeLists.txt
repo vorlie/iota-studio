@@ -45,6 +45,9 @@ if(WIN32)
     @ONLY
   )
   target_sources(iota_studio PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/iota_studio.rc")
+  if(MSVC)
+    target_sources(iota_studio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources/iota_studio.manifest")
+  endif()
 endif()
 
 target_link_libraries(iota_studio
@@ -80,10 +83,10 @@ if(IOTA_BUILD_MCP)
   target_link_libraries(iota_studio PRIVATE iota_mcp)
 endif()
 
-if(IOTA_DISCORD_SDK_FOUND AND EXISTS "${IOTA_DISCORD_SDK_RUNTIME_LIB}")
+if(IOTA_DISCORD_SDK_FOUND)
   add_custom_command(TARGET iota_studio POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${IOTA_DISCORD_SDK_RUNTIME_LIB}"
+      "$<TARGET_FILE:discord_social_sdk>"
       "$<TARGET_FILE_DIR:iota_studio>"
     COMMENT "Copying Discord Social SDK runtime library"
   )
@@ -96,3 +99,23 @@ if(IOTA_DISCORD_SDK_FOUND AND EXISTS "${IOTA_DISCORD_SDK_RUNTIME_LIB}")
 endif()
 
 iota_configure_target(iota_studio)
+
+install(TARGETS iota_studio RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if(IOTA_DISCORD_SDK_FOUND)
+  install(FILES "$<TARGET_FILE:discord_social_sdk>" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+if(UNIX AND NOT APPLE)
+  install(FILES "${CMAKE_SOURCE_DIR}/assets/icon.png"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/pixmaps"
+    RENAME "iota-studio.png"
+  )
+  install(FILES "${CMAKE_SOURCE_DIR}/assets/icon.png"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/iota-studio/assets"
+  )
+  install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/io.github.vorlie.iota_studio.desktop"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+  )
+  install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/io.github.vorlie.iota_studio.metainfo.xml"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo"
+  )
+endif()

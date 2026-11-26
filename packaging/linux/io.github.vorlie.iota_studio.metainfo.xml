@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.vorlie.iota_studio</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Iota Studio</name>
+  <summary>Native desktop studio for designing and exporting audio-reactive music visualizers</summary>
+  <description>
+    <p>
+      Iota Studio is a cross-platform C++20 desktop application and OpenGL 4.5 rendering engine
+      for designing, previewing, and exporting audio-reactive music visualizers.
+    </p>
+    <p>
+      Features include frame-rate-independent FFT/DFT audio analysis, SoundKeys band extraction,
+      HDR RGBA16F compositing with physical bloom and filmic tonemapping, 3D GPU particle systems,
+      camera shake, custom GLSL 450 shaders, and deterministic FFmpeg MP4 export.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.vorlie.iota_studio.desktop</launchable>
+  <url type="homepage">https://github.com/vorlie/iota-studio</url>
+  <developer id="io.github.vorlie">
+    <name>Vorlie</name>
+  </developer>
+  <content_rating type="oars-1.1" />
+</component>

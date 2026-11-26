@@ -636,6 +636,9 @@ TEST_CASE("MCP LiveBridgeHost serves concurrent LiveBridgeClient connections cle
 
   CHECK(clientA.isConnected());
   CHECK(clientB.isConnected());
+  for (int i = 0; i < 40 && !host.hasConnectedClient(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
   CHECK(host.hasConnectedClient());
 
   std::atomic<bool> okA{false};

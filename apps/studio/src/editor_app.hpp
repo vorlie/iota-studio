@@ -63,6 +63,7 @@ class EditorApp {
 
  private:
   void applyStudioTheme();
+  void applyUiDpiScale(float scale);
   void setupDefaultDockLayout(unsigned int dockspaceId);
   void drawMenuBar();
   void drawViewportPanel();
@@ -202,6 +203,7 @@ class EditorApp {
   std::string lastImportedVizName_;
   void* appIconBig_ = nullptr;
   void* appIconSmall_ = nullptr;
+  float uiDpiScale_ = 1.0f;
   std::string layoutIniPath_;
   std::string statusBanner_ = "Ready";
 };

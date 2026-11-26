@@ -1,0 +1,79 @@
+name: Cross-Platform Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (GCC Ninja + Xvfb Mesa GL 4.5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgl1-mesa-dev \
+            libgl1-mesa-dri \
+            mesa-utils \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            wayland-protocols \
+            libfreetype-dev \
+            libfontconfig1-dev \
+            libharfbuzz-dev \
+            libcurl4-openssl-dev \
+            libasound2-dev \
+            ffmpeg \
+            xvfb \
+            desktop-file-utils
+
+      - name: Configure
+        run: cmake --preset linux-gcc-ninja-release-mcp
+
+      - name: Build
+        run: cmake --build --preset linux-release-mcp --parallel
+
+      - name: Test under Xvfb + Mesa llvmpipe (GL 4.5)
+        run: |
+          xvfb-run -a -s "-screen 0 1280x720x24" \
+            env LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=4.5 MESA_GLSL_VERSION_OVERRIDE=450 \
+            ctest --preset linux-release-mcp --output-on-failure
+
+      - name: Verify CMake install and desktop metadata
+        run: |
+          cmake --install build/linux-release-mcp --prefix /tmp/iota-stage
+          test -x /tmp/iota-stage/bin/iota_studio
+          test -x /tmp/iota-stage/bin/iota_mcp
+          desktop-file-validate /tmp/iota-stage/share/applications/io.github.vorlie.iota_studio.desktop
+
+  windows:
+    name: Windows (MSVC x64 Ninja)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC x64 Developer Environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake --preset windows-msvc-ninja-release-mcp
+
+      - name: Build
+        run: cmake --build --preset release-mcp --parallel
+
+      - name: Run non-GL unit tests
+        run: .\build\release-mcp\tests\iota_tests.exe "-tce=*OpenGL*,*GL*,*VideoExportSession*"
