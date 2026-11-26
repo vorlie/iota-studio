@@ -18,16 +18,12 @@
 #include "inspector_panel.hpp"
 #include "sound_keys_panel.hpp"
 
+#include "platform_desktop.hpp"
+
 #include "iota/core/utf8_path.hpp"
 #include "iota/preset_io/preset_io.hpp"
 
-#include <windows.h>
-#include <commdlg.h>
-#include <shellapi.h>
-
-#define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -53,48 +49,6 @@ constexpr bool kPreferMcpReleaseAsset = true;
 constexpr bool kPreferMcpReleaseAsset = false;
 #endif
 
-std::optional<std::filesystem::path> showOpenFileDialog(HWND owner,
-                                                        const wchar_t* title,
-                                                        const wchar_t* filter) {
-  std::vector<wchar_t> fileBuf(4096, L'\0');
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = owner;
-  ofn.lpstrFilter = filter;
-  ofn.lpstrFile = fileBuf.data();
-  ofn.nMaxFile = static_cast<DWORD>(fileBuf.size());
-  ofn.lpstrTitle = title;
-  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-  if (GetOpenFileNameW(&ofn)) {
-    return std::filesystem::path(fileBuf.data());
-  }
-  return std::nullopt;
-}
-
-std::optional<std::filesystem::path> showSaveFileDialog(HWND owner,
-                                                        const wchar_t* title,
-                                                        const wchar_t* filter,
-                                                        const wchar_t* defExt,
-                                                        const wchar_t* initialName) {
-  std::vector<wchar_t> fileBuf(4096, L'\0');
-  if (initialName) {
-    wcsncpy_s(fileBuf.data(), fileBuf.size(), initialName, _TRUNCATE);
-  }
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = owner;
-  ofn.lpstrFilter = filter;
-  ofn.lpstrFile = fileBuf.data();
-  ofn.nMaxFile = static_cast<DWORD>(fileBuf.size());
-  ofn.lpstrTitle = title;
-  ofn.lpstrDefExt = defExt;
-  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-  if (GetSaveFileNameW(&ofn)) {
-    return std::filesystem::path(fileBuf.data());
-  }
-  return std::nullopt;
-}
-
 std::vector<uint8_t> readAllBytes(const std::filesystem::path& p) {
   std::ifstream f(p, std::ios::binary | std::ios::ate);
   if (!f.is_open()) return {};
@@ -106,40 +60,10 @@ std::vector<uint8_t> readAllBytes(const std::filesystem::path& p) {
   return out;
 }
 
-std::vector<std::filesystem::path> showOpenFilesDialog(HWND owner,
-                                                       const wchar_t* title,
-                                                       const wchar_t* filter) {
-  std::vector<wchar_t> buf(32768, L'\0');
-  OPENFILENAMEW ofn{};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = owner;
-  ofn.lpstrFilter = filter;
-  ofn.lpstrFile = buf.data();
-  ofn.nMaxFile = static_cast<DWORD>(buf.size());
-  ofn.lpstrTitle = title;
-  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_ALLOWMULTISELECT |
-              OFN_EXPLORER | OFN_NOCHANGEDIR;
-  std::vector<std::filesystem::path> out;
-  if (!GetOpenFileNameW(&ofn)) {
-    return out;
-  }
-  const wchar_t* p = buf.data();
-  const std::wstring first(p);
-  if (first.empty()) {
-    return out;
-  }
-  p += first.size() + 1;
-  if (*p == L'\0') {
-    out.emplace_back(first);
-    return out;
-  }
-  const std::filesystem::path dir(first);
-  while (*p != L'\0') {
-    const std::wstring fname(p);
-    out.push_back(dir / fname);
-    p += fname.size() + 1;
-  }
-  return out;
+bool supportsAdaptiveSwapInterval() noexcept {
+  return glfwExtensionSupported("WGL_EXT_swap_control_tear") == GLFW_TRUE ||
+         glfwExtensionSupported("GLX_EXT_swap_control_tear") == GLFW_TRUE ||
+         glfwExtensionSupported("EGL_EXT_swap_control_tear") == GLFW_TRUE;
 }
 
 }  // namespace
@@ -161,6 +85,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
   glfwWindowHint(GLFW_VISIBLE, headlessSmokeTest ? GLFW_FALSE : GLFW_TRUE);
+  platform::applyWindowHintsBeforeCreate();
 
   window_ = glfwCreateWindow(headlessSmokeTest ? 320 : 1600,
                              headlessSmokeTest ? 240 : 940,
@@ -177,21 +102,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   glfwSwapInterval(headlessSmokeTest ? 0 : 1);
 
   if (!headlessSmokeTest) {
-    if (HWND hwnd = glfwGetWin32Window(window_)) {
-      HINSTANCE hInst = GetModuleHandleW(nullptr);
-      const int bigW = GetSystemMetrics(SM_CXICON);
-      const int bigH = GetSystemMetrics(SM_CYICON);
-      const int smallW = GetSystemMetrics(SM_CXSMICON);
-      const int smallH = GetSystemMetrics(SM_CYSMICON);
-      appIconBig_ = LoadImageW(hInst, MAKEINTRESOURCEW(101), IMAGE_ICON, bigW, bigH, LR_DEFAULTCOLOR);
-      appIconSmall_ = LoadImageW(hInst, MAKEINTRESOURCEW(101), IMAGE_ICON, smallW, smallH, LR_DEFAULTCOLOR);
-      if (appIconBig_) {
-        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(appIconBig_));
-      }
-      if (appIconSmall_) {
-        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(appIconSmall_));
-      }
-    }
+    platform::applyWindowIcon(window_, appIconBig_, appIconSmall_);
   }
 
   std::string err;
@@ -209,43 +120,12 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.IniFilename = headlessSmokeTest ? nullptr : "iota_studio_layout.ini";
+  layoutIniPath_ = headlessSmokeTest ? std::string{} : platform::defaultLayoutIniPath();
+  io.IniFilename = headlessSmokeTest ? nullptr : layoutIniPath_.c_str();
 
   applyStudioTheme();
 
-  {
-    std::filesystem::path winFonts("C:/Windows/Fonts");
-    wchar_t winDir[MAX_PATH]{};
-    if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0) {
-      winFonts = std::filesystem::path(winDir) / "Fonts";
-    }
-    const auto primaryFont = winFonts / "segoeui.ttf";
-    if (iota::core::pathExistsNoThrow(primaryFont) &&
-        io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(primaryFont).c_str(), 16.0f) != nullptr) {
-      ImFontConfig mergeCfg;
-      mergeCfg.MergeMode = true;
-      for (const char* cjkName : {"YuGothM.ttc", "msgothic.ttc", "msyh.ttc"}) {
-        const auto cjkPath = winFonts / cjkName;
-        if (iota::core::pathExistsNoThrow(cjkPath)) {
-          io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(cjkPath).c_str(), 16.0f, &mergeCfg);
-          break;
-        }
-      }
-      for (const char* extraName : {"malgun.ttf", "seguisym.ttf"}) {
-        const auto extraPath = winFonts / extraName;
-        if (iota::core::pathExistsNoThrow(extraPath)) {
-          io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(extraPath).c_str(), 16.0f, &mergeCfg);
-        }
-      }
-    }
-    for (const char* monoName : {"consola.ttf", "CascadiaMono.ttf", "lucon.ttf"}) {
-      const auto monoPath = winFonts / monoName;
-      if (iota::core::pathExistsNoThrow(monoPath)) {
-        codeFont_ = io.Fonts->AddFontFromFileTTF(iota::core::pathToUtf8(monoPath).c_str(), 15.0f);
-        if (codeFont_ != nullptr) break;
-      }
-    }
-  }
+  platform::loadPlatformImGuiFonts(io, codeFont_);
 
   if (!ImGui_ImplGlfw_InitForOpenGL(window_, true) ||
       !ImGui_ImplOpenGL3_Init("#version 450")) {
@@ -301,14 +181,7 @@ void EditorApp::shutdown() {
     window_ = nullptr;
     glfwTerminate();
   }
-  if (appIconBig_) {
-    DestroyIcon(static_cast<HICON>(appIconBig_));
-    appIconBig_ = nullptr;
-  }
-  if (appIconSmall_) {
-    DestroyIcon(static_cast<HICON>(appIconSmall_));
-    appIconSmall_ = nullptr;
-  }
+  platform::destroyWindowIcons(appIconBig_, appIconSmall_);
 }
 
 void EditorApp::applyStudioTheme() {
@@ -336,7 +209,7 @@ void EditorApp::applyStudioTheme() {
 
 void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
   dockLayoutBuilt_ = true;
-  if (iota::core::pathExistsNoThrow("iota_studio_layout.ini")) {
+  if (!layoutIniPath_.empty() && iota::core::pathExistsNoThrow(iota::core::pathFromUtf8(layoutIniPath_))) {
     return;
   }
 
@@ -931,7 +804,7 @@ void EditorApp::drawMenuBar() {
       if (!sdkAvailable) {
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-          ImGui::SetTooltip("Discord Social SDK runtime DLL is missing in this build.");
+          ImGui::SetTooltip("Discord Social SDK runtime library is missing in this build.");
         }
       }
 
@@ -1002,8 +875,14 @@ void EditorApp::drawMenuBar() {
         glfwSwapInterval(1);
       }
       if (ImGui::MenuItem("Adaptive (-1)", nullptr, vsyncMode_ == VSyncMode::Adaptive)) {
-        vsyncMode_ = VSyncMode::Adaptive;
-        glfwSwapInterval(-1);
+        if (supportsAdaptiveSwapInterval()) {
+          vsyncMode_ = VSyncMode::Adaptive;
+          glfwSwapInterval(-1);
+        } else {
+          vsyncMode_ = VSyncMode::On;
+          glfwSwapInterval(1);
+          statusBanner_ = "Adaptive VSync not supported by display driver — using standard VSync";
+        }
       }
       if (ImGui::MenuItem("Off (Uncapped)", nullptr, vsyncMode_ == VSyncMode::Off)) {
         vsyncMode_ = VSyncMode::Off;
@@ -1121,10 +1000,17 @@ void EditorApp::drawMenuBar() {
     const std::string curPipe = mcpBridgeHost_.isListening()
                                     ? mcpBridgeHost_.pipeName()
                                     : iota::mcp::defaultLiveBridgePipeName();
+#ifdef _WIN32
     if (ImGui::MenuItem("Copy Bridge Pipe Name")) {
       ImGui::SetClipboardText(curPipe.c_str());
       statusBanner_ = "Copied MCP pipe name";
     }
+#else
+    if (ImGui::MenuItem("Copy Bridge Socket Path")) {
+      ImGui::SetClipboardText(curPipe.c_str());
+      statusBanner_ = "Copied MCP socket path";
+    }
+#endif
     ImGui::EndMenu();
   }
 
@@ -1141,8 +1027,13 @@ void EditorApp::drawMenuBar() {
     }
     ImGui::PopStyleColor(2);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+#ifdef _WIN32
       ImGui::SetTooltip("Pipe: %s\nClick to turn off MCP Live Studio Bridge.",
                         mcpBridgeHost_.pipeName().c_str());
+#else
+      ImGui::SetTooltip("Socket: %s\nClick to turn off MCP Live Studio Bridge.",
+                        mcpBridgeHost_.pipeName().c_str());
+#endif
     }
   }
 #endif
@@ -1665,8 +1556,12 @@ void EditorApp::drawInspectorPanel() {
     } else if (el.type == iota::model::ElementType::Text ||
                el.type == iota::model::ElementType::StatText ||
                el.type == iota::model::ElementType::AppLogo) {
+      const char* fontBackendLabel =
+          frameStats_.fontUsingDirectWrite
+              ? "DirectWrite Unicode"
+              : (frameStats_.fontUsingNativeBackend ? "FreeType + HarfBuzz Unicode" : "Fallback Atlas");
       ImGui::TextDisabled("%s | Cached glyphs: %d",
-                          frameStats_.fontUsingDirectWrite ? "DirectWrite Unicode" : "Fallback Atlas",
+                          fontBackendLabel,
                           frameStats_.cachedGlyphs);
       auto ensureTextProps = [&]() {
         const auto defText = iota::model::createDefaultElement(iota::model::ElementType::Text);
@@ -1930,10 +1825,11 @@ void EditorApp::drawInspectorPanel() {
     }
 
     if (actions.requestLocalAssetImport && !actions.assetTargetPropName.empty() && window_) {
-      HWND hwnd = glfwGetWin32Window(window_);
-      if (auto chosen = showOpenFileDialog(hwnd,
-                                             L"Import Image Asset into Preset",
-                                             L"Images (*.png;*.jpg;*.jpeg;*.bmp)\0*.png;*.jpg;*.jpeg;*.bmp\0All Files (*.*)\0*.*\0")) {
+      static constexpr platform::FileDialogFilter kFilters[] = {
+          {"Images (*.png;*.jpg;*.jpeg;*.bmp)", "png;jpg;jpeg;bmp"},
+          {"All Files (*.*)", "*"},
+      };
+      if (auto chosen = platform::showOpenFileDialog(window_, "Import Image Asset into Preset", kFilters)) {
         auto bytes = readAllBytes(*chosen);
         if (!bytes.empty()) {
           const std::string fname = iota::core::pathFilenameUtf8(*chosen);
@@ -1947,10 +1843,11 @@ void EditorApp::drawInspectorPanel() {
     }
 
     if (actions.requestLocalFontImport && !actions.assetTargetPropName.empty() && window_) {
-      HWND hwnd = glfwGetWin32Window(window_);
-      if (auto chosen = showOpenFileDialog(hwnd,
-                                             L"Import TrueType / OpenType Font",
-                                             L"Fonts (*.ttf;*.otf;*.ttc)\0*.ttf;*.otf;*.ttc\0All Files (*.*)\0*.*\0")) {
+      static constexpr platform::FileDialogFilter kFilters[] = {
+          {"Fonts (*.ttf;*.otf;*.ttc)", "ttf;otf;ttc"},
+          {"All Files (*.*)", "*"},
+      };
+      if (auto chosen = platform::showOpenFileDialog(window_, "Import TrueType / OpenType Font", kFilters)) {
         auto bytes = readAllBytes(*chosen);
         if (!bytes.empty()) {
           const std::string fname = iota::core::pathFilenameUtf8(*chosen);
@@ -1964,11 +1861,11 @@ void EditorApp::drawInspectorPanel() {
     }
 
     if (actions.requestLocalShaderImport && !actions.assetTargetPropName.empty() && window_) {
-      HWND hwnd = glfwGetWin32Window(window_);
-      if (auto chosen = showOpenFileDialog(
-              hwnd,
-              L"Import GLSL Shader Asset into Project",
-              L"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0")) {
+      static constexpr platform::FileDialogFilter kFilters[] = {
+          {"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)", "glsl;frag;vert;fsh;vsh;fs;vs"},
+          {"All Files (*.*)", "*"},
+      };
+      if (auto chosen = platform::showOpenFileDialog(window_, "Import GLSL Shader Asset into Project", kFilters)) {
         auto bytes = readAllBytes(*chosen);
         if (!bytes.empty()) {
           const std::string fname = iota::core::pathFilenameUtf8(*chosen);
@@ -2346,6 +2243,9 @@ void EditorApp::drawExportModal() {
     static constexpr iota::export_video::VideoEncoderBackend kBackends[] = {
         iota::export_video::VideoEncoderBackend::Auto,
         iota::export_video::VideoEncoderBackend::NvidiaNvenc,
+#ifndef _WIN32
+        iota::export_video::VideoEncoderBackend::LinuxVaApi,
+#endif
         iota::export_video::VideoEncoderBackend::AmdAmf,
         iota::export_video::VideoEncoderBackend::IntelQsv,
         iota::export_video::VideoEncoderBackend::CpuSoftware,
@@ -2363,7 +2263,7 @@ void EditorApp::drawExportModal() {
       ImGui::EndCombo();
     }
     showWrappedTooltip(
-        "Auto uses GPU hardware acceleration (NVIDIA NVENC, AMD AMF, or Intel Quick Sync) when detected, "
+        "Auto uses GPU hardware acceleration (NVIDIA NVENC, Linux VA-API, AMD AMF, or Intel Quick Sync) when detected, "
         "which significantly speeds up MP4 rendering and reduces CPU usage.\n"
         "Select CPU Software (x264 / x265) for maximum software encoding quality.");
 
@@ -2400,7 +2300,7 @@ void EditorApp::drawExportModal() {
       ImGui::TextDisabled("Hardware Status: Detecting GPU hardware encoders...");
     } else if (!hwCaps.ffmpegAvailable) {
       ImGui::TextColored(ImVec4(1.0f, 0.40f, 0.40f, 1.0f),
-                         "FFmpeg not found — install ffmpeg.exe to export MP4 videos.");
+                         "FFmpeg not found — install FFmpeg to export MP4 videos.");
     } else if (hwCaps.hasAnyHardware()) {
       ImGui::TextColored(ImVec4(0.45f, 0.92f, 0.55f, 1.0f), "%s", hwCaps.summaryText().c_str());
     } else {
@@ -2431,11 +2331,11 @@ void EditorApp::drawExportModal() {
     ImGui::PopItemWidth();
     ImGui::SameLine();
     if (ImGui::Button("Browse...") && window_) {
-      if (auto chosen = showSaveFileDialog(glfwGetWin32Window(window_),
-                                             L"Save Exported Video",
-                                             L"MP4 Video (*.mp4)\0*.mp4\0",
-                                             L"mp4",
-                                             L"iota_export.mp4")) {
+      static constexpr platform::FileDialogFilter kFilters[] = {
+          {"MP4 Video (*.mp4)", "mp4"},
+      };
+      if (auto chosen = platform::showSaveFileDialog(
+              window_, "Save Exported Video", kFilters, "mp4", "iota_export.mp4")) {
         exportCfg_.outputPath = *chosen;
       }
     }
@@ -2541,10 +2441,11 @@ void EditorApp::drawAssetBrowserPanel() {
     renderer_.invalidateLocalAssets();
   }
   if (actions.requestImportImages && window_) {
-    const auto chosen = showOpenFilesDialog(
-        glfwGetWin32Window(window_),
-        L"Import Image Assets into Project",
-        L"Images (*.png;*.jpg;*.jpeg;*.bmp;*.tga)\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files (*.*)\0*.*\0");
+    static constexpr platform::FileDialogFilter kFilters[] = {
+        {"Images (*.png;*.jpg;*.jpeg;*.bmp;*.tga)", "png;jpg;jpeg;bmp;tga"},
+        {"All Files (*.*)", "*"},
+    };
+    const auto chosen = platform::showOpenFilesDialog(window_, "Import Image Assets into Project", kFilters);
     int imported = 0;
     for (const auto& path : chosen) {
       auto bytes = readAllBytes(path);
@@ -2564,10 +2465,11 @@ void EditorApp::drawAssetBrowserPanel() {
     }
   }
   if (actions.requestImportShaders && window_) {
-    const auto chosen = showOpenFilesDialog(
-        glfwGetWin32Window(window_),
-        L"Import GLSL Shader Assets into Project",
-        L"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0");
+    static constexpr platform::FileDialogFilter kFilters[] = {
+        {"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)", "glsl;frag;vert;fsh;vsh;fs;vs"},
+        {"All Files (*.*)", "*"},
+    };
+    const auto chosen = platform::showOpenFilesDialog(window_, "Import GLSL Shader Assets into Project", kFilters);
     int imported = 0;
     for (const auto& path : chosen) {
       auto bytes = readAllBytes(path);
@@ -2587,10 +2489,11 @@ void EditorApp::drawAssetBrowserPanel() {
     }
   }
   if (actions.requestReplaceLocalAsset && !actions.replaceTargetName.empty() && window_) {
-    if (auto chosen = showOpenFileDialog(
-            glfwGetWin32Window(window_),
-            L"Replace Local Asset File",
-            L"Supported Assets (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0")) {
+    static constexpr platform::FileDialogFilter kFilters[] = {
+        {"Supported Assets", "png;jpg;jpeg;bmp;tga;glsl;frag;vert;fsh;vsh;fs;vs"},
+        {"All Files (*.*)", "*"},
+    };
+    if (auto chosen = platform::showOpenFileDialog(window_, "Replace Local Asset File", kFilters)) {
       auto bytes = readAllBytes(*chosen);
       if (!bytes.empty()) {
         project_.localAssets[actions.replaceTargetName] = std::move(bytes);
@@ -2783,10 +2686,11 @@ void EditorApp::drawShaderEditorPanel() {
     pushUndoState(actions.editLabel.empty() ? "Edit Shader" : actions.editLabel);
   }
   if (actions.requestImportShader && window_) {
-    const auto chosen = showOpenFilesDialog(
-        glfwGetWin32Window(window_),
-        L"Import GLSL Shader Assets into Project",
-        L"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)\0*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs\0All Files (*.*)\0*.*\0");
+    static constexpr platform::FileDialogFilter kFilters[] = {
+        {"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)", "glsl;frag;vert;fsh;vsh;fs;vs"},
+        {"All Files (*.*)", "*"},
+    };
+    const auto chosen = platform::showOpenFilesDialog(window_, "Import GLSL Shader Assets into Project", kFilters);
     std::string firstImported;
     int imported = 0;
     for (const auto& path : chosen) {
@@ -2842,19 +2746,7 @@ void EditorApp::openExternalUrl(const std::string& url) {
     statusBanner_ = "Blocked unsafe release URL";
     return;
   }
-  const int needed = MultiByteToWideChar(
-      CP_UTF8, 0, url.data(), static_cast<int>(url.size()), nullptr, 0);
-  if (needed <= 0) {
-    statusBanner_ = "Failed to encode URL";
-    return;
-  }
-  std::wstring wurl(static_cast<size_t>(needed), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()), wurl.data(), needed);
-
-  HWND owner = window_ ? glfwGetWin32Window(window_) : nullptr;
-  const INT_PTR rc = reinterpret_cast<INT_PTR>(
-      ShellExecuteW(owner, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-  if (rc <= 32) {
+  if (!platform::openExternalUrl(window_, url)) {
     statusBanner_ = "Failed to open browser for release link";
   } else {
     statusBanner_ = "Opened release page in browser";
@@ -2927,8 +2819,8 @@ bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
   undoStack_.clear(project_);
 
   if (!project_.metadata.audioPath.empty()) {
-    const std::filesystem::path linkedAudio = iota::core::pathFromUtf8(project_.metadata.audioPath);
-    if (iota::core::pathExistsNoThrow(linkedAudio) && audio_.loadFile(linkedAudio)) {
+    if (auto resolvedAudio = iota::preset_io::resolvePortableAudioPath(project_.metadata.audioPath, path);
+        resolvedAudio && audio_.loadFile(*resolvedAudio)) {
       playAccumTimeSec_ = 0.0;
       audio_.pause();
     }
@@ -2957,6 +2849,10 @@ bool EditorApp::saveCurrentProject() {
   project_.metadata.previewWidth = previewWidth_;
   project_.metadata.previewHeight = previewHeight_;
   project_.metadata.targetFps = exportCfg_.fps;
+  if (!project_.metadata.audioPath.empty()) {
+    project_.metadata.audioPath =
+        iota::preset_io::makePortableAudioPath(project_.metadata.audioPath, currentProjectPath_);
+  }
 
   std::string err;
   if (!iota::preset_io::saveProjectAutoFormat(project_, currentProjectPath_, &err)) {
@@ -2973,29 +2869,36 @@ bool EditorApp::saveCurrentProject() {
 bool EditorApp::saveProjectAsDialog(const char* preferredExt) {
   if (!window_) return false;
   const std::string extStr = preferredExt ? preferredExt : "iota";
-  const wchar_t* title = L"Save Project (.iota)";
-  const wchar_t* filter =
-      L"Iota Project (*.iota)\0*.iota\0Visualizer Preset (*.viz)\0*.viz\0JSON Scene (*.json)\0*.json\0";
-  const wchar_t* defExt = L"iota";
-  const wchar_t* initName = L"project.iota";
+  const char* title = "Save Project (.iota)";
+  std::vector<platform::FileDialogFilter> filters = {
+      {"Iota Project (*.iota)", "iota"},
+      {"Visualizer Preset (*.viz)", "viz"},
+      {"JSON Scene (*.json)", "json"},
+  };
+  const char* defExt = "iota";
+  const char* initName = "project.iota";
   if (extStr == "viz") {
-    title = L"Export Preset (.viz)";
-    filter = L"Visualizer Preset (*.viz)\0*.viz\0";
-    defExt = L"viz";
-    initName = L"preset.viz";
+    title = "Export Preset (.viz)";
+    filters = {{"Visualizer Preset (*.viz)", "viz"}};
+    defExt = "viz";
+    initName = "preset.viz";
   } else if (extStr == "json") {
-    title = L"Export Scene JSON (.json)";
-    filter = L"JSON Scene (*.json)\0*.json\0";
-    defExt = L"json";
-    initName = L"scene.json";
+    title = "Export Scene JSON (.json)";
+    filters = {{"JSON Scene (*.json)", "json"}};
+    defExt = "json";
+    initName = "scene.json";
   }
 
-  auto chosen = showSaveFileDialog(glfwGetWin32Window(window_), title, filter, defExt, initName);
+  auto chosen = platform::showSaveFileDialog(window_, title, filters, defExt, initName);
   if (!chosen) return false;
 
   project_.metadata.previewWidth = previewWidth_;
   project_.metadata.previewHeight = previewHeight_;
   project_.metadata.targetFps = exportCfg_.fps;
+  if (!project_.metadata.audioPath.empty()) {
+    project_.metadata.audioPath =
+        iota::preset_io::makePortableAudioPath(project_.metadata.audioPath, *chosen);
+  }
   if (project_.metadata.name.empty() || project_.metadata.name == "Untitled Project") {
     project_.metadata.name = iota::core::pathStemUtf8(*chosen);
   }
@@ -3015,10 +2918,12 @@ bool EditorApp::saveProjectAsDialog(const char* preferredExt) {
 
 void EditorApp::actionOpenPreset() {
   if (!window_) return;
-  auto chosen = showOpenFileDialog(
-      glfwGetWin32Window(window_),
-      L"Open Project / Visualizer Preset (.iota / .viz / .json)",
-      L"Iota & Presets (*.iota;*.viz;*.json;*.txt)\0*.iota;*.viz;*.json;*.txt\0All Files (*.*)\0*.*\0");
+  static constexpr platform::FileDialogFilter kFilters[] = {
+      {"Iota & Presets (*.iota;*.viz;*.json;*.txt)", "iota;viz;json;txt"},
+      {"All Files (*.*)", "*"},
+  };
+  auto chosen = platform::showOpenFileDialog(
+      window_, "Open Project / Visualizer Preset (.iota / .viz / .json)", kFilters);
   if (!chosen) return;
   loadProjectFromPath(*chosen);
 }
@@ -3029,9 +2934,11 @@ void EditorApp::actionSavePreset(bool asViz) {
 
 void EditorApp::actionOpenAudio() {
   if (!window_) return;
-  auto chosen = showOpenFileDialog(glfwGetWin32Window(window_),
-                                     L"Open Audio Track",
-                                     L"Audio Files (*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.opus)\0*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.opus\0All Files (*.*)\0*.*\0");
+  static constexpr platform::FileDialogFilter kFilters[] = {
+      {"Audio Files (*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.opus)", "mp3;wav;flac;ogg;m4a;aac;opus"},
+      {"All Files (*.*)", "*"},
+  };
+  auto chosen = platform::showOpenFileDialog(window_, "Open Audio Track", kFilters);
   if (!chosen) return;
 
   std::string err;
@@ -3107,8 +3014,8 @@ class EditorLiveStudioTarget final : public iota::mcp::IStudioBridgeTarget {
     app_.undoStack_.clear(app_.project_);
 
     if (!app_.project_.metadata.audioPath.empty()) {
-      const std::filesystem::path linkedAudio = iota::core::pathFromUtf8(app_.project_.metadata.audioPath);
-      if (iota::core::pathExistsNoThrow(linkedAudio) && app_.audio_.loadFile(linkedAudio)) {
+      if (auto resolvedAudio = iota::preset_io::resolvePortableAudioPath(app_.project_.metadata.audioPath, path);
+          resolvedAudio && app_.audio_.loadFile(*resolvedAudio)) {
         app_.playAccumTimeSec_ = 0.0;
         app_.audio_.pause();
       }

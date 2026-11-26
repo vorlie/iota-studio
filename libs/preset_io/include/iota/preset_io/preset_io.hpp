@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include "iota/model/hierarchy_ops.hpp"
 #include "iota/model/scene.hpp"
@@ -56,5 +57,15 @@ bool saveProjectAsViz(
 std::string serializeHierarchyClipboardToJson(const iota::model::HierarchyClipboard& clip);
 std::optional<iota::model::HierarchyClipboard> parseHierarchyClipboardFromJson(
     std::string_view jsonText);
+
+/// Converts an audio track path inside the project directory into a portable relative POSIX path.
+std::string makePortableAudioPath(
+    std::string_view audioPath,
+    const std::filesystem::path& projectPath);
+
+/// Resolves an external audio path saved with a project (direct, relative to project dir, or sibling filename).
+std::optional<std::filesystem::path> resolvePortableAudioPath(
+    std::string_view storedAudioPath,
+    const std::filesystem::path& projectPath);
 
 } // namespace iota::preset_io

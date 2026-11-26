@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
@@ -35,9 +36,11 @@ using Json = nlohmann::json;
 
 std::string normalizePathLower(std::string_view p) {
   std::string s = iota::core::pathToUtf8(iota::core::pathFromUtf8(p).lexically_normal());
+#ifdef _WIN32
   for (char& c : s) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
+#endif
   return s;
 }
 
@@ -196,7 +199,10 @@ std::filesystem::path ProjectLibrary::defaultRegistryPath() {
   }
 #else
   if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg != nullptr && *xdg != '\0') {
-    return std::filesystem::path(xdg) / "IotaStudio" / "projects.json";
+    return iota::core::pathFromUtf8(xdg) / "IotaStudio" / "projects.json";
+  }
+  if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+    return iota::core::pathFromUtf8(home) / ".local" / "share" / "IotaStudio" / "projects.json";
   }
 #endif
   return std::filesystem::path("iota_projects.json");
@@ -292,13 +298,35 @@ bool ProjectLibrary::save(const std::filesystem::path& path) const {
       {"discordExpandedPresence", discordExpandedPresence_},
       {"recent", std::move(arr)},
   };
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out.is_open()) {
+  const std::string dumped = root.dump(2, ' ', false, Json::error_handler_t::replace);
+
+  static std::atomic<uint64_t> gLibraryTmpCounter{0};
+  std::filesystem::path tmpPath = path;
+  tmpPath += ".tmp." + std::to_string(gLibraryTmpCounter.fetch_add(1, std::memory_order_relaxed));
+
+  {
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+      return false;
+    }
+    out.write(dumped.data(), static_cast<std::streamsize>(dumped.size()));
+    out.flush();
+    if (!out.good()) {
+      out.close();
+      std::error_code rmEc;
+      std::filesystem::remove(tmpPath, rmEc);
+      return false;
+    }
+  }
+
+  std::error_code renameEc;
+  std::filesystem::rename(tmpPath, path, renameEc);
+  if (renameEc) {
+    std::error_code rmEc;
+    std::filesystem::remove(tmpPath, rmEc);
     return false;
   }
-  const std::string dumped = root.dump(2, ' ', false, Json::error_handler_t::replace);
-  out.write(dumped.data(), static_cast<std::streamsize>(dumped.size()));
-  return out.good();
+  return true;
 }
 
 void ProjectLibrary::recordOpened(RecentProjectEntry entry) {

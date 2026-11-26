@@ -224,3 +224,21 @@ TEST_CASE("ProjectLibrary persists discordRichPresenceEnabled and discordExpande
 
   std::filesystem::remove(tempPath, ec);
 }
+
+#ifndef _WIN32
+TEST_CASE("ProjectLibrary preserves case-distinct paths and resolves XDG fallback on Linux") {
+  using namespace iota::preset_io;
+
+  ProjectLibrary lib;
+  lib.recordOpened({"Upper", "/tmp/iota_case/Track.viz", "", 1, 0});
+  lib.recordOpened({"Lower", "/tmp/iota_case/track.viz", "", 1, 0});
+  CHECK(lib.entries().size() == 2);
+  CHECK(lib.removeEntry("/tmp/iota_case/Track.viz"));
+  REQUIRE(lib.entries().size() == 1);
+  CHECK(lib.entries()[0].path == "/tmp/iota_case/track.viz");
+
+  const std::filesystem::path reg = ProjectLibrary::defaultRegistryPath();
+  CHECK(reg.filename() == "projects.json");
+  CHECK(reg.parent_path().filename() == "IotaStudio");
+}
+#endif

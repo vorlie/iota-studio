@@ -115,7 +115,9 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
 
   SUBCASE("Built-in complex presets 0, 4 (RgbSplit), and 17 (Mirror+4 Comps) render without errors") {
     const char* dirEnv = std::getenv("IOTA_TEST_PRESETS_DIR");
-    REQUIRE(dirEnv != nullptr);
+    if (dirEnv == nullptr) {
+      MESSAGE("Skipping built-in APK presets GL subcase because IOTA_TEST_PRESETS_DIR is not set.");
+    } else {
     const std::filesystem::path dir(dirEnv);
 
     for (int id : {0, 4, 17}) {
@@ -130,6 +132,7 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
       REQUIRE(rt);
       CHECK(stats.lastError.empty());
       CHECK(stats.compositionsRendered == static_cast<int>(proj->compositions.size()));
+    }
     }
   }
 
@@ -339,7 +342,7 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     // Unicode filesystem image path + malformed invalid-byte fallback must never throw
     const std::filesystem::path unicodeBmp =
         std::filesystem::temp_directory_path() /
-        std::filesystem::path(L"iota_za\u017C\u00F3\u0142\u0107_\u97F3\u697D_\U0001F3B5.bmp");
+        iota::core::pathFromUtf8("iota_za\xC5\xBC\xC3\xB3\xC5\x82\xC4\x87_\xE9\x9F\xB3\xE6\xA5\xBD_\xF0\x9F\x8E\xB5.bmp");
     {
       std::ofstream bmpOut(unicodeBmp, std::ios::binary | std::ios::trunc);
       REQUIRE(bmpOut.is_open());
@@ -1099,7 +1102,7 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
       auto p = makeTextProject(str);
       iota::engine::RenderFrameStats st;
       const auto rgba = renderAndRead(p, &st);
-      CHECK_MESSAGE(st.fontUsingDirectWrite, "Expected DirectWrite active for: " << label);
+      CHECK_MESSAGE(st.fontUsingNativeBackend, "Expected native font backend active for: " << label);
       CHECK_MESSAGE(st.cachedGlyphs > 0, "No glyphs cached for: " << label);
       CHECK_MESSAGE(measureAboveBg(rgba, 0, kW) > 5000, "Empty output for script: " << label);
     }
@@ -1174,8 +1177,27 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     }
 
     // 4. Embedded local: Font Loading + Automatic CJK System Font Fallback
-    const std::filesystem::path consolaPath("C:/Windows/Fonts/consola.ttf");
-    if (std::filesystem::exists(consolaPath)) {
+    std::filesystem::path monoFontPath;
+#ifdef _WIN32
+    if (std::filesystem::exists("C:/Windows/Fonts/consola.ttf")) {
+      monoFontPath = "C:/Windows/Fonts/consola.ttf";
+    }
+#else
+    for (const char* cand : {
+             "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+             "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
+             "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+         }) {
+      if (std::filesystem::exists(cand)) {
+        monoFontPath = cand;
+        break;
+      }
+    }
+#endif
+    if (!monoFontPath.empty()) {
+      const std::filesystem::path& consolaPath = monoFontPath;
       std::ifstream tf(consolaPath, std::ios::binary | std::ios::ate);
       REQUIRE(tf.is_open());
       const auto tsz = tf.tellg();
@@ -1706,9 +1728,8 @@ TEST_CASE("GL45 HDR additive alpha clamp, CustomShader error persistence, and GL
       CHECK(v0[vi].y == doctest::Approx(v1[vi].y));
     }
 
-#ifdef _WIN32
     const auto stHit = atlas.stats();
-    if (stHit.usingDirectWrite) {
+    if (stHit.usingNativeFontBackend) {
       CHECK(stHit.cachedShapedLayouts == 1);
       CHECK(stHit.shapedLayoutHits >= 1);
       for (int n = 0; n < 70; ++n) {
@@ -1721,7 +1742,6 @@ TEST_CASE("GL45 HDR additive alpha clamp, CustomShader error persistence, and GL
       atlas.invalidateCustomFonts();
       CHECK(atlas.stats().cachedShapedLayouts == 0);
     }
-#endif
     atlas.shutdown();
   }
 

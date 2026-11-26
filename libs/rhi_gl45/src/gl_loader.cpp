@@ -15,33 +15,38 @@
 
 #include "gl_loader.hpp"
 
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+
 #include <string>
 
 namespace iota::rhi::gl {
 
 namespace {
 
-void* resolveGlSymbol(const char* name) {
-  void* ptr = reinterpret_cast<void*>(wglGetProcAddress(name));
+GLFWglproc resolveGlSymbol(const char* name) {
+  GLFWglproc ptr = glfwGetProcAddress(name);
+#ifdef _WIN32
   // wglGetProcAddress returns 0, 1, 2, 3, or -1 for invalid / core 1.1 symbols
   if (ptr == nullptr ||
-      ptr == reinterpret_cast<void*>(0x1) ||
-      ptr == reinterpret_cast<void*>(0x2) ||
-      ptr == reinterpret_cast<void*>(0x3) ||
-      ptr == reinterpret_cast<void*>(-1)) {
+      ptr == reinterpret_cast<GLFWglproc>(0x1) ||
+      ptr == reinterpret_cast<GLFWglproc>(0x2) ||
+      ptr == reinterpret_cast<GLFWglproc>(0x3) ||
+      ptr == reinterpret_cast<GLFWglproc>(-1)) {
     static HMODULE openglModule = GetModuleHandleA("opengl32.dll");
     if (openglModule != nullptr) {
-      ptr = reinterpret_cast<void*>(GetProcAddress(openglModule, name));
+      ptr = reinterpret_cast<GLFWglproc>(GetProcAddress(openglModule, name));
     } else {
       ptr = nullptr;
     }
   }
+#endif
   return ptr;
 }
 
 template <typename FnPtr>
 bool loadFn(FnPtr& dst, const char* name, std::string* outError) {
-  void* sym = resolveGlSymbol(name);
+  GLFWglproc sym = resolveGlSymbol(name);
   if (!sym) {
     if (outError) {
       *outError = std::string("Missing OpenGL symbol: ") + name;
@@ -54,7 +59,7 @@ bool loadFn(FnPtr& dst, const char* name, std::string* outError) {
 
 template <typename FnPtr>
 void loadOptionalFn(FnPtr& dst, const char* name) {
-  void* sym = resolveGlSymbol(name);
+  GLFWglproc sym = resolveGlSymbol(name);
   dst = reinterpret_cast<FnPtr>(sym);
 }
 

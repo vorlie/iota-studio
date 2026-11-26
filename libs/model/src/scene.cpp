@@ -848,7 +848,9 @@ int countAssetReferences(const Project& project, std::string_view assetUri) noex
 }
 
 bool renameLocalAsset(Project& project, std::string_view oldName, std::string_view newName) {
-  if (oldName.empty() || newName.empty() || oldName == newName) {
+  if (oldName.empty() || newName.empty() || oldName == newName ||
+      newName == "." || newName == ".." ||
+      newName.find_first_of("/\\\0", 0, 3) != std::string_view::npos) {
     return false;
   }
   const std::string oldKey(oldName);

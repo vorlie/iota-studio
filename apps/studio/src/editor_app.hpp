@@ -202,6 +202,7 @@ class EditorApp {
   std::string lastImportedVizName_;
   void* appIconBig_ = nullptr;
   void* appIconSmall_ = nullptr;
+  std::string layoutIniPath_;
   std::string statusBanner_ = "Ready";
 };
 

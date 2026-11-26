@@ -192,10 +192,30 @@ std::optional<Vec2> parseF2(std::string_view sv) noexcept {
   return Vec2{*x, *y};
 }
 
+namespace {
+
+void appendFixed6(std::string& out, float value) {
+  char buf[64]{};
+  if (std::isfinite(value)) {
+    const auto [ptr, ec] =
+        std::to_chars(buf, buf + sizeof(buf), static_cast<double>(value), std::chars_format::fixed, 6);
+    if (ec == std::errc{}) {
+      out.append(buf, ptr);
+      return;
+    }
+  }
+  out += "0.000000";
+}
+
+}  // namespace
+
 std::string formatF2(Vec2 v) {
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "%.6f %.6f", v.x, v.y);
-  return std::string(buf);
+  std::string out;
+  out.reserve(32);
+  appendFixed6(out, v.x);
+  out.push_back(' ');
+  appendFixed6(out, v.y);
+  return out;
 }
 
 std::optional<ColorHslaNorm> parseHsla4f(std::string_view sv) noexcept {
@@ -210,9 +230,16 @@ std::optional<ColorHslaNorm> parseHsla4f(std::string_view sv) noexcept {
 }
 
 std::string formatHsla4f(ColorHslaNorm c) {
-  char buf[128];
-  std::snprintf(buf, sizeof(buf), "%.6f %.6f %.6f %.6f", c.h, c.s, c.l, c.a);
-  return std::string(buf);
+  std::string out;
+  out.reserve(64);
+  appendFixed6(out, c.h);
+  out.push_back(' ');
+  appendFixed6(out, c.s);
+  out.push_back(' ');
+  appendFixed6(out, c.l);
+  out.push_back(' ');
+  appendFixed6(out, c.a);
+  return out;
 }
 
 } // namespace iota::core

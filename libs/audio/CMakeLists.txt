@@ -30,4 +30,8 @@ target_link_libraries(iota_audio
     miniaudio_hdr
 )
 
+if(UNIX AND NOT APPLE)
+  target_link_libraries(iota_audio PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+endif()
+
 iota_configure_target(iota_audio)

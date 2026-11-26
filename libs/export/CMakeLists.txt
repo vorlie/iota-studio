@@ -31,4 +31,8 @@ target_link_libraries(iota_export
     iota_engine
 )
 
+if(UNIX AND NOT APPLE)
+  target_link_libraries(iota_export PRIVATE Threads::Threads)
+endif()
+
 iota_configure_target(iota_export)

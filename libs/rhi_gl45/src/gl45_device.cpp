@@ -215,6 +215,8 @@ struct Gl45RenderDevice::Impl {
     activeProgram = kInvalidGlId;
     cachedVao = kInvalidGlId;
     cachedFboValid = false;
+    cachedVpW = -1;
+    cachedVpH = -1;
     cachedBlendValid = false;
     cachedScissorValid = false;
     cachedActiveTexUnit = -1;
@@ -246,8 +248,13 @@ struct Gl45RenderDevice::Impl {
       return;
     }
     GLenum waitRet = gl.ClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
-    if (waitRet != GL_ALREADY_SIGNALED && waitRet != GL_CONDITION_SATISFIED) {
-      gl.ClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+    for (int attempt = 0;
+         attempt < 5 && waitRet != GL_ALREADY_SIGNALED && waitRet != GL_CONDITION_SATISFIED;
+         ++attempt) {
+      waitRet = gl.ClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+      if (waitRet == GL_WAIT_FAILED) {
+        break;
+      }
     }
     gl.DeleteSync(fence);
     regionFences[region] = nullptr;
@@ -473,14 +480,17 @@ void Gl45RenderDevice::shutdown() {
     if (vao != 0) { impl_->gl.DeleteVertexArrays(1, &vao); vao = 0; }
   };
 
-  if (impl_->streamVbo != 0) {
+  if (impl_->streamVbo != 0 && impl_->mappedVerts != nullptr) {
     impl_->gl.BindBuffer(GL_ARRAY_BUFFER, impl_->streamVbo);
     impl_->gl.UnmapBuffer(GL_ARRAY_BUFFER);
+    impl_->mappedVerts = nullptr;
   }
-  if (impl_->streamIbo != 0) {
+  if (impl_->streamIbo != 0 && impl_->mappedIndices != nullptr) {
     impl_->gl.BindBuffer(GL_ELEMENT_ARRAY_BUFFER, impl_->streamIbo);
     impl_->gl.UnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+    impl_->mappedIndices = nullptr;
   }
+  impl_->persistentRingReady = false;
   deleteVaoBuf(impl_->streamVao, impl_->streamVbo, impl_->streamIbo);
   deleteVaoBuf(impl_->fsVao, impl_->fsVbo, impl_->fsIbo);
   deleteVaoBuf(impl_->overflowVao, impl_->overflowVbo, impl_->overflowIbo);
@@ -599,7 +609,7 @@ void Gl45RenderDevice::updateTexture2D(TextureHandle tex, int width, int height,
   if (rec->width == width && rec->height == height) {
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgbaPixels);
   } else {
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgbaPixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, toGlInternalFormat(rec->format), width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgbaPixels);
     rec->width = width;
     rec->height = height;
   }

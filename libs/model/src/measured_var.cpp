@@ -142,14 +142,27 @@ MVariableFloat parseMVarString(std::string_view text, const MVariableFloat& fall
 }
 
 std::string formatMVarString(const MVariableFloat& mvar) {
+  auto appendFixed6 = [](std::string& dst, float v) {
+    char buf[64]{};
+    const auto [ptr, ec] =
+        std::to_chars(buf, buf + sizeof(buf), static_cast<double>(v), std::chars_format::fixed, 6);
+    if (ec == std::errc{}) {
+      dst.append(buf, ptr);
+    } else {
+      dst += "0.000000";
+    }
+  };
+
   std::string out;
-  char buf[96];
+  out.reserve(mvar.slots.size() * 32);
   for (size_t i = 0; i < mvar.slots.size(); ++i) {
     if (i > 0) out.push_back(';');
     const auto& s = mvar.slots[i];
-    std::snprintf(buf, sizeof(buf), "%s %.6f %.6f",
-                  s.measureWhat.empty() ? "Nothing" : s.measureWhat.c_str(), s.a, s.b);
-    out += buf;
+    out += s.measureWhat.empty() ? "Nothing" : s.measureWhat;
+    out.push_back(' ');
+    appendFixed6(out, s.a);
+    out.push_back(' ');
+    appendFixed6(out, s.b);
   }
   return out;
 }

@@ -24,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace iota::export_video {
 
@@ -38,6 +39,7 @@ enum class VideoEncoderBackend {
   NvidiaNvenc = 2,
   AmdAmf = 3,
   IntelQsv = 4,
+  LinuxVaApi = 5,
 };
 
 enum class EncoderPreset {
@@ -81,6 +83,8 @@ struct HardwareEncoderCapabilities {
   bool amfH265 = false;
   bool qsvH264 = false;
   bool qsvH265 = false;
+  bool vaapiH264 = false;
+  bool vaapiH265 = false;
 
   [[nodiscard]] bool supports(VideoEncoderBackend backend, VideoCodec codec) const noexcept;
   [[nodiscard]] bool hasAnyHardware() const noexcept;
@@ -102,6 +106,16 @@ struct ResolvedEncoderPlan {
 /// Selects the concrete FFmpeg encoder & pixel format from user preferences and probed GPU capabilities.
 [[nodiscard]] ResolvedEncoderPlan resolveEncoderSelection(const ExportSettings& settings,
                                                           const HardwareEncoderCapabilities& caps);
+
+/// Builds the full FFmpeg CLI arguments for deterministic raw RGBA stdin video export.
+[[nodiscard]] std::vector<std::string> buildFfmpegExportArgs(const ExportSettings& settings,
+                                                             const ResolvedEncoderPlan& plan,
+                                                             int outWidth,
+                                                             int outHeight,
+                                                             double startSec,
+                                                             double exportDur,
+                                                             const std::filesystem::path& audioDiskPath,
+                                                             bool hasDiskAudio);
 
 /// Builds the full FFmpeg CLI line for deterministic raw RGBA stdin video export.
 [[nodiscard]] std::wstring buildFfmpegExportCommand(const ExportSettings& settings,

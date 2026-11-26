@@ -15,6 +15,8 @@
 
 add_executable(iota_studio
   src/main.cpp
+  src/platform_desktop.hpp
+  src/platform_desktop.cpp
   src/editor_app.hpp
   src/editor_app.cpp
   src/hierarchy_panel.hpp
@@ -60,9 +62,18 @@ target_link_libraries(iota_studio
     glfw
     imgui_docking
     imgui_color_text_edit_lib
-    comdlg32
-    shell32
+    stb_hdr
 )
+
+if(WIN32)
+  target_link_libraries(iota_studio PRIVATE comdlg32 shell32)
+elseif(UNIX AND NOT APPLE)
+  find_package(Fontconfig QUIET)
+  if(Fontconfig_FOUND)
+    target_compile_definitions(iota_studio PRIVATE IOTA_HAS_FONTCONFIG=1)
+    target_link_libraries(iota_studio PRIVATE Fontconfig::Fontconfig)
+  endif()
+endif()
 
 if(IOTA_BUILD_MCP)
   target_compile_definitions(iota_studio PRIVATE IOTA_ENABLE_MCP=1)

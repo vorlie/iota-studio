@@ -17,10 +17,21 @@
 
 #include "iota/core/utf8_path.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <csignal>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -28,11 +39,32 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace iota::export_video {
 
 namespace {
+
+#ifdef _WIN32
+constexpr const char* kFfmpegExeName = "ffmpeg.exe";
+#else
+constexpr const char* kFfmpegExeName = "ffmpeg";
+
+void ensureSigpipeIgnored() {
+  static std::once_flag flag;
+  std::call_once(flag, []() { std::signal(SIGPIPE, SIG_IGN); });
+}
+#endif
+
+std::string formatFixed3(double value) {
+  char buf[64]{};
+  const auto res = std::to_chars(buf, buf + sizeof(buf), value, std::chars_format::fixed, 3);
+  if (res.ec == std::errc{}) {
+    return std::string(buf, res.ptr);
+  }
+  return "0.000";
+}
 
 std::wstring quoteWindowsArg(const std::wstring& arg) {
   if (arg.find_first_of(L" \t\n\v\"") == std::wstring::npos && !arg.empty()) {
@@ -61,13 +93,8 @@ std::wstring quoteWindowsArg(const std::wstring& arg) {
   return out;
 }
 
-std::wstring widenAscii(std::string_view text) {
-  std::wstring out;
-  out.reserve(text.size());
-  for (char c : text) {
-    out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
-  }
-  return out;
+std::wstring utf8ToWstringSimple(std::string_view text) {
+  return iota::core::pathFromUtf8(text).wstring();
 }
 
 int roundUp16(int v) noexcept {
@@ -96,6 +123,8 @@ const char* backendShortLabel(VideoEncoderBackend backend) noexcept {
   switch (backend) {
     case VideoEncoderBackend::NvidiaNvenc:
       return "NVIDIA NVENC";
+    case VideoEncoderBackend::LinuxVaApi:
+      return "Linux VA-API";
     case VideoEncoderBackend::AmdAmf:
       return "AMD AMF";
     case VideoEncoderBackend::IntelQsv:
@@ -111,6 +140,7 @@ const char* backendShortLabel(VideoEncoderBackend backend) noexcept {
 const char* pixelFormatForBackend(VideoEncoderBackend backend) noexcept {
   switch (backend) {
     case VideoEncoderBackend::NvidiaNvenc:
+    case VideoEncoderBackend::LinuxVaApi:
     case VideoEncoderBackend::AmdAmf:
     case VideoEncoderBackend::IntelQsv:
       return "nv12";
@@ -121,27 +151,43 @@ const char* pixelFormatForBackend(VideoEncoderBackend backend) noexcept {
   }
 }
 
-std::wstring presetCliArgs(VideoEncoderBackend backend, EncoderPreset preset) {
+std::string detectVaapiDevicePath() {
+#ifdef _WIN32
+  return {};
+#else
+  for (int idx = 128; idx <= 135; ++idx) {
+    std::string candidate = "/dev/dri/renderD" + std::to_string(idx);
+    if (::access(candidate.c_str(), R_OK | W_OK) == 0) {
+      return candidate;
+    }
+  }
+  return {};
+#endif
+}
+
+std::pair<const char*, const char*> presetCliArgPair(VideoEncoderBackend backend, EncoderPreset preset) noexcept {
   switch (backend) {
+    case VideoEncoderBackend::LinuxVaApi:
+      return {"", ""};
     case VideoEncoderBackend::NvidiaNvenc:
       switch (preset) {
         case EncoderPreset::Fast:
-          return L"-preset p2";
+          return {"-preset", "p2"};
         case EncoderPreset::Quality:
-          return L"-preset p6";
+          return {"-preset", "p6"};
         case EncoderPreset::Balanced:
         default:
-          return L"-preset p4";
+          return {"-preset", "p4"};
       }
     case VideoEncoderBackend::AmdAmf:
       switch (preset) {
         case EncoderPreset::Fast:
-          return L"-quality speed";
+          return {"-quality", "speed"};
         case EncoderPreset::Quality:
-          return L"-quality quality";
+          return {"-quality", "quality"};
         case EncoderPreset::Balanced:
         default:
-          return L"-quality balanced";
+          return {"-quality", "balanced"};
       }
     case VideoEncoderBackend::IntelQsv:
     case VideoEncoderBackend::CpuSoftware:
@@ -149,12 +195,12 @@ std::wstring presetCliArgs(VideoEncoderBackend backend, EncoderPreset preset) {
     default:
       switch (preset) {
         case EncoderPreset::Fast:
-          return L"-preset veryfast";
+          return {"-preset", "veryfast"};
         case EncoderPreset::Quality:
-          return L"-preset slow";
+          return {"-preset", "slow"};
         case EncoderPreset::Balanced:
         default:
-          return L"-preset medium";
+          return {"-preset", "medium"};
       }
   }
 }
@@ -181,6 +227,10 @@ void setCapFlag(HardwareEncoderCapabilities& caps,
       if (h265) caps.qsvH265 = supported;
       else caps.qsvH264 = supported;
       break;
+    case VideoEncoderBackend::LinuxVaApi:
+      if (h265) caps.vaapiH265 = supported;
+      else caps.vaapiH264 = supported;
+      break;
     case VideoEncoderBackend::Auto:
       break;
   }
@@ -200,6 +250,16 @@ ResolvedEncoderPlan makeSuccessPlan(VideoEncoderBackend resolvedBackend,
   plan.usedCpuFallback = usedCpuFallback;
   plan.fallbackReason = std::move(fallbackReason);
   return plan;
+}
+
+#ifdef _WIN32
+using NativeProcHandle = HANDLE;
+constexpr NativeProcHandle kInvalidNativeProc = nullptr;
+
+void terminateNativeProc(NativeProcHandle proc) noexcept {
+  if (proc != nullptr) {
+    TerminateProcess(proc, 1);
+  }
 }
 
 void drainPipeNonBlocking(HANDLE pipe, std::string& log, size_t maxKeepBytes) {
@@ -224,12 +284,21 @@ void drainPipeNonBlocking(HANDLE pipe, std::string& log, size_t maxKeepBytes) {
   }
 }
 
-bool runBoundedCaptureCommand(const std::wstring& cmdLine,
-                              DWORD timeoutMs,
+std::wstring joinWindowsArgs(const std::vector<std::string>& args) {
+  std::wstring cmd;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) cmd.push_back(L' ');
+    cmd += quoteWindowsArg(utf8ToWstringSimple(args[i]));
+  }
+  return cmd;
+}
+
+bool runBoundedCaptureCommand(const std::vector<std::string>& args,
+                              uint32_t timeoutMs,
                               const std::atomic<bool>* cancelFlag,
                               std::mutex* procMutex,
-                              HANDLE* activeProcSlot,
-                              DWORD& outExitCode,
+                              NativeProcHandle* activeProcSlot,
+                              uint32_t& outExitCode,
                               std::string& outOutput) {
   outExitCode = 1;
   outOutput.clear();
@@ -270,7 +339,7 @@ bool runBoundedCaptureCommand(const std::wstring& cmdLine,
   si.hStdError = writePipe;
 
   PROCESS_INFORMATION pi{};
-  std::wstring mutableCmd = cmdLine;
+  std::wstring mutableCmd = joinWindowsArgs(args);
   const BOOL created = CreateProcessW(nullptr,
                                       mutableCmd.data(),
                                       nullptr,
@@ -291,9 +360,10 @@ bool runBoundedCaptureCommand(const std::wstring& cmdLine,
     const DWORD launchErr = GetLastError();
     CloseHandle(readPipe);
     if (launchErr == ERROR_FILE_NOT_FOUND || launchErr == ERROR_PATH_NOT_FOUND) {
-      outOutput = "ffmpeg.exe was not found in PATH or application folder.";
+      outOutput = std::string(kFfmpegExeName) + " was not found in PATH or application folder.";
     } else {
-      outOutput = "Failed to launch ffmpeg.exe (Win32 error " + std::to_string(launchErr) + ").";
+      outOutput = std::string("Failed to launch ") + kFfmpegExeName +
+                  " (Win32 error " + std::to_string(launchErr) + ").";
     }
     return false;
   }
@@ -341,7 +411,9 @@ bool runBoundedCaptureCommand(const std::wstring& cmdLine,
   }
 
   if (finishedCleanly) {
-    GetExitCodeProcess(pi.hProcess, &outExitCode);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    outExitCode = code;
   }
 
   CloseHandle(pi.hThread);
@@ -351,14 +423,174 @@ bool runBoundedCaptureCommand(const std::wstring& cmdLine,
   outOutput = trimWhitespace(outOutput);
   return finishedCleanly;
 }
+#else
+using NativeProcHandle = pid_t;
+constexpr NativeProcHandle kInvalidNativeProc = -1;
+
+void terminateNativeProc(NativeProcHandle proc) noexcept {
+  if (proc > 0) {
+    kill(proc, SIGKILL);
+  }
+}
+
+void setFdFlags(int fd, int extraFlags) noexcept {
+  const int cur = fcntl(fd, F_GETFL, 0);
+  if (cur >= 0) {
+    fcntl(fd, F_SETFL, cur | extraFlags);
+  }
+}
+
+void drainPipeNonBlocking(int fd, std::string& log, size_t maxKeepBytes) {
+  if (fd < 0) {
+    return;
+  }
+  char buf[1024];
+  for (;;) {
+    const ssize_t n = read(fd, buf, sizeof(buf));
+    if (n > 0) {
+      if (log.size() < maxKeepBytes) {
+        const size_t space = maxKeepBytes - log.size();
+        log.append(buf, std::min(space, static_cast<size_t>(n)));
+      }
+    } else if (n < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;
+    }
+  }
+}
+
+bool runBoundedCaptureCommand(const std::vector<std::string>& args,
+                              uint32_t timeoutMs,
+                              const std::atomic<bool>* cancelFlag,
+                              std::mutex* procMutex,
+                              NativeProcHandle* activeProcSlot,
+                              uint32_t& outExitCode,
+                              std::string& outOutput) {
+  ensureSigpipeIgnored();
+  outExitCode = 1;
+  outOutput.clear();
+
+  if (args.empty()) {
+    return false;
+  }
+  if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+    outOutput = "Probe cancelled.";
+    return false;
+  }
+
+  int pipefd[2]{-1, -1};
+  if (pipe(pipefd) != 0) {
+    outOutput = "Failed to create probe pipe.";
+    return false;
+  }
+  fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+  fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+  setFdFlags(pipefd[0], O_NONBLOCK);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    outOutput = std::string("Failed to launch ") + kFfmpegExeName + ".";
+    return false;
+  }
+
+  if (pid == 0) {
+    close(pipefd[0]);
+    const int devNull = open("/dev/null", O_RDONLY);
+    if (devNull >= 0) {
+      dup2(devNull, STDIN_FILENO);
+      if (devNull > STDERR_FILENO) close(devNull);
+    }
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[1]);
+
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const auto& s : args) {
+      argv.push_back(const_cast<char*>(s.c_str()));
+    }
+    argv.push_back(nullptr);
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+
+  if (procMutex && activeProcSlot) {
+    std::lock_guard<std::mutex> lock(*procMutex);
+    if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+      kill(pid, SIGKILL);
+    } else {
+      *activeProcSlot = pid;
+    }
+  }
+
+  const auto startTime = std::chrono::steady_clock::now();
+  bool finishedCleanly = false;
+  int status = 0;
+  for (;;) {
+    drainPipeNonBlocking(pipefd[0], outOutput, 2048);
+
+    const pid_t w = waitpid(pid, &status, WNOHANG);
+    if (w == pid) {
+      finishedCleanly = true;
+      break;
+    }
+    if (w < 0 && errno != EINTR) {
+      break;
+    }
+    if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+      kill(pid, SIGKILL);
+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+      }
+      outOutput = "Probe cancelled.";
+      break;
+    }
+    const auto elapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
+    if (elapsedMs >= static_cast<long long>(timeoutMs)) {
+      kill(pid, SIGKILL);
+      while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+      }
+      if (outOutput.empty()) {
+        outOutput = "FFmpeg probe timed out.";
+      }
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  }
+
+  drainPipeNonBlocking(pipefd[0], outOutput, 2048);
+  close(pipefd[0]);
+
+  if (procMutex && activeProcSlot) {
+    std::lock_guard<std::mutex> lock(*procMutex);
+    *activeProcSlot = kInvalidNativeProc;
+  }
+
+  if (finishedCleanly) {
+    outExitCode = WIFEXITED(status) ? static_cast<uint32_t>(WEXITSTATUS(status)) : 1u;
+    if (outExitCode == 127 && outOutput.empty()) {
+      outOutput = std::string(kFfmpegExeName) + " was not found in PATH.";
+      return false;
+    }
+  }
+
+  outOutput = trimWhitespace(outOutput);
+  return finishedCleanly;
+}
+#endif
 
 bool checkFfmpegExecutableAvailable(const std::atomic<bool>* cancelFlag,
                                     std::mutex* procMutex,
-                                    HANDLE* activeProcSlot) {
-  DWORD exitCode = 1;
+                                    NativeProcHandle* activeProcSlot) {
+  uint32_t exitCode = 1;
   std::string out;
   const bool finished = runBoundedCaptureCommand(
-      L"ffmpeg.exe -hide_banner -version",
+      {kFfmpegExeName, "-hide_banner", "-version"},
       2500,
       cancelFlag,
       procMutex,
@@ -372,24 +604,82 @@ bool probeEncoderWithFlags(VideoEncoderBackend backend,
                            VideoCodec codec,
                            const std::atomic<bool>* cancelFlag,
                            std::mutex* procMutex,
-                           HANDLE* activeProcSlot,
+                           NativeProcHandle* activeProcSlot,
                            std::string* outError) {
   if (backend == VideoEncoderBackend::Auto) {
     backend = VideoEncoderBackend::CpuSoftware;
   }
   const std::string enc = ffmpegEncoderName(backend, codec);
   const std::string pix = pixelFormatForBackend(backend);
-  const std::wstring preset = presetCliArgs(backend, EncoderPreset::Fast);
+  const auto presetPair = presetCliArgPair(backend, EncoderPreset::Fast);
 
-  const std::wstring cmd =
-      L"ffmpeg.exe -hide_banner -v error -f lavfi -i color=c=black:s=256x256:r=30:d=0.05 "
-      L"-frames:v 1 -c:v " +
-      widenAscii(enc) + L" " + preset + L" -pix_fmt " + widenAscii(pix) + L" -f null -";
+  std::vector<std::string> args;
+  if (backend == VideoEncoderBackend::LinuxVaApi) {
+#ifdef _WIN32
+    if (outError) {
+      *outError = "Linux VA-API is only available on Linux.";
+    }
+    return false;
+#else
+    const std::string devPath = detectVaapiDevicePath();
+    if (devPath.empty()) {
+      if (outError) {
+        *outError = "No accessible /dev/dri/renderD* VA-API device found.";
+      }
+      return false;
+    }
+    args = {
+        kFfmpegExeName,
+        "-hide_banner",
+        "-v",
+        "error",
+        "-vaapi_device",
+        devPath,
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=256x256:r=30:d=0.05",
+        "-frames:v",
+        "1",
+        "-vf",
+        "format=nv12,hwupload",
+        "-c:v",
+        enc,
+        "-f",
+        "null",
+        "-",
+    };
+#endif
+  } else {
+    args = {
+        kFfmpegExeName,
+        "-hide_banner",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=256x256:r=30:d=0.05",
+        "-frames:v",
+        "1",
+        "-c:v",
+        enc,
+    };
+    if (presetPair.first[0] != '\0') {
+      args.push_back(presetPair.first);
+      args.push_back(presetPair.second);
+    }
+    args.push_back("-pix_fmt");
+    args.push_back(pix);
+    args.push_back("-f");
+    args.push_back("null");
+    args.push_back("-");
+  }
 
-  DWORD exitCode = 1;
+  uint32_t exitCode = 1;
   std::string out;
   const bool finished = runBoundedCaptureCommand(
-      cmd,
+      args,
       4000,
       cancelFlag,
       procMutex,
@@ -413,6 +703,9 @@ HardwareEncoderCapabilities probeMinimalCapabilitiesForSelection(const ExportSet
   if (settings.encoderBackend == VideoEncoderBackend::Auto) {
     static constexpr VideoEncoderBackend kGpuOrder[] = {
         VideoEncoderBackend::NvidiaNvenc,
+#ifndef _WIN32
+        VideoEncoderBackend::LinuxVaApi,
+#endif
         VideoEncoderBackend::AmdAmf,
         VideoEncoderBackend::IntelQsv,
     };
@@ -465,6 +758,8 @@ const char* videoEncoderBackendDisplayName(VideoEncoderBackend backend) noexcept
       return "CPU Software (x264 / x265)";
     case VideoEncoderBackend::NvidiaNvenc:
       return "GPU: NVIDIA NVENC";
+    case VideoEncoderBackend::LinuxVaApi:
+      return "GPU: Linux VA-API";
     case VideoEncoderBackend::AmdAmf:
       return "GPU: AMD AMF";
     case VideoEncoderBackend::IntelQsv:
@@ -492,6 +787,8 @@ const char* ffmpegEncoderName(VideoEncoderBackend backend, VideoCodec codec) noe
   switch (backend) {
     case VideoEncoderBackend::NvidiaNvenc:
       return hevc ? "hevc_nvenc" : "h264_nvenc";
+    case VideoEncoderBackend::LinuxVaApi:
+      return hevc ? "hevc_vaapi" : "h264_vaapi";
     case VideoEncoderBackend::AmdAmf:
       return hevc ? "hevc_amf" : "h264_amf";
     case VideoEncoderBackend::IntelQsv:
@@ -507,6 +804,8 @@ std::string resolvedEncoderDisplayName(VideoEncoderBackend backend, VideoCodec c
   switch (backend) {
     case VideoEncoderBackend::NvidiaNvenc:
       return std::string("NVIDIA NVENC (") + codecShortLabel(codec) + ")";
+    case VideoEncoderBackend::LinuxVaApi:
+      return std::string("Linux VA-API (") + codecShortLabel(codec) + ")";
     case VideoEncoderBackend::AmdAmf:
       return std::string("AMD AMF (") + codecShortLabel(codec) + ")";
     case VideoEncoderBackend::IntelQsv:
@@ -524,6 +823,7 @@ bool HardwareEncoderCapabilities::supports(VideoEncoderBackend backend, VideoCod
   switch (backend) {
     case VideoEncoderBackend::Auto:
       return supports(VideoEncoderBackend::NvidiaNvenc, codec) ||
+             supports(VideoEncoderBackend::LinuxVaApi, codec) ||
              supports(VideoEncoderBackend::AmdAmf, codec) ||
              supports(VideoEncoderBackend::IntelQsv, codec) ||
              supports(VideoEncoderBackend::CpuSoftware, codec);
@@ -531,6 +831,8 @@ bool HardwareEncoderCapabilities::supports(VideoEncoderBackend backend, VideoCod
       return h265 ? cpuH265 : cpuH264;
     case VideoEncoderBackend::NvidiaNvenc:
       return h265 ? nvencH265 : nvencH264;
+    case VideoEncoderBackend::LinuxVaApi:
+      return h265 ? vaapiH265 : vaapiH264;
     case VideoEncoderBackend::AmdAmf:
       return h265 ? amfH265 : amfH264;
     case VideoEncoderBackend::IntelQsv:
@@ -541,7 +843,7 @@ bool HardwareEncoderCapabilities::supports(VideoEncoderBackend backend, VideoCod
 }
 
 bool HardwareEncoderCapabilities::hasAnyHardware() const noexcept {
-  return nvencH264 || nvencH265 || amfH264 || amfH265 || qsvH264 || qsvH265;
+  return nvencH264 || nvencH265 || vaapiH264 || vaapiH265 || amfH264 || amfH265 || qsvH264 || qsvH265;
 }
 
 std::string HardwareEncoderCapabilities::summaryText() const {
@@ -549,7 +851,7 @@ std::string HardwareEncoderCapabilities::summaryText() const {
     return "Hardware encoders not yet probed.";
   }
   if (!ffmpegAvailable) {
-    return "FFmpeg executable (ffmpeg.exe) not found.";
+    return std::string("FFmpeg executable (") + kFfmpegExeName + ") not found.";
   }
 
   auto formatPair = [](const char* name, bool h264, bool h265) -> std::string {
@@ -569,6 +871,7 @@ std::string HardwareEncoderCapabilities::summaryText() const {
 
   std::vector<std::string> gpus;
   if (auto s = formatPair("NVIDIA NVENC", nvencH264, nvencH265); !s.empty()) gpus.push_back(std::move(s));
+  if (auto s = formatPair("Linux VA-API", vaapiH264, vaapiH265); !s.empty()) gpus.push_back(std::move(s));
   if (auto s = formatPair("AMD AMF", amfH264, amfH265); !s.empty()) gpus.push_back(std::move(s));
   if (auto s = formatPair("Intel QSV", qsvH264, qsvH265); !s.empty()) gpus.push_back(std::move(s));
 
@@ -590,8 +893,8 @@ ResolvedEncoderPlan resolveEncoderSelection(const ExportSettings& settings,
   plan.codec = settings.codec;
 
   if (!caps.ffmpegAvailable) {
-    plan.errorMessage =
-        "ffmpeg.exe was not found in PATH or the application folder. Please install FFmpeg to export MP4 videos.";
+    plan.errorMessage = std::string(kFfmpegExeName) +
+                        " was not found in PATH or the application folder. Please install FFmpeg to export MP4 videos.";
     return plan;
   }
 
@@ -607,6 +910,9 @@ ResolvedEncoderPlan resolveEncoderSelection(const ExportSettings& settings,
   if (settings.encoderBackend == VideoEncoderBackend::Auto) {
     static constexpr VideoEncoderBackend kGpuOrder[] = {
         VideoEncoderBackend::NvidiaNvenc,
+#ifndef _WIN32
+        VideoEncoderBackend::LinuxVaApi,
+#endif
         VideoEncoderBackend::AmdAmf,
         VideoEncoderBackend::IntelQsv,
     };
@@ -642,14 +948,14 @@ ResolvedEncoderPlan resolveEncoderSelection(const ExportSettings& settings,
   return plan;
 }
 
-std::wstring buildFfmpegExportCommand(const ExportSettings& settings,
-                                      const ResolvedEncoderPlan& plan,
-                                      int outWidth,
-                                      int outHeight,
-                                      double startSec,
-                                      double exportDur,
-                                      const std::filesystem::path& audioDiskPath,
-                                      bool hasDiskAudio) {
+std::vector<std::string> buildFfmpegExportArgs(const ExportSettings& settings,
+                                               const ResolvedEncoderPlan& plan,
+                                               int outWidth,
+                                               int outHeight,
+                                               double startSec,
+                                               double exportDur,
+                                               const std::filesystem::path& audioDiskPath,
+                                               bool hasDiskAudio) {
   const int safeFps = std::clamp(settings.fps, 1, 120);
   const int safeBitrateKbps = std::clamp(settings.videoBitrateKbps, 500, 100000);
   const VideoEncoderBackend effectiveBackend =
@@ -658,37 +964,99 @@ std::wstring buildFfmpegExportCommand(const ExportSettings& settings,
       plan.ffmpegEncoder.empty() ? ffmpegEncoderName(effectiveBackend, plan.codec) : plan.ffmpegEncoder;
   const std::string pix =
       plan.pixelFormat.empty() ? pixelFormatForBackend(effectiveBackend) : plan.pixelFormat;
+  const auto presetPair = presetCliArgPair(effectiveBackend, settings.encoderPreset);
 
-  std::wstring cmd =
-      L"ffmpeg.exe -y -hide_banner -v error -f rawvideo -pix_fmt rgba -s " +
-      std::to_wstring(outWidth) + L"x" + std::to_wstring(outHeight) +
-      L" -r " + std::to_wstring(safeFps) + L" -i pipe:0";
+  std::vector<std::string> args = {
+      kFfmpegExeName,
+      "-y",
+      "-hide_banner",
+      "-v",
+      "error",
+  };
 
-  if (hasDiskAudio) {
-    wchar_t ssBuf[32];
-    wchar_t durBuf[32];
-    std::swprintf(ssBuf, 32, L"%.3f", std::max(0.0, startSec));
-    std::swprintf(durBuf, 32, L"%.3f", std::max(0.05, exportDur));
-    cmd += L" -ss " + std::wstring(ssBuf) + L" -t " + std::wstring(durBuf) +
-           L" -i " + quoteWindowsArg(audioDiskPath.wstring());
+  if (effectiveBackend == VideoEncoderBackend::LinuxVaApi) {
+    std::string devPath = detectVaapiDevicePath();
+    if (devPath.empty()) {
+      devPath = "/dev/dri/renderD128";
+    }
+    args.push_back("-vaapi_device");
+    args.push_back(std::move(devPath));
   }
 
-  cmd += L" -c:v " + widenAscii(enc);
-  cmd += L" " + presetCliArgs(effectiveBackend, settings.encoderPreset);
-  cmd += L" -pix_fmt " + widenAscii(pix);
-  cmd += L" -b:v " + std::to_wstring(safeBitrateKbps) + L"k";
+  args.insert(args.end(), {
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "rgba",
+      "-s",
+      std::to_string(outWidth) + "x" + std::to_string(outHeight),
+      "-r",
+      std::to_string(safeFps),
+      "-i",
+      "pipe:0",
+  });
 
   if (hasDiskAudio) {
-    cmd += L" -c:a aac -b:a 192k -shortest";
+    args.push_back("-ss");
+    args.push_back(formatFixed3(std::max(0.0, startSec)));
+    args.push_back("-t");
+    args.push_back(formatFixed3(std::max(0.05, exportDur)));
+    args.push_back("-i");
+    args.push_back(iota::core::pathToUtf8(audioDiskPath));
+  }
+
+  args.push_back("-c:v");
+  args.push_back(enc);
+  if (presetPair.first[0] != '\0') {
+    args.push_back(presetPair.first);
+    args.push_back(presetPair.second);
+  }
+  if (effectiveBackend == VideoEncoderBackend::LinuxVaApi) {
+    args.push_back("-vf");
+    args.push_back("format=nv12,hwupload");
   } else {
-    cmd += L" -an";
+    args.push_back("-pix_fmt");
+    args.push_back(pix);
+  }
+  args.push_back("-b:v");
+  args.push_back(std::to_string(safeBitrateKbps) + "k");
+
+  if (hasDiskAudio) {
+    args.push_back("-c:a");
+    args.push_back("aac");
+    args.push_back("-b:a");
+    args.push_back("192k");
+    args.push_back("-shortest");
+  } else {
+    args.push_back("-an");
   }
 
   if (plan.codec == VideoCodec::H265) {
-    cmd += L" -tag:v hvc1";
+    args.push_back("-tag:v");
+    args.push_back("hvc1");
   }
 
-  cmd += L" -movflags +faststart " + quoteWindowsArg(settings.outputPath.wstring());
+  args.push_back("-movflags");
+  args.push_back("+faststart");
+  args.push_back(iota::core::pathToUtf8(settings.outputPath));
+  return args;
+}
+
+std::wstring buildFfmpegExportCommand(const ExportSettings& settings,
+                                      const ResolvedEncoderPlan& plan,
+                                      int outWidth,
+                                      int outHeight,
+                                      double startSec,
+                                      double exportDur,
+                                      const std::filesystem::path& audioDiskPath,
+                                      bool hasDiskAudio) {
+  const auto args = buildFfmpegExportArgs(
+      settings, plan, outWidth, outHeight, startSec, exportDur, audioDiskPath, hasDiskAudio);
+  std::wstring cmd;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (i > 0) cmd.push_back(L' ');
+    cmd += quoteWindowsArg(utf8ToWstringSimple(args[i]));
+  }
   return cmd;
 }
 
@@ -708,6 +1076,10 @@ HardwareEncoderCapabilities probeHardwareEncodersSync() {
 
   caps.nvencH264 = probeEncoderWithFlags(VideoEncoderBackend::NvidiaNvenc, VideoCodec::H264, nullptr, nullptr, nullptr, nullptr);
   caps.nvencH265 = probeEncoderWithFlags(VideoEncoderBackend::NvidiaNvenc, VideoCodec::H265, nullptr, nullptr, nullptr, nullptr);
+#ifndef _WIN32
+  caps.vaapiH264 = probeEncoderWithFlags(VideoEncoderBackend::LinuxVaApi, VideoCodec::H264, nullptr, nullptr, nullptr, nullptr);
+  caps.vaapiH265 = probeEncoderWithFlags(VideoEncoderBackend::LinuxVaApi, VideoCodec::H265, nullptr, nullptr, nullptr, nullptr);
+#endif
   caps.amfH264 = probeEncoderWithFlags(VideoEncoderBackend::AmdAmf, VideoCodec::H264, nullptr, nullptr, nullptr, nullptr);
   caps.amfH265 = probeEncoderWithFlags(VideoEncoderBackend::AmdAmf, VideoCodec::H265, nullptr, nullptr, nullptr, nullptr);
   caps.qsvH264 = probeEncoderWithFlags(VideoEncoderBackend::IntelQsv, VideoCodec::H264, nullptr, nullptr, nullptr, nullptr);
@@ -722,7 +1094,7 @@ struct HardwareEncoderProbe::Impl {
   HardwareEncoderCapabilities caps;
 
   std::mutex procMutex;
-  HANDLE activeProc = nullptr;
+  NativeProcHandle activeProc = kInvalidNativeProc;
 
   std::atomic<bool> probing{false};
   std::atomic<bool> cancelRequested{false};
@@ -740,6 +1112,10 @@ struct HardwareEncoderProbe::Impl {
     static constexpr ProbeStep kSteps[] = {
         {VideoEncoderBackend::NvidiaNvenc, VideoCodec::H264},
         {VideoEncoderBackend::NvidiaNvenc, VideoCodec::H265},
+#ifndef _WIN32
+        {VideoEncoderBackend::LinuxVaApi, VideoCodec::H264},
+        {VideoEncoderBackend::LinuxVaApi, VideoCodec::H265},
+#endif
         {VideoEncoderBackend::AmdAmf, VideoCodec::H264},
         {VideoEncoderBackend::AmdAmf, VideoCodec::H265},
         {VideoEncoderBackend::IntelQsv, VideoCodec::H264},
@@ -792,8 +1168,8 @@ void HardwareEncoderProbe::cancel() {
   impl_->cancelRequested.store(true, std::memory_order_release);
   {
     std::lock_guard<std::mutex> lock(impl_->procMutex);
-    if (impl_->activeProc != nullptr) {
-      TerminateProcess(impl_->activeProc, 1);
+    if (impl_->activeProc != kInvalidNativeProc) {
+      terminateNativeProc(impl_->activeProc);
     }
   }
   if (impl_->worker.joinable()) {
@@ -822,18 +1198,29 @@ struct VideoExportSession::Impl {
   int frameCursor = 0;  // Runs from -preRollFrames to totalOutFrames - 1
 
   bool active = false;
+#ifdef _WIN32
   HANDLE stdinWritePipe = nullptr;
   HANDLE stderrReadPipe = nullptr;
   HANDLE processHandle = nullptr;
   HANDLE threadHandle = nullptr;
+#else
+  int stdinWriteFd = -1;
+  int stderrReadFd = -1;
+  pid_t childPid = -1;
+#endif
   std::string stderrLog;
   std::vector<uint8_t> rgbaReadback;
 
   void drainStderr() {
+#ifdef _WIN32
     drainPipeNonBlocking(stderrReadPipe, stderrLog, 4096);
+#else
+    drainPipeNonBlocking(stderrReadFd, stderrLog, 4096);
+#endif
   }
 
   void cleanupProcess(bool terminate) {
+#ifdef _WIN32
     if (stdinWritePipe != nullptr) {
       CloseHandle(stdinWritePipe);
       stdinWritePipe = nullptr;
@@ -865,6 +1252,47 @@ struct VideoExportSession::Impl {
       CloseHandle(threadHandle);
       threadHandle = nullptr;
     }
+#else
+    if (stdinWriteFd >= 0) {
+      close(stdinWriteFd);
+      stdinWriteFd = -1;
+    }
+    if (childPid > 0) {
+      if (terminate) {
+        kill(childPid, SIGTERM);
+      }
+      const auto waitStart = std::chrono::steady_clock::now();
+      bool sentKill = false;
+      for (;;) {
+        drainStderr();
+        int status = 0;
+        const pid_t w = waitpid(childPid, &status, WNOHANG);
+        if (w == childPid || (w < 0 && errno != EINTR)) {
+          break;
+        }
+        const auto elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waitStart)
+                .count();
+        if (terminate && !sentKill && elapsedMs >= 500) {
+          kill(childPid, SIGKILL);
+          sentKill = true;
+        }
+        if (terminate && elapsedMs >= 2000) {
+          kill(childPid, SIGKILL);
+          while (waitpid(childPid, &status, 0) < 0 && errno == EINTR) {
+          }
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+      }
+      drainStderr();
+      childPid = -1;
+    }
+    if (stderrReadFd >= 0) {
+      close(stderrReadFd);
+      stderrReadFd = -1;
+    }
+#endif
     active = false;
   }
 
@@ -928,14 +1356,17 @@ bool VideoExportSession::begin(const ExportSettings& settings,
   const bool hasDiskAudio = audio.hasTrack() && !audioPathStr.empty() &&
                             iota::core::pathExistsNoThrow(audioDiskPath);
 
-  const std::wstring cmd = buildFfmpegExportCommand(impl_->cfg,
-                                                    plan,
-                                                    impl_->outWidth,
-                                                    impl_->outHeight,
-                                                    impl_->startSec,
-                                                    exportDur,
-                                                    audioDiskPath,
-                                                    hasDiskAudio);
+  const std::vector<std::string> args = buildFfmpegExportArgs(impl_->cfg,
+                                                            plan,
+                                                            impl_->outWidth,
+                                                            impl_->outHeight,
+                                                            impl_->startSec,
+                                                            exportDur,
+                                                            audioDiskPath,
+                                                            hasDiskAudio);
+
+#ifdef _WIN32
+  const std::wstring cmd = joinWindowsArgs(args);
 
   SECURITY_ATTRIBUTES sa{};
   sa.nLength = sizeof(sa);
@@ -999,9 +1430,10 @@ bool VideoExportSession::begin(const ExportSettings& settings,
     CloseHandle(stderrReadPipe);
     if (outError) {
       if (errCode == ERROR_FILE_NOT_FOUND || errCode == ERROR_PATH_NOT_FOUND) {
-        *outError = "Failed to launch ffmpeg.exe (executable not found).";
+        *outError = std::string("Failed to launch ") + kFfmpegExeName + " (executable not found).";
       } else {
-        *outError = "Failed to launch ffmpeg.exe for video export (error " + std::to_string(errCode) + ").";
+        *outError = std::string("Failed to launch ") + kFfmpegExeName +
+                    " for video export (error " + std::to_string(errCode) + ").";
       }
     }
     return false;
@@ -1011,6 +1443,66 @@ bool VideoExportSession::begin(const ExportSettings& settings,
   impl_->stderrReadPipe = stderrReadPipe;
   impl_->processHandle = pi.hProcess;
   impl_->threadHandle = pi.hThread;
+#else
+  ensureSigpipeIgnored();
+
+  int stdinPipe[2]{-1, -1};
+  int stderrPipe[2]{-1, -1};
+  if (pipe(stdinPipe) != 0) {
+    if (outError) *outError = "Failed to create FFmpeg stdin pipe.";
+    return false;
+  }
+  if (pipe(stderrPipe) != 0) {
+    close(stdinPipe[0]);
+    close(stdinPipe[1]);
+    if (outError) *outError = "Failed to create FFmpeg stderr pipe.";
+    return false;
+  }
+  fcntl(stdinPipe[0], F_SETFD, FD_CLOEXEC);
+  fcntl(stdinPipe[1], F_SETFD, FD_CLOEXEC);
+  fcntl(stderrPipe[0], F_SETFD, FD_CLOEXEC);
+  fcntl(stderrPipe[1], F_SETFD, FD_CLOEXEC);
+  setFdFlags(stderrPipe[0], O_NONBLOCK);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(stdinPipe[0]);
+    close(stdinPipe[1]);
+    close(stderrPipe[0]);
+    close(stderrPipe[1]);
+    if (outError) *outError = std::string("Failed to fork process for ") + kFfmpegExeName + ".";
+    return false;
+  }
+
+  if (pid == 0) {
+    close(stdinPipe[1]);
+    close(stderrPipe[0]);
+    dup2(stdinPipe[0], STDIN_FILENO);
+    close(stdinPipe[0]);
+    const int devNull = open("/dev/null", O_WRONLY);
+    if (devNull >= 0) {
+      dup2(devNull, STDOUT_FILENO);
+      if (devNull > STDERR_FILENO) close(devNull);
+    }
+    dup2(stderrPipe[1], STDERR_FILENO);
+    close(stderrPipe[1]);
+
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const auto& s : args) {
+      argv.push_back(const_cast<char*>(s.c_str()));
+    }
+    argv.push_back(nullptr);
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+
+  close(stdinPipe[0]);
+  close(stderrPipe[1]);
+  impl_->stdinWriteFd = stdinPipe[1];
+  impl_->stderrReadFd = stderrPipe[0];
+  impl_->childPid = pid;
+#endif
   impl_->active = true;
   return true;
 }
@@ -1064,17 +1556,40 @@ bool VideoExportSession::stepFrame(iota::rhi::IRenderDevice& device,
     size_t writtenTotal = 0;
     while (writtenTotal < totalBytes) {
       impl_->drainStderr();
+#ifdef _WIN32
       const DWORD chunk = static_cast<DWORD>(std::min<size_t>(totalBytes - writtenTotal, 1024u * 1024u));
       DWORD written = 0;
-      if (!WriteFile(impl_->stdinWritePipe,
-                     impl_->rgbaReadback.data() + writtenTotal,
-                     chunk,
-                     &written,
-                     nullptr) ||
-          written == 0) {
+      const bool writeOk =
+          WriteFile(impl_->stdinWritePipe, impl_->rgbaReadback.data() + writtenTotal, chunk, &written, nullptr) &&
+          written > 0;
+      if (!writeOk) {
         if (impl_->processHandle != nullptr) {
           WaitForSingleObject(impl_->processHandle, 1000);
         }
+#else
+      const size_t chunk = std::min<size_t>(totalBytes - writtenTotal, 1024u * 1024u);
+      ssize_t written = -1;
+      for (;;) {
+        written = write(impl_->stdinWriteFd, impl_->rgbaReadback.data() + writtenTotal, chunk);
+        if (written < 0 && errno == EINTR) {
+          continue;
+        }
+        break;
+      }
+      if (written <= 0) {
+        if (impl_->childPid > 0) {
+          const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+          int status = 0;
+          while (std::chrono::steady_clock::now() < deadline) {
+            const pid_t w = waitpid(impl_->childPid, &status, WNOHANG);
+            if (w == impl_->childPid || (w < 0 && errno != EINTR)) {
+              impl_->childPid = -1;
+              break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+        }
+#endif
         impl_->drainStderr();
         const std::string detail = trimWhitespace(impl_->stderrLog);
         impl_->cleanupProcess(true);
@@ -1085,7 +1600,7 @@ bool VideoExportSession::stepFrame(iota::rhi::IRenderDevice& device,
         }
         return false;
       }
-      writtenTotal += written;
+      writtenTotal += static_cast<size_t>(written);
     }
   }
 
@@ -1098,6 +1613,7 @@ bool VideoExportSession::finish(std::string* outError) {
   if (!impl_->active) {
     return false;
   }
+#ifdef _WIN32
   if (impl_->stdinWritePipe != nullptr) {
     CloseHandle(impl_->stdinWritePipe);
     impl_->stdinWritePipe = nullptr;
@@ -1114,12 +1630,38 @@ bool VideoExportSession::finish(std::string* outError) {
     impl_->drainStderr();
     GetExitCodeProcess(impl_->processHandle, &exitCode);
   }
+#else
+  if (impl_->stdinWriteFd >= 0) {
+    close(impl_->stdinWriteFd);
+    impl_->stdinWriteFd = -1;
+  }
+  uint32_t exitCode = 1;
+  if (impl_->childPid > 0) {
+    int status = 0;
+    for (;;) {
+      impl_->drainStderr();
+      const pid_t w = waitpid(impl_->childPid, &status, WNOHANG);
+      if (w == impl_->childPid) {
+        exitCode = WIFEXITED(status) ? static_cast<uint32_t>(WEXITSTATUS(status)) : 1u;
+        impl_->childPid = -1;
+        break;
+      }
+      if (w < 0 && errno != EINTR) {
+        impl_->childPid = -1;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    }
+    impl_->drainStderr();
+  }
+#endif
   const std::string detail = trimWhitespace(impl_->stderrLog);
   impl_->cleanupProcess(false);
   if (exitCode != 0) {
     if (outError) {
       *outError = detail.empty()
-                      ? ("ffmpeg.exe returned exit code " + std::to_string(exitCode) + " during export.")
+                      ? (std::string(kFfmpegExeName) + " returned exit code " + std::to_string(exitCode) +
+                         " during export.")
                       : ("FFmpeg encoder failed: " + detail);
     }
     return false;

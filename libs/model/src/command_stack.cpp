@@ -15,6 +15,8 @@
 
 #include "iota/model/command_stack.hpp"
 
+#include <cstddef>
+
 namespace iota::model {
 
 void CommandStack::clear(const Project& initialSnapshot) {

@@ -1108,18 +1108,18 @@ nlohmann::json listMcpToolDefinitions() {
 
   tools.push_back(makeToolDef(
       "export_list_encoders",
-      "Probe FFmpeg availability and GPU hardware video encoders (NVIDIA NVENC, AMD AMF, Intel Quick Sync) plus CPU software encoders."));
+      "Probe FFmpeg availability and GPU hardware video encoders (NVIDIA NVENC, Linux VA-API, AMD AMF, Intel Quick Sync) plus CPU software encoders."));
 
   tools.push_back(makeToolDef(
       "export_video",
-      "Export MP4 video using hardware GPU (auto/nvenc/amf/qsv) or CPU (x264/x265) encoding with automatic CPU fallback.",
+      "Export MP4 video using hardware GPU (auto/nvenc/vaapi/amf/qsv) or CPU (x264/x265) encoding with automatic CPU fallback.",
       {{"output_path", {{"type", "string"}}},
        {"width", {{"type", "integer"}}},
        {"height", {{"type", "integer"}}},
        {"fps", {{"type", "integer"}}},
        {"bitrate_kbps", {{"type", "integer"}}},
        {"codec", {{"type", "string", }, {"description", "h264 or h265"}}},
-       {"encoder_backend", {{"type", "string"}, {"description", "auto, nvenc, amf, qsv, or cpu"}}},
+       {"encoder_backend", {{"type", "string"}, {"description", "auto, nvenc, vaapi, amf, qsv, or cpu"}}},
        {"encoder_preset", {{"type", "string"}, {"description", "fast, balanced, or quality"}}},
        {"fallback_to_cpu", {{"type", "boolean"}}},
        {"start_sec", {{"type", "number"}}},
@@ -1934,6 +1934,8 @@ nlohmann::json executeMcpTool(IStudioBridgeTarget& target,
              {"cpu_h265", caps.cpuH265},
              {"nvenc_h264", caps.nvencH264},
              {"nvenc_h265", caps.nvencH265},
+             {"vaapi_h264", caps.vaapiH264},
+             {"vaapi_h265", caps.vaapiH265},
              {"amf_h264", caps.amfH264},
              {"amf_h265", caps.amfH265},
              {"qsv_h264", caps.qsvH264},
@@ -1977,6 +1979,8 @@ nlohmann::json executeMcpTool(IStudioBridgeTarget& target,
       cfg.encoderBackend = iota::export_video::VideoEncoderBackend::Auto;
     } else if (eqCI(backendStr, "nvenc") || eqCI(backendStr, "nvidia")) {
       cfg.encoderBackend = iota::export_video::VideoEncoderBackend::NvidiaNvenc;
+    } else if (eqCI(backendStr, "vaapi") || eqCI(backendStr, "linux_vaapi")) {
+      cfg.encoderBackend = iota::export_video::VideoEncoderBackend::LinuxVaApi;
     } else if (eqCI(backendStr, "amf") || eqCI(backendStr, "amd")) {
       cfg.encoderBackend = iota::export_video::VideoEncoderBackend::AmdAmf;
     } else if (eqCI(backendStr, "qsv") || eqCI(backendStr, "intel")) {
@@ -1984,7 +1988,7 @@ nlohmann::json executeMcpTool(IStudioBridgeTarget& target,
     } else if (eqCI(backendStr, "cpu") || eqCI(backendStr, "software") || eqCI(backendStr, "x264") || eqCI(backendStr, "x265")) {
       cfg.encoderBackend = iota::export_video::VideoEncoderBackend::CpuSoftware;
     } else {
-      return makeToolErr("Invalid encoder_backend '" + backendStr + "'. Use auto, nvenc, amf, qsv, or cpu.");
+      return makeToolErr("Invalid encoder_backend '" + backendStr + "'. Use auto, nvenc, vaapi, amf, qsv, or cpu.");
     }
 
     const std::string presetStr = args.value("encoder_preset", std::string("balanced"));

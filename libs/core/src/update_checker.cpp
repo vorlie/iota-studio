@@ -29,6 +29,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <winhttp.h>
+#elif defined(IOTA_HAS_LIBCURL)
+#include <curl/curl.h>
+#include <mutex>
 #endif
 
 namespace iota::core {
@@ -301,6 +304,92 @@ HttpFetchResult fetchLatestReleaseJsonWinHttp(const std::string& owner,
   return res;
 }
 
+#elif defined(IOTA_HAS_LIBCURL)
+
+struct HttpFetchResult {
+  bool networkOk = false;
+  long statusCode = 0;
+  std::string body;
+  std::string errorMessage;
+};
+
+struct CurlWriteCtx {
+  std::string* body = nullptr;
+  const std::atomic<bool>* cancelled = nullptr;
+  static constexpr size_t kMaxBytes = 2u * 1024u * 1024u;
+};
+
+size_t curlWriteCallback(char* ptr, size_t size, size_t nmemb, void* userdata) {
+  auto* ctx = static_cast<CurlWriteCtx*>(userdata);
+  if (!ctx || !ctx->body) return 0;
+  if (ctx->cancelled && ctx->cancelled->load(std::memory_order_acquire)) {
+    return 0;
+  }
+  const size_t total = size * nmemb;
+  if (ctx->body->size() + total > CurlWriteCtx::kMaxBytes) {
+    return 0;
+  }
+  ctx->body->append(ptr, total);
+  return total;
+}
+
+int curlProgressCallback(void* clientp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+  const auto* cancelled = static_cast<const std::atomic<bool>*>(clientp);
+  if (cancelled && cancelled->load(std::memory_order_acquire)) {
+    return 1;
+  }
+  return 0;
+}
+
+HttpFetchResult fetchLatestReleaseJsonCurl(const std::string& owner,
+                                           const std::string& repo,
+                                           const std::string& currentVersion,
+                                           const std::atomic<bool>& cancelled) {
+  HttpFetchResult res;
+  static std::once_flag curlInitFlag;
+  std::call_once(curlInitFlag, []() { curl_global_init(CURL_GLOBAL_DEFAULT); });
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    res.errorMessage = "Failed to initialize libcurl session.";
+    return res;
+  }
+
+  const std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest";
+  const std::string ua = "IotaStudio/" + (currentVersion.empty() ? std::string("1.0.0") : currentVersion);
+
+  struct curl_slist* headers = nullptr;
+  headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+  headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2022-11-28");
+
+  CurlWriteCtx writeCtx{&res.body, &cancelled};
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &curlWriteCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writeCtx);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &curlProgressCallback);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(&cancelled));
+
+  const CURLcode rc = curl_easy_perform(curl);
+  if (rc == CURLE_OK) {
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &res.statusCode);
+    res.networkOk = true;
+  } else if (cancelled.load(std::memory_order_acquire) || rc == CURLE_ABORTED_BY_CALLBACK) {
+    res.errorMessage = "Cancelled";
+  } else {
+    res.errorMessage = std::string("Could not contact GitHub Releases: ") + curl_easy_strerror(rc);
+  }
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+  return res;
+}
+
 #endif  // _WIN32
 
 }  // namespace
@@ -495,11 +584,28 @@ std::optional<ReleaseInfo> parseGitHubReleaseJson(std::string_view jsonBody,
       }
       const bool editionMatch = (isMcpAssetName(name) == preferMcpAsset);
       int score = 1;
+#ifdef _WIN32
       if (endsWithIgnoreCase(name, ".exe")) {
         score = editionMatch ? 5 : 4;
       } else if (endsWithIgnoreCase(name, ".zip")) {
         score = editionMatch ? 3 : 2;
       }
+#else
+      if (endsWithIgnoreCase(name, ".AppImage")) {
+        score = editionMatch ? 7 : 6;
+      } else if (endsWithIgnoreCase(name, ".tar.gz") ||
+                 endsWithIgnoreCase(name, ".tar.xz") ||
+                 endsWithIgnoreCase(name, ".tgz")) {
+        score = editionMatch ? 5 : 4;
+      } else if (endsWithIgnoreCase(name, ".deb") ||
+                 endsWithIgnoreCase(name, ".rpm")) {
+        score = editionMatch ? 4 : 3;
+      } else if (endsWithIgnoreCase(name, ".zip")) {
+        score = editionMatch ? 3 : 2;
+      } else if (endsWithIgnoreCase(name, ".exe")) {
+        score = 0;
+      }
+#endif
       if (score > bestScore) {
         bestScore = score;
         info.assetName = name;
@@ -595,9 +701,14 @@ void UpdateChecker::startCheckAsync(std::string currentVersion,
       nextState->inFlight.store(false, std::memory_order_release);
     };
 
+#if defined(_WIN32) || defined(IOTA_HAS_LIBCURL)
 #ifdef _WIN32
     const HttpFetchResult fetch = fetchLatestReleaseJsonWinHttp(
         repoOwner, repoName, curVer, nextState->cancelled);
+#else
+    const HttpFetchResult fetch = fetchLatestReleaseJsonCurl(
+        repoOwner, repoName, curVer, nextState->cancelled);
+#endif
     if (nextState->cancelled.load(std::memory_order_acquire)) {
       nextState->inFlight.store(false, std::memory_order_release);
       return;
@@ -640,7 +751,8 @@ void UpdateChecker::startCheckAsync(std::string currentVersion,
     (void)repoOwner;
     (void)repoName;
     (void)curVer;
-    finishError("Automatic update checks are only supported on Windows.");
+    (void)preferMcpAsset;
+    finishError("Automatic update checks are unavailable (built without HTTP client support).");
 #endif
   }).detach();
 }

@@ -53,7 +53,8 @@ void main() {
 
   float pulse = clamp(u_soundKeys.x * 0.75 + u_beat * 0.55, 0.0, 1.4);
   float radius = fract(u_time * RING_SPEED * 0.45) * 0.85;
-  float ringEnv = exp(-pow((dist - radius) / max(RING_WIDTH, 0.02), 2.0));
+  float ringDist = (dist - radius) / max(RING_WIDTH, 0.02);
+  float ringEnv = exp(-(ringDist * ringDist));
   float wave = sin((dist - radius) * 32.0) * ringEnv * pulse * SHOCK_STRENGTH;
 
   vec2 uvR = clamp(v_uv - dir * (wave + CHROMA_SPREAD * pulse * ringEnv), 0.001, 0.999);
@@ -158,7 +159,7 @@ void main() {
   p *= (1.0 - BASS_ZOOM_STRENGTH * bass * exp(-r * 1.6));
 
   // Mid-band gentle angular twist
-  float angle = sin(u_time * 1.4) * MID_SWIRL_STRENGTH * mids * smoothstep(0.65, 0.0, r);
+  float angle = sin(u_time * 1.4) * MID_SWIRL_STRENGTH * mids * (1.0 - smoothstep(0.0, 0.65, r));
   float cs = cos(angle);
   float sn = sin(angle);
   p = mat2(cs, -sn, sn, cs) * p;
@@ -353,7 +354,9 @@ void main() {
 
   float w1 = 0.5 + 0.5 * sin(p.x + p.y);
   float w2 = 0.5 + 0.5 * cos(p.x * 1.3 - p.y * 0.9);
-  float crest = pow(0.5 + 0.5 * sin(p.x * 2.1 + t), 4.0);
+  float crestBase = max(0.0, 0.5 + 0.5 * sin(p.x * 2.1 + t));
+  float crest2 = crestBase * crestBase;
+  float crest = crest2 * crest2;
 
   vec3 col = mix(DEEP_BLUE, CYAN, w1 * 0.75);
   col = mix(col, PINK, w2 * 0.55);
@@ -454,14 +457,14 @@ void main() {
   float aspect = u_resolution.x / max(u_resolution.y, 1.0);
   vec2 p = (v_uv - 0.5) * vec2(aspect, 1.0);
   float r = length(p);
-  float theta = atan(p.y, p.x);
+  float theta = (r > 1e-5) ? atan(p.y, p.x) : 0.0;
 
   float sector = floor((theta / 6.2831853 + 0.5) * SPOKES);
   float localA = abs(fract((theta / 6.2831853 + 0.5) * SPOKES) - 0.5);
   float depth = 0.45 / max(r, 0.03) - u_time * TUNNEL_SPEED - u_beat * 0.8;
 
   float streakSeed = hash11(sector + floor(depth * 0.5) * 17.0);
-  float radialPulse = smoothstep(0.32, 0.0, localA) * smoothstep(0.15, 0.85, fract(depth * 0.5 + streakSeed));
+  float radialPulse = (1.0 - smoothstep(0.0, 0.32, localA)) * smoothstep(0.15, 0.85, fract(depth * 0.5 + streakSeed));
   float centerFog = smoothstep(0.02, 0.42, r);
   float energy = radialPulse * centerFog * (0.65 + 0.85 * u_soundKeys.x + 0.5 * u_beat);
 
@@ -642,7 +645,7 @@ void main() {
   vec2 p = (v_uv - 0.5) * vec2(aspect, 1.0);
   float zoom = max(0.2, ZOOM_SCALE + u_soundKeys.x * 0.12 + u_beat * 0.08);
   float r = length(p) / zoom;
-  float a = atan(p.y, p.x) + u_time * SPIN_SPEED;
+  float a = ((length(p) > 1e-5) ? atan(p.y, p.x) : 0.0) + u_time * SPIN_SPEED;
 
   float sectorAngle = 6.2831853 / max(SEGMENTS, 2.0);
   a = mod(a, sectorAngle);
@@ -693,7 +696,7 @@ void main() {
 
     vec2 sunP = vec2((uv.x - 0.5) * aspect, uv.y - (HORIZON_Y + 0.16));
     float sunDist = length(sunP);
-    float sunMask = smoothstep(0.185, 0.180, sunDist);
+    float sunMask = (1.0 - smoothstep(0.180, 0.185, sunDist));
     float slice = step(0.28, fract(uv.y * 42.0)) + step(0.12, uv.y - HORIZON_Y);
     vec3 sunCol = mix(SUN_BOT, SUN_TOP, clamp((uv.y - HORIZON_Y) * 3.2, 0.0, 1.0));
     col = mix(col, sunCol, sunMask * clamp(slice, 0.0, 1.0));
@@ -806,7 +809,7 @@ void main() {
   float dist = length(gridUv);
 
   float radius = sqrt(clamp(luma, 0.0, 1.0)) * 0.58;
-  float dotMask = smoothstep(radius + 0.06, radius - 0.06, dist);
+  float dotMask = (1.0 - smoothstep(radius - 0.06, radius + 0.06, dist));
   float dither = step(bayer4x4(floor(px * 0.5)), luma);
 
   vec3 stylized = mix(INK_DARK, INK_MID, clamp(dotMask * 0.8 + dither * 0.35, 0.0, 1.0));

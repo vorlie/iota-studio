@@ -27,7 +27,8 @@ target_link_libraries(iota_rhi_gl45
   PUBLIC
     iota_rhi
   PRIVATE
-    opengl32
+    OpenGL::GL
+    glfw
 )
 
 iota_configure_target(iota_rhi_gl45)

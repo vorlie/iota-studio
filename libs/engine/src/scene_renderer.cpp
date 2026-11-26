@@ -508,8 +508,147 @@ bool hasGlslDecl(std::string_view code, bool isInput, std::string_view ident) {
   return false;
 }
 
+std::string_view stripUtf8BomSv(std::string_view s) noexcept {
+  if (s.size() >= 3 &&
+      static_cast<uint8_t>(s[0]) == 0xEF &&
+      static_cast<uint8_t>(s[1]) == 0xBB &&
+      static_cast<uint8_t>(s[2]) == 0xBF) {
+    return s.substr(3);
+  }
+  return s;
+}
+
+bool isGlslIdentChar(unsigned char c) noexcept {
+  return std::isalnum(c) != 0 || c == '_';
+}
+
+struct GlslVersionDirective {
+  bool found = false;
+  int version = 0;
+  bool isEs = false;
+  size_t lineStart = 0;
+  size_t lineEndWithNewline = 0;
+};
+
+GlslVersionDirective findGlslVersionDirective(std::string_view src) noexcept {
+  GlslVersionDirective info;
+  bool inBlockComment = false;
+  size_t pos = 0;
+  while (pos < src.size()) {
+    const size_t lineStart = pos;
+    const size_t nlPos = src.find('\n', pos);
+    const size_t lineEnd = (nlPos == std::string_view::npos) ? src.size() : nlPos;
+    const size_t lineEndWithNl = (nlPos == std::string_view::npos) ? src.size() : (nlPos + 1);
+
+    size_t i = lineStart;
+    bool hitCodeBeforeHash = false;
+    while (i < lineEnd) {
+      if (inBlockComment) {
+        const size_t closePos = src.find("*/", i);
+        if (closePos == std::string_view::npos || closePos >= lineEnd) {
+          i = lineEnd;
+          break;
+        }
+        inBlockComment = false;
+        i = closePos + 2;
+        continue;
+      }
+      const char ch = src[i];
+      if (ch == ' ' || ch == '\t' || ch == '\r') {
+        ++i;
+        continue;
+      }
+      if (ch == '/' && i + 1 < lineEnd && src[i + 1] == '/') {
+        i = lineEnd;
+        break;
+      }
+      if (ch == '/' && i + 1 < lineEnd && src[i + 1] == '*') {
+        inBlockComment = true;
+        i += 2;
+        continue;
+      }
+      if (ch == '#') {
+        break;
+      }
+      hitCodeBeforeHash = true;
+      break;
+    }
+
+    if (!hitCodeBeforeHash && !inBlockComment && i < lineEnd && src[i] == '#') {
+      size_t p = i + 1;
+      while (p < lineEnd && (src[p] == ' ' || src[p] == '\t')) {
+        ++p;
+      }
+      constexpr std::string_view kVersionKw = "version";
+      if (lineEnd - p >= kVersionKw.size() &&
+          src.substr(p, kVersionKw.size()) == kVersionKw &&
+          (p + kVersionKw.size() == lineEnd ||
+           !isGlslIdentChar(static_cast<unsigned char>(src[p + kVersionKw.size()])))) {
+        info.found = true;
+        info.lineStart = lineStart;
+        info.lineEndWithNewline = lineEndWithNl;
+        size_t q = p + kVersionKw.size();
+        while (q < lineEnd && (src[q] == ' ' || src[q] == '\t')) {
+          ++q;
+        }
+        int ver = 0;
+        bool hasDigits = false;
+        while (q < lineEnd && std::isdigit(static_cast<unsigned char>(src[q]))) {
+          hasDigits = true;
+          ver = ver * 10 + (src[q] - '0');
+          ++q;
+        }
+        info.version = hasDigits ? ver : 0;
+        while (q < lineEnd) {
+          if (src[q] == '/' && q + 1 < lineEnd && (src[q + 1] == '/' || src[q + 1] == '*')) {
+            break;
+          }
+          if (std::isalpha(static_cast<unsigned char>(src[q]))) {
+            size_t tokEnd = q;
+            while (tokEnd < lineEnd && isGlslIdentChar(static_cast<unsigned char>(src[tokEnd]))) {
+              ++tokEnd;
+            }
+            if (src.substr(q, tokEnd - q) == "es") {
+              info.isEs = true;
+              break;
+            }
+            q = tokEnd;
+            continue;
+          }
+          ++q;
+        }
+        return info;
+      }
+    }
+
+    while (i < lineEnd) {
+      if (inBlockComment) {
+        const size_t closePos = src.find("*/", i);
+        if (closePos == std::string_view::npos || closePos >= lineEnd) {
+          i = lineEnd;
+          break;
+        }
+        inBlockComment = false;
+        i = closePos + 2;
+      } else if (src[i] == '/' && i + 1 < lineEnd && src[i + 1] == '/') {
+        break;
+      } else if (src[i] == '/' && i + 1 < lineEnd && src[i + 1] == '*') {
+        inBlockComment = true;
+        i += 2;
+      } else {
+        ++i;
+      }
+    }
+
+    pos = lineEndWithNl;
+  }
+  return info;
+}
+
 std::string adaptCustomGlslTo450(std::string_view src, bool isFragment) {
-  if (src.find("#version") != std::string_view::npos) {
+  src = stripUtf8BomSv(src);
+  const GlslVersionDirective verInfo = findGlslVersionDirective(src);
+  if (verInfo.found && !verInfo.isEs && verInfo.version >= 330) {
     return std::string(src);
   }
   std::string out = "#version 450 core\n";
@@ -529,6 +668,9 @@ std::string adaptCustomGlslTo450(std::string_view src, bool isFragment) {
   }
 
   std::string body(src);
+  if (verInfo.found) {
+    body.erase(verInfo.lineStart, verInfo.lineEndWithNewline - verInfo.lineStart);
+  }
   auto replaceAll = [&](std::string_view from, std::string_view to) {
     size_t pos = 0;
     while ((pos = body.find(from, pos)) != std::string::npos) {
@@ -2624,20 +2766,15 @@ struct SceneRenderer::Impl {
           outErr = "Shader asset not found: " + std::string(trimmed);
           return {};
         }
-        std::string src(reinterpret_cast<const char*>(it->second.data()), it->second.size());
-        if (src.size() >= 3 &&
-            static_cast<uint8_t>(src[0]) == 0xEF &&
-            static_cast<uint8_t>(src[1]) == 0xBB &&
-            static_cast<uint8_t>(src[2]) == 0xBF) {
-          src.erase(0, 3);
-        }
+        std::string src(stripUtf8BomSv(std::string_view(
+            reinterpret_cast<const char*>(it->second.data()), it->second.size())));
         if (src.empty()) {
           outErr = "Shader asset is empty: " + std::string(trimmed);
           return {};
         }
         return src;
       }
-      return std::string(raw);
+      return std::string(stripUtf8BomSv(raw));
     };
 
     std::string resolveErr;
@@ -3181,6 +3318,7 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
     const auto fStats = impl_->fontCache.stats();
     outStats->cachedGlyphs = fStats.cachedGlyphs;
     outStats->fontUsingDirectWrite = fStats.usingDirectWrite;
+    outStats->fontUsingNativeBackend = fStats.usingNativeFontBackend;
     outStats->cpuDspMs = std::chrono::duration<float, std::milli>(dspCpuEnd - frameCpuStart).count();
     outStats->cpuRenderMs =
         std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - frameCpuStart).count();

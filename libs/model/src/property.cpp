@@ -15,9 +15,24 @@
 
 #include "iota/model/property.hpp"
 
+#include <charconv>
 #include <cstdio>
 
 namespace iota::model {
+
+namespace {
+
+std::string formatFixed2(float value) {
+  char buf[48]{};
+  const auto [ptr, ec] =
+      std::to_chars(buf, buf + sizeof(buf), static_cast<double>(value), std::chars_format::fixed, 2);
+  if (ec == std::errc{}) {
+    return std::string(buf, ptr);
+  }
+  return "0.00";
+}
+
+}  // namespace
 
 const PropertyEntry* PropertyEntry::findChild(std::string_view key) const noexcept {
   for (const auto& c : children) {
@@ -206,19 +221,17 @@ void PropertyBag::setInt(std::string_view key, int val, int minVal, int maxVal,
 
 void PropertyBag::setFloat(std::string_view key, float val, float minVal, float maxVal,
                            std::string_view group) {
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "f %.2f %.2f", minVal, maxVal);
+  const std::string tag = "f " + formatFixed2(minVal) + " " + formatFixed2(maxVal);
   auto& e = getOrAdd(key);
-  ensureOrder(e, buf, group);
+  ensureOrder(e, tag, group);
   e.value = static_cast<double>(val);
 }
 
 void PropertyBag::setVec2(std::string_view key, iota::core::Vec2 val, float minVal, float maxVal,
                           std::string_view group) {
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "f2 %.2f %.2f", minVal, maxVal);
+  const std::string tag = "f2 " + formatFixed2(minVal) + " " + formatFixed2(maxVal);
   auto& e = getOrAdd(key);
-  ensureOrder(e, buf, group);
+  ensureOrder(e, tag, group);
   e.value = iota::core::formatF2(val);
 }
 

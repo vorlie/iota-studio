@@ -22,7 +22,14 @@
 #include "iota/mcp/studio_session.hpp"
 #include "iota/mcp/working_copy.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -35,11 +42,29 @@
 
 namespace {
 
+unsigned long currentPid() noexcept {
+#ifdef _WIN32
+  return static_cast<unsigned long>(GetCurrentProcessId());
+#else
+  return static_cast<unsigned long>(getpid());
+#endif
+}
+
+std::string makeTestBridgeEndpoint(const char* prefix) {
+#ifdef _WIN32
+  return std::string("\\\\.\\pipe\\") + prefix + "_" + std::to_string(currentPid());
+#else
+  return iota::core::pathToUtf8(
+      std::filesystem::temp_directory_path() /
+      (std::string(prefix) + "_" + std::to_string(currentPid()) + ".sock"));
+#endif
+}
+
 struct ScopedTempDir {
   std::filesystem::path dir;
   explicit ScopedTempDir(const char* name) {
     dir = std::filesystem::temp_directory_path() /
-          (std::string(name) + "_" + std::to_string(GetCurrentProcessId()));
+          (std::string(name) + "_" + std::to_string(currentPid()));
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
   }
@@ -192,7 +217,6 @@ TEST_CASE("McpServer handles protocol, project/layer edits, viz protection, docs
          {"hdrIntensity", 1.8},
          {"measureEmitRate", "Beat 1.5 1.5"}}}});
   if (setProps["result"]["isError"].get<bool>()) {
-    // Re-try only guaranteed base keys if property name differs across schema
     FAIL(setProps["result"]["content"][0]["text"].get<std::string>());
   }
 
@@ -276,8 +300,7 @@ TEST_CASE("McpServer handles protocol, project/layer edits, viz protection, docs
 TEST_CASE("MCP LiveBridgeHost and LiveBridgeClient complete round-trip and shut down without hanging") {
   using namespace iota::mcp;
 
-  const std::string pipeName =
-      "\\\\.\\pipe\\iota_studio_mcp_test_" + std::to_string(GetCurrentProcessId());
+  const std::string pipeName = makeTestBridgeEndpoint("iota_studio_mcp_test");
 
   HeadlessStudioSession hostSession;
   LiveBridgeHost host;
@@ -323,13 +346,23 @@ TEST_CASE("MCP LiveBridgeHost and LiveBridgeClient complete round-trip and shut 
 }
 
 #ifdef IOTA_MCP_EXE_PATH
-TEST_CASE("Standalone iota_mcp.exe handles stdio JSON-RPC requests cleanly") {
+TEST_CASE("Standalone iota_mcp handles stdio JSON-RPC requests cleanly") {
   const std::filesystem::path exePath(IOTA_MCP_EXE_PATH);
   if (!iota::core::pathExistsNoThrow(exePath)) {
-    MESSAGE("Skipping subprocess stdio test; iota_mcp.exe not built yet.");
+    MESSAGE("Skipping subprocess stdio test; iota_mcp binary not built yet.");
     return;
   }
 
+  const std::string requests =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n"
+      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n"
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"docs_list_elements\",\"arguments\":{}}}\n";
+
+  std::string stdoutAll;
+  int exitCode = 1;
+
+#ifdef _WIN32
   SECURITY_ATTRIBUTES sa{};
   sa.nLength = sizeof(sa);
   sa.bInheritHandle = TRUE;
@@ -356,17 +389,10 @@ TEST_CASE("Standalone iota_mcp.exe handles stdio JSON-RPC requests cleanly") {
   CloseHandle(outWrite);
   REQUIRE(ok);
 
-  const std::string requests =
-      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n"
-      "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
-      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n"
-      "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"docs_list_elements\",\"arguments\":{}}}\n";
-
   DWORD written = 0;
   REQUIRE(WriteFile(inWrite, requests.data(), static_cast<DWORD>(requests.size()), &written, nullptr));
   CloseHandle(inWrite);  // Signal EOF so iota_mcp exits cleanly after responding
 
-  std::string stdoutAll;
   char buf[4096];
   DWORD bytesRead = 0;
   while (ReadFile(outRead, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0) {
@@ -375,10 +401,65 @@ TEST_CASE("Standalone iota_mcp.exe handles stdio JSON-RPC requests cleanly") {
   CloseHandle(outRead);
 
   REQUIRE(WaitForSingleObject(pi.hProcess, 10000) == WAIT_OBJECT_0);
-  DWORD exitCode = 1;
-  GetExitCodeProcess(pi.hProcess, &exitCode);
+  DWORD winExit = 1;
+  GetExitCodeProcess(pi.hProcess, &winExit);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  exitCode = static_cast<int>(winExit);
+#else
+  int inPipe[2]{-1, -1};
+  int outPipe[2]{-1, -1};
+  REQUIRE(pipe(inPipe) == 0);
+  REQUIRE(pipe(outPipe) == 0);
+
+  const pid_t pid = fork();
+  REQUIRE(pid >= 0);
+  if (pid == 0) {
+    close(inPipe[1]);
+    close(outPipe[0]);
+    dup2(inPipe[0], STDIN_FILENO);
+    dup2(outPipe[1], STDOUT_FILENO);
+    close(inPipe[0]);
+    close(outPipe[1]);
+    std::string exeStr = exePath.string();
+    char* argv[] = {exeStr.data(), nullptr};
+    execv(exeStr.c_str(), argv);
+    _exit(127);
+  }
+  close(inPipe[0]);
+  close(outPipe[1]);
+
+  size_t off = 0;
+  while (off < requests.size()) {
+    const ssize_t n = write(inPipe[1], requests.data() + off, requests.size() - off);
+    if (n > 0) {
+      off += static_cast<size_t>(n);
+    } else if (n < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;
+    }
+  }
+  close(inPipe[1]);
+
+  char buf[4096];
+  for (;;) {
+    const ssize_t n = read(outPipe[0], buf, sizeof(buf));
+    if (n > 0) {
+      stdoutAll.append(buf, static_cast<size_t>(n));
+    } else if (n == 0) {
+      break;
+    } else if (errno != EINTR) {
+      break;
+    }
+  }
+  close(outPipe[0]);
+
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+  exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+#endif
   CHECK(exitCode == 0);
 
   std::vector<nlohmann::json> lines;
@@ -521,8 +602,7 @@ TEST_CASE("MCP render_preview_frame advances totalTimeSec cleanly during headles
 TEST_CASE("MCP LiveBridgeHost serves concurrent LiveBridgeClient connections cleanly") {
   using namespace iota::mcp;
 
-  const std::string pipeName =
-      "\\\\.\\pipe\\iota_studio_mcp_multi_test_" + std::to_string(GetCurrentProcessId());
+  const std::string pipeName = makeTestBridgeEndpoint("iota_studio_mcp_multi_test");
 
   HeadlessStudioSession hostSession;
   LiveBridgeHost host;

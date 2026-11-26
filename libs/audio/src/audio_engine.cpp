@@ -29,8 +29,10 @@ struct AudioEngine::Impl {
   AudioTrackData track;
   bool hasTrackData = false;
 
+  std::mutex deviceMutex;
   ma_device device{};
-  bool deviceInitialized = false;
+  std::atomic<bool> deviceInitialized{false};
+  bool deviceStarted = false;
   int deviceSampleRate = 0;
 
   std::atomic<uint64_t> cursorFrames{0};
@@ -77,12 +79,18 @@ struct AudioEngine::Impl {
   }
 
   bool ensureDevice(int sampleRate) {
-    if (deviceInitialized && deviceSampleRate == sampleRate) {
+    std::lock_guard<std::mutex> devLock(deviceMutex);
+    const bool initialized = deviceInitialized.load(std::memory_order_acquire);
+    if (initialized && deviceSampleRate == sampleRate) {
+      if (!deviceStarted) {
+        deviceStarted = (ma_device_start(&device) == MA_SUCCESS);
+      }
       return true;
     }
-    if (deviceInitialized) {
+    if (initialized) {
       ma_device_uninit(&device);
-      deviceInitialized = false;
+      deviceInitialized.store(false, std::memory_order_release);
+      deviceStarted = false;
     }
 
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
@@ -93,23 +101,28 @@ struct AudioEngine::Impl {
     cfg.pUserData = this;
 
     if (ma_device_init(nullptr, &cfg, &device) != MA_SUCCESS) {
-      deviceInitialized = false;
+      deviceInitialized.store(false, std::memory_order_release);
+      deviceStarted = false;
       return false;
     }
     if (ma_device_start(&device) != MA_SUCCESS) {
       ma_device_uninit(&device);
-      deviceInitialized = false;
+      deviceInitialized.store(false, std::memory_order_release);
+      deviceStarted = false;
       return false;
     }
-    deviceInitialized = true;
+    deviceInitialized.store(true, std::memory_order_release);
+    deviceStarted = true;
     deviceSampleRate = sampleRate;
     return true;
   }
 
   ~Impl() {
-    if (deviceInitialized) {
+    std::lock_guard<std::mutex> devLock(deviceMutex);
+    if (deviceInitialized.load(std::memory_order_acquire)) {
       ma_device_uninit(&device);
-      deviceInitialized = false;
+      deviceInitialized.store(false, std::memory_order_release);
+      deviceStarted = false;
     }
   }
 };
@@ -130,14 +143,16 @@ bool AudioEngine::loadTrack(AudioTrackData track, std::string* /*outError*/) {
     rebuildMonoAndDuration(track);
   }
   impl_->playing.store(false, std::memory_order_release);
+  int sampleRate = 44100;
   {
     std::lock_guard<std::mutex> lock(impl_->trackMutex);
     impl_->track = std::move(track);
     impl_->hasTrackData = true;
+    sampleRate = impl_->track.sampleRate;
     impl_->totalFrames.store(impl_->track.monoPcm.size(), std::memory_order_release);
     impl_->cursorFrames.store(0, std::memory_order_release);
   }
-  impl_->ensureDevice(impl_->track.sampleRate);
+  impl_->ensureDevice(sampleRate);
   return true;
 }
 
@@ -158,8 +173,11 @@ void AudioEngine::play() {
       impl_->totalFrames.load(std::memory_order_acquire)) {
     impl_->cursorFrames.store(0, std::memory_order_release);
   }
-  if (impl_->deviceInitialized) {
-    ma_device_start(&impl_->device);
+  {
+    std::lock_guard<std::mutex> devLock(impl_->deviceMutex);
+    if (impl_->deviceInitialized.load(std::memory_order_acquire) && !impl_->deviceStarted) {
+      impl_->deviceStarted = (ma_device_start(&impl_->device) == MA_SUCCESS);
+    }
   }
   impl_->playing.store(true, std::memory_order_release);
 }
@@ -198,7 +216,7 @@ bool AudioEngine::isPlaying() const noexcept {
 }
 
 bool AudioEngine::isAudioDeviceReady() const noexcept {
-  return impl_->deviceInitialized;
+  return impl_->deviceInitialized.load(std::memory_order_acquire);
 }
 
 float AudioEngine::volume() const noexcept {

@@ -64,6 +64,7 @@ struct RenderFrameStats {
   int activeAuxParticles = 0;
   int cachedGlyphs = 0;
   bool fontUsingDirectWrite = false;
+  bool fontUsingNativeBackend = false;
   bool hdrPipelineActive = false;
   bool bloomActive = false;
   float cpuDspMs = 0.0f;

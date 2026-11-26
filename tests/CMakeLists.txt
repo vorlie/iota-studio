@@ -59,6 +59,12 @@ if(IOTA_DISCORD_SDK_FOUND AND EXISTS "${IOTA_DISCORD_SDK_RUNTIME_LIB}")
       "$<TARGET_FILE_DIR:iota_tests>"
     COMMENT "Copying Discord Social SDK runtime library for tests"
   )
+  if(UNIX AND NOT APPLE)
+    set_target_properties(iota_tests PROPERTIES
+      BUILD_RPATH "$ORIGIN"
+      INSTALL_RPATH "$ORIGIN"
+    )
+  endif()
 endif()
 
 iota_configure_target(iota_tests)

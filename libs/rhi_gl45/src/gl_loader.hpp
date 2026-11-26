@@ -15,8 +15,18 @@
 
 #pragma once
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <GL/gl.h>
+
+#ifndef APIENTRY
+#ifdef GLAPIENTRY
+#define APIENTRY GLAPIENTRY
+#else
+#define APIENTRY
+#endif
+#endif
 
 #include <cstddef>
 #include <cstdint>

@@ -23,6 +23,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -49,6 +50,7 @@ TEST_CASE("Video export labels, encoder mapping, and fallback resolution") {
   CHECK(std::string(videoCodecDisplayName(VideoCodec::H265)).find("H.265") != std::string::npos);
   CHECK(std::string(videoEncoderBackendDisplayName(VideoEncoderBackend::Auto)).find("Auto") != std::string::npos);
   CHECK(std::string(videoEncoderBackendDisplayName(VideoEncoderBackend::NvidiaNvenc)).find("NVENC") != std::string::npos);
+  CHECK(std::string(videoEncoderBackendDisplayName(VideoEncoderBackend::LinuxVaApi)).find("VA-API") != std::string::npos);
   CHECK(std::string(videoEncoderBackendDisplayName(VideoEncoderBackend::AmdAmf)).find("AMD AMF") != std::string::npos);
   CHECK(std::string(videoEncoderBackendDisplayName(VideoEncoderBackend::IntelQsv)).find("Quick Sync") != std::string::npos);
   CHECK(std::string(videoEncoderBackendDisplayName(VideoEncoderBackend::CpuSoftware)).find("CPU") != std::string::npos);
@@ -60,6 +62,8 @@ TEST_CASE("Video export labels, encoder mapping, and fallback resolution") {
   CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::CpuSoftware, VideoCodec::H265)) == "libx265");
   CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::NvidiaNvenc, VideoCodec::H264)) == "h264_nvenc");
   CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::NvidiaNvenc, VideoCodec::H265)) == "hevc_nvenc");
+  CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::LinuxVaApi, VideoCodec::H264)) == "h264_vaapi");
+  CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::LinuxVaApi, VideoCodec::H265)) == "hevc_vaapi");
   CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::AmdAmf, VideoCodec::H264)) == "h264_amf");
   CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::AmdAmf, VideoCodec::H265)) == "hevc_amf");
   CHECK(std::string(ffmpegEncoderName(VideoEncoderBackend::IntelQsv, VideoCodec::H264)) == "h264_qsv");
@@ -135,7 +139,7 @@ TEST_CASE("Video export labels, encoder mapping, and fallback resolution") {
     noFfmpeg.ffmpegAvailable = false;
     auto missing = resolveEncoderSelection(cfg, noFfmpeg);
     CHECK(!missing.ok);
-    CHECK(missing.errorMessage.find("ffmpeg.exe") != std::string::npos);
+    CHECK(missing.errorMessage.find("ffmpeg") != std::string::npos);
 
     CHECK(caps.summaryText().find("CPU") != std::string::npos);
     caps.amfH264 = true;
@@ -150,6 +154,7 @@ TEST_CASE("Video export labels, encoder mapping, and fallback resolution") {
     caps.ffmpegAvailable = true;
     caps.cpuH264 = caps.cpuH265 = true;
     caps.nvencH264 = caps.nvencH265 = true;
+    caps.vaapiH264 = caps.vaapiH265 = true;
     caps.amfH264 = caps.amfH265 = true;
     caps.qsvH264 = caps.qsvH265 = true;
 
@@ -197,6 +202,39 @@ TEST_CASE("Video export labels, encoder mapping, and fallback resolution") {
     CHECK(qsvCmd.find(L"-preset veryfast") != std::wstring::npos);
     CHECK(qsvCmd.find(L"-pix_fmt nv12") != std::wstring::npos);
     CHECK(qsvCmd.find(L"-tag:v hvc1") != std::wstring::npos);
+
+    cfg.encoderBackend = VideoEncoderBackend::LinuxVaApi;
+    cfg.codec = VideoCodec::H264;
+    auto vaPlan = resolveEncoderSelection(cfg, caps);
+    CHECK(vaPlan.resolvedBackend == VideoEncoderBackend::LinuxVaApi);
+    CHECK(vaPlan.ffmpegEncoder == "h264_vaapi");
+    const auto vaArgs = buildFfmpegExportArgs(cfg, vaPlan, 1280, 720, 0.0, 5.0, {}, false);
+    const auto hasArg = [&](const std::string& val) {
+      return std::find(vaArgs.begin(), vaArgs.end(), val) != vaArgs.end();
+    };
+    CHECK(hasArg("-vaapi_device"));
+    CHECK(hasArg("-vf"));
+    CHECK(hasArg("format=nv12,hwupload"));
+    CHECK(hasArg("h264_vaapi"));
+    // VA-API output uses hwupload filter instead of -pix_fmt nv12 (rawvideo input still uses -pix_fmt rgba)
+    CHECK(!hasArg("nv12"));
+
+    caps.vaapiH264 = true;
+    CHECK(caps.summaryText().find("Linux VA-API (H.264, H.265)") != std::string::npos);
+#ifndef _WIN32
+    ExportSettings autoVaCfg;
+    autoVaCfg.encoderBackend = VideoEncoderBackend::Auto;
+    autoVaCfg.codec = VideoCodec::H264;
+    HardwareEncoderCapabilities vaOnlyCaps;
+    vaOnlyCaps.probed = true;
+    vaOnlyCaps.ffmpegAvailable = true;
+    vaOnlyCaps.cpuH264 = true;
+    vaOnlyCaps.vaapiH264 = true;
+    auto autoVaPlan = resolveEncoderSelection(autoVaCfg, vaOnlyCaps);
+    CHECK(autoVaPlan.ok);
+    CHECK(autoVaPlan.resolvedBackend == VideoEncoderBackend::LinuxVaApi);
+    CHECK(autoVaPlan.ffmpegEncoder == "h264_vaapi");
+#endif
   }
 }
 

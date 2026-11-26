@@ -112,7 +112,7 @@ TEST_CASE("parseGitHubReleaseJson extracts release metadata, assets, and update 
     ]
   })";
 
-  SUBCASE("Detects newer release and prefers .exe asset") {
+  SUBCASE("Detects newer release and selects platform-appropriate asset") {
     std::string err;
     const auto rel = parseGitHubReleaseJson(
         kNewerPayload, "1.3.1", UpdateChecker::kReleasesPageUrl, &err);
@@ -124,10 +124,15 @@ TEST_CASE("parseGitHubReleaseJson extracts release metadata, assets, and update 
     CHECK(rel->htmlUrl == "https://github.com/vorlie/iota-studio/releases/tag/v1.4.0");
     CHECK(rel->publishedAt == "2026-12-01T10:15:30Z");
     CHECK(rel->releaseNotes.find("Improved update workflow") != std::string::npos);
+#ifdef _WIN32
     CHECK(rel->assetName == "iota_studio.exe");
     CHECK(rel->assetSizeBytes == 2512000u);
     CHECK(rel->assetDownloadUrl ==
           "https://github.com/vorlie/iota-studio/releases/download/v1.4.0/iota_studio.exe");
+#else
+    CHECK(rel->assetName == "source-archive.zip");
+    CHECK(rel->assetSizeBytes == 102400u);
+#endif
   }
 
   SUBCASE("Up-to-date and older versions do not trigger updateAvailable") {
@@ -173,7 +178,7 @@ TEST_CASE("parseGitHubReleaseJson extracts release metadata, assets, and update 
     CHECK_FALSE(err.empty());
   }
 
-  SUBCASE("Selects standard or MCP installer asset based on preferMcpAsset") {
+  SUBCASE("Selects standard or MCP release asset based on preferMcpAsset and platform") {
     const char* kMultiAssetPayload = R"({
       "tag_name": "v1.7.0",
       "name": "Iota Studio v1.7.0",
@@ -192,6 +197,16 @@ TEST_CASE("parseGitHubReleaseJson extracts release metadata, assets, and update 
           "name": "IotaStudio-Setup-1.7.0.exe",
           "size": 3500000,
           "browser_download_url": "https://github.com/vorlie/iota-studio/releases/download/v1.7.0/IotaStudio-Setup-1.7.0.exe"
+        },
+        {
+          "name": "IotaStudio-MCP-1.7.0-x86_64.AppImage",
+          "size": 4100000,
+          "browser_download_url": "https://github.com/vorlie/iota-studio/releases/download/v1.7.0/IotaStudio-MCP-1.7.0-x86_64.AppImage"
+        },
+        {
+          "name": "IotaStudio-1.7.0-x86_64.AppImage",
+          "size": 4000000,
+          "browser_download_url": "https://github.com/vorlie/iota-studio/releases/download/v1.7.0/IotaStudio-1.7.0-x86_64.AppImage"
         }
       ]
     })";
@@ -199,17 +214,26 @@ TEST_CASE("parseGitHubReleaseJson extracts release metadata, assets, and update 
     const auto stdRel = parseGitHubReleaseJson(
         kMultiAssetPayload, "1.6.0", UpdateChecker::kReleasesPageUrl, nullptr, false);
     REQUIRE(stdRel.has_value());
-    CHECK(stdRel->assetName == "IotaStudio-Setup-1.7.0.exe");
-
     const auto mcpRel = parseGitHubReleaseJson(
         kMultiAssetPayload, "1.6.0", UpdateChecker::kReleasesPageUrl, nullptr, true);
     REQUIRE(mcpRel.has_value());
-    CHECK(mcpRel->assetName == "IotaStudio-MCP-Setup-1.7.0.exe");
 
-    // Fallback when MCP build sees a release containing only the standard asset
+#ifdef _WIN32
+    CHECK(stdRel->assetName == "IotaStudio-Setup-1.7.0.exe");
+    CHECK(mcpRel->assetName == "IotaStudio-MCP-Setup-1.7.0.exe");
+#else
+    CHECK(stdRel->assetName == "IotaStudio-1.7.0-x86_64.AppImage");
+    CHECK(mcpRel->assetName == "IotaStudio-MCP-1.7.0-x86_64.AppImage");
+#endif
+
+    // Fallback when MCP build sees a release containing only standard assets
     const auto fallbackRel = parseGitHubReleaseJson(
         kNewerPayload, "1.3.1", UpdateChecker::kReleasesPageUrl, nullptr, true);
     REQUIRE(fallbackRel.has_value());
+#ifdef _WIN32
     CHECK(fallbackRel->assetName == "iota_studio.exe");
+#else
+    CHECK(fallbackRel->assetName == "source-archive.zip");
+#endif
   }
 }

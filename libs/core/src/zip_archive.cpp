@@ -15,11 +15,17 @@
 
 #include "iota/core/zip_archive.hpp"
 
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <miniz.h>
+#include <system_error>
 
 namespace iota::core {
+
+namespace {
+std::atomic<uint64_t> gZipTmpCounter{0};
+}  // namespace
 
 bool isZipSignature(std::span<const uint8_t> data) noexcept {
   return data.size() >= 2 && data[0] == 0x50 && data[1] == 0x4B;
@@ -69,6 +75,11 @@ std::optional<std::vector<ZipEntryData>> readZipFromMemory(
 std::optional<std::vector<ZipEntryData>> readZipFromFile(
     const std::filesystem::path& path,
     std::string* outError) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) {
+    if (outError) *outError = "ZIP path is not a regular file";
+    return std::nullopt;
+  }
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) {
     if (outError) *outError = "Cannot open file for ZIP read";
@@ -135,14 +146,32 @@ bool writeZipToFile(
   std::vector<uint8_t> bytes;
   if (!writeZipToMemory(entries, bytes, outError)) return false;
 
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    if (outError) *outError = "Cannot open output file for ZIP write";
-    return false;
+  std::filesystem::path tmpPath = path;
+  tmpPath += ".tmp." + std::to_string(gZipTmpCounter.fetch_add(1, std::memory_order_relaxed));
+
+  {
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      if (outError) *outError = "Cannot open output file for ZIP write";
+      return false;
+    }
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    out.flush();
+    if (!out.good()) {
+      out.close();
+      std::error_code rmEc;
+      std::filesystem::remove(tmpPath, rmEc);
+      if (outError) *outError = "Failed writing ZIP file";
+      return false;
+    }
   }
-  out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-  if (!out.good()) {
-    if (outError) *outError = "Failed writing ZIP file";
+
+  std::error_code renameEc;
+  std::filesystem::rename(tmpPath, path, renameEc);
+  if (renameEc) {
+    std::error_code rmEc;
+    std::filesystem::remove(tmpPath, rmEc);
+    if (outError) *outError = "Failed finalizing ZIP file rename: " + renameEc.message();
     return false;
   }
   return true;

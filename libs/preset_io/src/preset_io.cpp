@@ -16,7 +16,9 @@
 #include "iota/preset_io/preset_io.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cstddef>
 #include <fstream>
 #include <nlohmann/json.hpp>
 
@@ -175,6 +177,17 @@ Json serializeComposition(const iota::model::Composition& comp) {
     j[item.key] = serializePropertyEntry(item.entry);
   }
   return j;
+}
+
+bool asciiEqualsCaseInsensitive(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(a[i])) !=
+        std::tolower(static_cast<unsigned char>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool asciiEndsWithCaseInsensitive(std::string_view s, std::string_view suffix) noexcept {
@@ -364,7 +377,7 @@ std::optional<iota::model::Project> loadProjectFromMemory(
     const iota::core::ZipEntryData* fallbackJson = nullptr;
     for (const auto& e : *entriesOpt) {
       const std::string fname = iota::core::baseNameFromSlashPath(e.name);
-      if (fname == "scene.json") {
+      if (asciiEqualsCaseInsensitive(fname, "scene.json")) {
         sceneEntry = &e;
         break;
       }
@@ -401,6 +414,11 @@ std::optional<iota::model::Project> loadProjectFromMemory(
 std::optional<iota::model::Project> loadProjectFromFile(
     const std::filesystem::path& path,
     std::string* outError) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) {
+    if (outError) *outError = "Preset path is not a regular file: " + iota::core::pathToUtf8(path);
+    return std::nullopt;
+  }
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) {
     if (outError) *outError = "Cannot open preset file: " + iota::core::pathToUtf8(path);
@@ -424,15 +442,34 @@ bool saveProjectAsJson(
     const iota::model::Project& project,
     const std::filesystem::path& path,
     std::string* outError) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    if (outError) *outError = "Cannot open output JSON path: " + iota::core::pathToUtf8(path);
-    return false;
-  }
+  static std::atomic<uint64_t> gJsonTmpCounter{0};
+  std::filesystem::path tmpPath = path;
+  tmpPath += ".tmp." + std::to_string(gJsonTmpCounter.fetch_add(1, std::memory_order_relaxed));
+
   const std::string txt = serializeProjectToJsonString(project, 2);
-  out.write(txt.data(), static_cast<std::streamsize>(txt.size()));
-  if (!out.good()) {
-    if (outError) *outError = "Failed writing JSON preset file";
+  {
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      if (outError) *outError = "Cannot open output JSON path: " + iota::core::pathToUtf8(path);
+      return false;
+    }
+    out.write(txt.data(), static_cast<std::streamsize>(txt.size()));
+    out.flush();
+    if (!out.good()) {
+      out.close();
+      std::error_code rmEc;
+      std::filesystem::remove(tmpPath, rmEc);
+      if (outError) *outError = "Failed writing JSON preset file";
+      return false;
+    }
+  }
+
+  std::error_code renameEc;
+  std::filesystem::rename(tmpPath, path, renameEc);
+  if (renameEc) {
+    std::error_code rmEc;
+    std::filesystem::remove(tmpPath, rmEc);
+    if (outError) *outError = "Failed finalizing JSON preset file: " + renameEc.message();
     return false;
   }
   return true;
@@ -560,6 +597,95 @@ std::optional<iota::model::HierarchyClipboard> parseHierarchyClipboardFromJson(
   } catch (...) {
     return std::nullopt;
   }
+  return std::nullopt;
+}
+
+std::string makePortableAudioPath(
+    std::string_view audioPath,
+    const std::filesystem::path& projectPath) {
+  if (audioPath.empty() || projectPath.empty()) {
+    return std::string(audioPath);
+  }
+  const std::filesystem::path projDir = projectPath.parent_path();
+  if (projDir.empty()) {
+    return std::string(audioPath);
+  }
+
+  const std::filesystem::path rawAudio = iota::core::pathFromUtf8(audioPath);
+  std::error_code ec;
+  std::filesystem::path canonAudio = std::filesystem::weakly_canonical(rawAudio, ec);
+  if (ec || canonAudio.empty()) {
+    canonAudio = rawAudio.lexically_normal();
+  }
+  ec.clear();
+  std::filesystem::path canonProjDir = std::filesystem::weakly_canonical(projDir, ec);
+  if (ec || canonProjDir.empty()) {
+    canonProjDir = projDir.lexically_normal();
+  }
+
+  const std::filesystem::path rel = canonAudio.lexically_relative(canonProjDir);
+  if (rel.empty() || rel.is_absolute()) {
+    return std::string(audioPath);
+  }
+  const auto firstIt = rel.begin();
+  if (firstIt == rel.end() || *firstIt == ".." || *firstIt == ".") {
+    return std::string(audioPath);
+  }
+
+  std::string relUtf8 = iota::core::pathToUtf8(rel);
+  std::replace(relUtf8.begin(), relUtf8.end(), '\\', '/');
+  if (relUtf8.empty()) {
+    return std::string(audioPath);
+  }
+  return relUtf8;
+}
+
+std::optional<std::filesystem::path> resolvePortableAudioPath(
+    std::string_view storedAudioPath,
+    const std::filesystem::path& projectPath) {
+  if (storedAudioPath.empty()) {
+    return std::nullopt;
+  }
+  auto isExistingRegularFile = [](const std::filesystem::path& p) -> bool {
+    if (p.empty()) return false;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(p, ec);
+  };
+
+  // 1. Direct path as stored (supports native paths and current CWD-relative paths).
+  const std::filesystem::path direct = iota::core::pathFromUtf8(storedAudioPath);
+  if (isExistingRegularFile(direct)) {
+    return direct;
+  }
+
+  const std::filesystem::path projDir = projectPath.parent_path();
+  if (!projDir.empty()) {
+    // 2. Normalized relative path against the project's parent directory.
+    std::string normSlash(storedAudioPath);
+    std::replace(normSlash.begin(), normSlash.end(), '\\', '/');
+    const bool looksWindowsAbs =
+        normSlash.size() >= 3 &&
+        std::isalpha(static_cast<unsigned char>(normSlash[0])) != 0 &&
+        normSlash[1] == ':' &&
+        normSlash[2] == '/';
+    const bool looksAbs = !normSlash.empty() && (normSlash[0] == '/' || looksWindowsAbs);
+    if (!looksAbs) {
+      const std::filesystem::path relCand = (projDir / iota::core::pathFromUtf8(normSlash)).lexically_normal();
+      if (isExistingRegularFile(relCand)) {
+        return relCand;
+      }
+    }
+
+    // 3. Sibling fallback next to the project file (cross-OS Windows <-> Linux bundle).
+    const std::string baseName = iota::core::baseNameFromSlashPath(storedAudioPath);
+    if (!baseName.empty()) {
+      const std::filesystem::path sibling = projDir / iota::core::pathFromUtf8(baseName);
+      if (isExistingRegularFile(sibling)) {
+        return sibling;
+      }
+    }
+  }
+
   return std::nullopt;
 }
 

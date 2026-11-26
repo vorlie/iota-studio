@@ -40,6 +40,24 @@ target_link_libraries(iota_engine
 
 if(WIN32)
   target_link_libraries(iota_engine PRIVATE dwrite)
+elseif(UNIX AND NOT APPLE)
+  find_package(Freetype QUIET)
+  find_package(Fontconfig QUIET)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(IOTA_HARFBUZZ QUIET IMPORTED_TARGET harfbuzz)
+  endif()
+  if(Freetype_FOUND AND Fontconfig_FOUND AND TARGET PkgConfig::IOTA_HARFBUZZ)
+    target_compile_definitions(iota_engine PRIVATE IOTA_HAS_FREETYPE_HARFBUZZ=1)
+    target_link_libraries(iota_engine PRIVATE
+      Freetype::Freetype
+      Fontconfig::Fontconfig
+      PkgConfig::IOTA_HARFBUZZ
+    )
+    message(STATUS "Typography backend: FreeType + HarfBuzz + Fontconfig")
+  else()
+    message(STATUS "FreeType/HarfBuzz/Fontconfig not all found; iota_engine using fallback text atlas")
+  endif()
 endif()
 
 iota_configure_target(iota_engine)

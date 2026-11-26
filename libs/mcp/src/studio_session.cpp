@@ -130,8 +130,8 @@ bool HeadlessStudioSession::loadProject(const std::filesystem::path& path,
   undoStack_.clear(project_);
 
   if (!project_.metadata.audioPath.empty()) {
-    const auto audioPath = iota::core::pathFromUtf8(project_.metadata.audioPath);
-    if (iota::core::pathExistsNoThrow(audioPath) && audio_.loadFile(audioPath)) {
+    if (auto resolvedAudio = iota::preset_io::resolvePortableAudioPath(project_.metadata.audioPath, path);
+        resolvedAudio && audio_.loadFile(*resolvedAudio)) {
       audio_.pause();
     }
   }

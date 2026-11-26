@@ -19,18 +19,28 @@
 
 #include "miniaudio.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <sstream>
+#include <vector>
 
 namespace iota::audio {
 
 namespace {
 
+#ifdef _WIN32
 std::wstring quoteWindowsArg(const std::wstring& arg) {
   if (arg.find_first_of(L" \t\n\v\"") == std::wstring::npos && !arg.empty()) {
     return arg;
@@ -120,6 +130,81 @@ ProcessResult runChildCaptureStdout(const std::wstring& commandLine) {
   CloseHandle(pi.hThread);
   return res;
 }
+#else
+struct ProcessResult {
+  bool launched = false;
+  int exitCode = 1;
+  std::vector<uint8_t> stdoutBytes;
+};
+
+ProcessResult runChildCaptureStdout(const std::vector<std::string>& args) {
+  ProcessResult res;
+  if (args.empty()) {
+    return res;
+  }
+
+  int pipefd[2]{-1, -1};
+  if (pipe(pipefd) != 0) {
+    return res;
+  }
+  fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+  fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return res;
+  }
+
+  if (pid == 0) {
+    close(pipefd[0]);
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]);
+    const int devNull = open("/dev/null", O_RDWR);
+    if (devNull >= 0) {
+      dup2(devNull, STDIN_FILENO);
+      dup2(devNull, STDERR_FILENO);
+      if (devNull > STDERR_FILENO) {
+        close(devNull);
+      }
+    }
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const auto& s : args) {
+      argv.push_back(const_cast<char*>(s.c_str()));
+    }
+    argv.push_back(nullptr);
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+
+  close(pipefd[1]);
+  std::vector<uint8_t> chunk(65536);
+  for (;;) {
+    const ssize_t n = read(pipefd[0], chunk.data(), chunk.size());
+    if (n > 0) {
+      res.stdoutBytes.insert(res.stdoutBytes.end(), chunk.begin(), chunk.begin() + n);
+    } else if (n == 0) {
+      break;
+    } else if (errno != EINTR) {
+      break;
+    }
+  }
+  close(pipefd[0]);
+
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+  if (WIFEXITED(status)) {
+    res.exitCode = WEXITSTATUS(status);
+  } else {
+    res.exitCode = 1;
+  }
+  res.launched = !(res.exitCode == 127 && res.stdoutBytes.empty());
+  return res;
+}
+#endif
 
 std::string asciiLower(std::string_view s) {
   std::string out(s);
@@ -130,12 +215,24 @@ std::string asciiLower(std::string_view s) {
 }
 
 void probeTagsWithFfprobe(const std::filesystem::path& path, AudioTrackData& track) {
+#ifdef _WIN32
   const std::wstring cmd =
       L"ffprobe.exe -v error -show_entries format=duration:format_tags=title,artist,album "
       L"-of default=noprint_wrappers=1 " +
       quoteWindowsArg(path.wstring());
-
   const auto proc = runChildCaptureStdout(cmd);
+#else
+  const auto proc = runChildCaptureStdout({
+      "ffprobe",
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration:format_tags=title,artist,album",
+      "-of",
+      "default=noprint_wrappers=1",
+      iota::core::pathToUtf8(path),
+  });
+#endif
   if (!proc.launched || proc.exitCode != 0 || proc.stdoutBytes.empty()) {
     return;
   }
@@ -166,21 +263,43 @@ void probeTagsWithFfprobe(const std::filesystem::path& path, AudioTrackData& tra
 std::optional<AudioTrackData> decodeWithFfmpeg(const std::filesystem::path& path,
                                                int targetSampleRate,
                                                std::string* outError) {
+#ifdef _WIN32
   const std::wstring srStr = std::to_wstring(std::max(8000, targetSampleRate));
   const std::wstring cmd =
       L"ffmpeg.exe -v error -i " + quoteWindowsArg(path.wstring()) +
       L" -vn -f f32le -acodec pcm_f32le -ac 2 -ar " + srStr + L" pipe:1";
-
   const auto proc = runChildCaptureStdout(cmd);
+  constexpr const char* kFfmpegLabel = "ffmpeg.exe";
+#else
+  const std::string srStr = std::to_string(std::max(8000, targetSampleRate));
+  const auto proc = runChildCaptureStdout({
+      "ffmpeg",
+      "-v",
+      "error",
+      "-i",
+      iota::core::pathToUtf8(path),
+      "-vn",
+      "-f",
+      "f32le",
+      "-acodec",
+      "pcm_f32le",
+      "-ac",
+      "2",
+      "-ar",
+      srStr,
+      "pipe:1",
+  });
+  constexpr const char* kFfmpegLabel = "ffmpeg";
+#endif
   if (!proc.launched) {
     if (outError) {
-      *outError = "ffmpeg.exe could not be launched";
+      *outError = std::string(kFfmpegLabel) + " could not be launched";
     }
     return std::nullopt;
   }
   if (proc.exitCode != 0 || proc.stdoutBytes.size() < sizeof(float) * 2) {
     if (outError) {
-      *outError = "ffmpeg.exe failed to decode audio stream";
+      *outError = std::string(kFfmpegLabel) + " failed to decode audio stream";
     }
     return std::nullopt;
   }
@@ -189,7 +308,7 @@ std::optional<AudioTrackData> decodeWithFfmpeg(const std::filesystem::path& path
   const size_t stereoAligned = floatCount & ~size_t{1};
   if (stereoAligned == 0) {
     if (outError) {
-      *outError = "ffmpeg.exe produced empty PCM output";
+      *outError = std::string(kFfmpegLabel) + " produced empty PCM output";
     }
     return std::nullopt;
   }
@@ -214,7 +333,11 @@ std::optional<AudioTrackData> decodeWithMiniaudio(const std::filesystem::path& p
                                                   std::string* outError) {
   ma_decoder_config decCfg = ma_decoder_config_init(ma_format_f32, 2, static_cast<ma_uint32>(targetSampleRate));
   ma_decoder decoder{};
+#ifdef _WIN32
   const ma_result initRes = ma_decoder_init_file_w(path.c_str(), &decCfg, &decoder);
+#else
+  const ma_result initRes = ma_decoder_init_file(path.c_str(), &decCfg, &decoder);
+#endif
   if (initRes != MA_SUCCESS) {
     if (outError) {
       *outError = "miniaudio failed to open audio file";

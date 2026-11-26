@@ -15,7 +15,19 @@
 
 #include "iota/mcp/live_bridge.hpp"
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <csignal>
+#include <cstdlib>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -34,6 +46,8 @@ namespace iota::mcp {
 namespace {
 
 constexpr uint32_t kMaxFrameBytes = 16u * 1024u * 1024u;
+
+#ifdef _WIN32
 
 std::wstring utf8ToWide(std::string_view s) {
   if (s.empty()) return {};
@@ -241,9 +255,261 @@ bool writeJsonFrame(HANDLE pipe,
       pipe, packet.data(), static_cast<DWORD>(packet.size()), stopEvent, timeoutMs, outErr);
 }
 
+#else
+
+void ensureSigpipeIgnored() {
+  static std::once_flag flag;
+  std::call_once(flag, []() { std::signal(SIGPIPE, SIG_IGN); });
+}
+
+void setFdNonBlockingAndCloexec(int fd) noexcept {
+  const int fl = fcntl(fd, F_GETFL, 0);
+  if (fl >= 0) {
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+  }
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
+}
+
+// Returns 1 if fd is ready, 0 on timeout, -2 if stopReadFd signaled, -1 on error.
+int waitSocketOrStop(int fd, int stopReadFd, short events, int timeoutMs) {
+  const bool infinite = (timeoutMs < 0);
+  const auto deadline =
+      infinite ? std::chrono::steady_clock::time_point::max()
+               : (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs));
+
+  for (;;) {
+    pollfd fds[2]{};
+    fds[0].fd = fd;
+    fds[0].events = events;
+    nfds_t count = 1;
+    if (stopReadFd >= 0) {
+      fds[1].fd = stopReadFd;
+      fds[1].events = POLLIN;
+      count = 2;
+    }
+
+    int remMs = -1;
+    if (!infinite) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return 0;
+      }
+      remMs = static_cast<int>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+    }
+
+    const int rc = poll(fds, count, remMs);
+    if (rc < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    if (rc == 0) {
+      return 0;
+    }
+    if (count == 2 && (fds[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+      return -2;
+    }
+    if ((fds[0].revents & (events | POLLHUP | POLLERR | POLLNVAL)) != 0) {
+      return 1;
+    }
+  }
+}
+
+bool socketReadExact(int fd,
+                     void* dst,
+                     size_t len,
+                     int stopReadFd,
+                     int timeoutMs,
+                     std::string* outErr) {
+  auto* ptr = static_cast<uint8_t*>(dst);
+  size_t offset = 0;
+  const bool infinite = (timeoutMs < 0);
+  const auto deadline =
+      infinite ? std::chrono::steady_clock::time_point::max()
+               : (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs));
+
+  while (offset < len) {
+    const ssize_t n = recv(fd, ptr + offset, len - offset, 0);
+    if (n > 0) {
+      offset += static_cast<size_t>(n);
+      continue;
+    }
+    if (n == 0) {
+      if (outErr) *outErr = "Bridge socket closed (EOF).";
+      return false;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      int remMs = -1;
+      if (!infinite) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+          if (outErr) *outErr = "Timed out reading bridge frame.";
+          return false;
+        }
+        remMs = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+      }
+      const int w = waitSocketOrStop(fd, stopReadFd, POLLIN, remMs);
+      if (w == -2) {
+        if (outErr) *outErr = "Bridge stopped.";
+        return false;
+      }
+      if (w == 0) {
+        if (outErr) *outErr = "Timed out reading bridge frame.";
+        return false;
+      }
+      if (w < 0) {
+        if (outErr) *outErr = "Socket poll failed while reading bridge frame.";
+        return false;
+      }
+      continue;
+    }
+    if (outErr) {
+      *outErr = (errno == ECONNRESET || errno == EPIPE)
+                    ? "Bridge socket disconnected."
+                    : ("Bridge socket read failed (" + std::string(std::strerror(errno)) + ").");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool socketWriteExact(int fd,
+                      const void* src,
+                      size_t len,
+                      int stopReadFd,
+                      int timeoutMs,
+                      std::string* outErr) {
+  const auto* ptr = static_cast<const uint8_t*>(src);
+  size_t offset = 0;
+  const bool infinite = (timeoutMs < 0);
+  const auto deadline =
+      infinite ? std::chrono::steady_clock::time_point::max()
+               : (std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs));
+
+  while (offset < len) {
+    const ssize_t n = send(fd, ptr + offset, len - offset, MSG_NOSIGNAL);
+    if (n > 0) {
+      offset += static_cast<size_t>(n);
+      continue;
+    }
+    if (n == 0) {
+      if (outErr) *outErr = "Bridge socket zero-byte write.";
+      return false;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      int remMs = -1;
+      if (!infinite) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+          if (outErr) *outErr = "Timed out writing bridge frame.";
+          return false;
+        }
+        remMs = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+      }
+      const int w = waitSocketOrStop(fd, stopReadFd, POLLOUT, remMs);
+      if (w == -2) {
+        if (outErr) *outErr = "Bridge socket write cancelled.";
+        return false;
+      }
+      if (w == 0) {
+        if (outErr) *outErr = "Timed out writing bridge frame.";
+        return false;
+      }
+      if (w < 0) {
+        if (outErr) *outErr = "Socket poll failed while writing bridge frame.";
+        return false;
+      }
+      continue;
+    }
+    if (outErr) {
+      *outErr = "Bridge socket write failed (" + std::string(std::strerror(errno)) + ").";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool readJsonFrame(int fd,
+                   nlohmann::json& outJson,
+                   int stopReadFd,
+                   int timeoutMs,
+                   std::string* outErr) {
+  uint8_t hdr[4]{};
+  if (!socketReadExact(fd, hdr, 4, stopReadFd, timeoutMs, outErr)) {
+    return false;
+  }
+  const uint32_t msgLen = static_cast<uint32_t>(hdr[0]) |
+                          (static_cast<uint32_t>(hdr[1]) << 8) |
+                          (static_cast<uint32_t>(hdr[2]) << 16) |
+                          (static_cast<uint32_t>(hdr[3]) << 24);
+  if (msgLen == 0 || msgLen > kMaxFrameBytes) {
+    if (outErr) *outErr = "Bridge frame size out of bounds.";
+    return false;
+  }
+
+  std::string payload(msgLen, '\0');
+  if (!socketReadExact(fd, payload.data(), msgLen, stopReadFd, timeoutMs, outErr)) {
+    return false;
+  }
+
+  auto parsed = nlohmann::json::parse(payload, nullptr, false);
+  if (parsed.is_discarded()) {
+    if (outErr) *outErr = "Invalid JSON in bridge frame.";
+    return false;
+  }
+  outJson = std::move(parsed);
+  return true;
+}
+
+bool writeJsonFrame(int fd,
+                    const nlohmann::json& msg,
+                    int stopReadFd,
+                    int timeoutMs,
+                    std::string* outErr) {
+  const std::string payload = msg.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+  if (payload.size() > kMaxFrameBytes) {
+    if (outErr) *outErr = "Serialized bridge response exceeds maximum frame size.";
+    return false;
+  }
+
+  const uint32_t len = static_cast<uint32_t>(payload.size());
+  std::vector<uint8_t> packet(4u + payload.size());
+  packet[0] = static_cast<uint8_t>(len & 0xFFu);
+  packet[1] = static_cast<uint8_t>((len >> 8) & 0xFFu);
+  packet[2] = static_cast<uint8_t>((len >> 16) & 0xFFu);
+  packet[3] = static_cast<uint8_t>((len >> 24) & 0xFFu);
+  std::memcpy(packet.data() + 4, payload.data(), payload.size());
+
+  return socketWriteExact(fd, packet.data(), packet.size(), stopReadFd, timeoutMs, outErr);
+}
+
+bool fillUnixAddr(const std::string& path, sockaddr_un& outAddr) {
+  if (path.empty() || path.size() >= sizeof(outAddr.sun_path)) {
+    return false;
+  }
+  std::memset(&outAddr, 0, sizeof(outAddr));
+  outAddr.sun_family = AF_UNIX;
+  std::memcpy(outAddr.sun_path, path.data(), path.size());
+  outAddr.sun_path[path.size()] = '\0';
+  return true;
+}
+
+#endif
+
 }  // namespace
 
 std::string defaultLiveBridgePipeName() {
+#ifdef _WIN32
   wchar_t userBuf[128]{};
   DWORD len = static_cast<DWORD>(std::size(userBuf));
   std::string sanitized = "local";
@@ -263,6 +529,15 @@ std::string defaultLiveBridgePipeName() {
     }
   }
   return "\\\\.\\pipe\\iota_studio_mcp_" + sanitized;
+#else
+  if (const char* xdgRuntime = std::getenv("XDG_RUNTIME_DIR"); xdgRuntime != nullptr && *xdgRuntime != '\0') {
+    std::string candidate = std::string(xdgRuntime) + "/iota_studio_mcp.sock";
+    if (candidate.size() < sizeof(sockaddr_un::sun_path)) {
+      return candidate;
+    }
+  }
+  return "/tmp/iota_studio_mcp_" + std::to_string(static_cast<unsigned long>(getuid())) + ".sock";
+#endif
 }
 
 struct LiveBridgeHost::Impl {
@@ -279,12 +554,17 @@ struct LiveBridgeHost::Impl {
     std::atomic<bool> finished{false};
   };
 
-  static constexpr DWORD kMaxPipeInstances = 8;
-
   mutable std::mutex configMutex;
   std::string pipeName;
 
+#ifdef _WIN32
+  static constexpr DWORD kMaxPipeInstances = 8;
   HANDLE stopEvent = nullptr;
+#else
+  int listenFd = -1;
+  int stopPipeReadFd = -1;
+  int stopPipeWriteFd = -1;
+#endif
   std::atomic<bool> stopRequested{false};
   std::atomic<bool> listening{false};
   std::atomic<int> activeClients{0};
@@ -296,20 +576,6 @@ struct LiveBridgeHost::Impl {
 
   std::mutex queueMutex;
   std::deque<std::shared_ptr<PendingRequest>> queue;
-
-  HANDLE createListeningPipe(const std::wstring& wideName, bool firstInstance) const {
-    const DWORD openMode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
-                           (firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
-    return CreateNamedPipeW(
-        wideName.c_str(),
-        openMode,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-        kMaxPipeInstances,
-        65536,
-        65536,
-        1000,
-        nullptr);
-  }
 
   void reapFinishedClients() {
     std::vector<std::unique_ptr<ClientSession>> done;
@@ -344,6 +610,21 @@ struct LiveBridgeHost::Impl {
         session->thread.join();
       }
     }
+  }
+
+#ifdef _WIN32
+  HANDLE createListeningPipe(const std::wstring& wideName, bool firstInstance) const {
+    const DWORD openMode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
+                           (firstInstance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
+    return CreateNamedPipeW(
+        wideName.c_str(),
+        openMode,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+        kMaxPipeInstances,
+        65536,
+        65536,
+        1000,
+        nullptr);
   }
 
   void clientSessionLoop(HANDLE pipe, ClientSession* session) {
@@ -479,6 +760,108 @@ struct LiveBridgeHost::Impl {
     }
     listening.store(false, std::memory_order_release);
   }
+#else
+  void clientSessionLoop(int clientFd, ClientSession* session) {
+    struct Guard {
+      Impl* self;
+      int fd;
+      ClientSession* s;
+      ~Guard() {
+        if (fd >= 0) {
+          close(fd);
+        }
+        self->activeClients.fetch_sub(1, std::memory_order_release);
+        if (s) s->finished.store(true, std::memory_order_release);
+      }
+    } guard{this, clientFd, session};
+
+    while (!stopRequested.load(std::memory_order_acquire)) {
+      nlohmann::json req;
+      std::string ioErr;
+      if (!readJsonFrame(clientFd, req, stopPipeReadFd, -1, &ioErr)) {
+        break;
+      }
+
+      auto item = std::make_shared<PendingRequest>();
+      item->request = std::move(req);
+      {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        queue.push_back(item);
+      }
+
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+      {
+        std::unique_lock<std::mutex> lock(item->doneMutex);
+        while (!item->done && !stopRequested.load(std::memory_order_acquire)) {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+          }
+          item->doneCv.wait_for(lock, std::chrono::milliseconds(50));
+        }
+      }
+
+      if (stopRequested.load(std::memory_order_acquire)) {
+        break;
+      }
+
+      nlohmann::json resp;
+      {
+        std::lock_guard<std::mutex> lock(item->doneMutex);
+        if (item->done) {
+          resp = item->response;
+        } else {
+          resp = {
+              {"jsonrpc", "2.0"},
+              {"id", nullptr},
+              {"error", {{"code", -32000}, {"message", "Timed out waiting for Studio main thread."}}},
+          };
+        }
+      }
+
+      if (!writeJsonFrame(clientFd, resp, stopPipeReadFd, 10000, &ioErr)) {
+        break;
+      }
+      handledCount.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  void acceptLoop() {
+    while (!stopRequested.load(std::memory_order_acquire)) {
+      reapFinishedClients();
+
+      const int w = waitSocketOrStop(listenFd, stopPipeReadFd, POLLIN, -1);
+      if (w == -2 || stopRequested.load(std::memory_order_acquire)) {
+        break;
+      }
+      if (w <= 0) {
+        continue;
+      }
+
+      for (;;) {
+        const int clientFd = accept(listenFd, nullptr, nullptr);
+        if (clientFd < 0) {
+          if (errno == EINTR) {
+            continue;
+          }
+          break;
+        }
+        setFdNonBlockingAndCloexec(clientFd);
+
+        auto session = std::make_unique<ClientSession>();
+        ClientSession* sessionPtr = session.get();
+        activeClients.fetch_add(1, std::memory_order_release);
+        {
+          std::lock_guard<std::mutex> lock(clientsMutex);
+          sessionPtr->thread = std::thread([this, clientFd, sessionPtr]() {
+            clientSessionLoop(clientFd, sessionPtr);
+          });
+          clientSessions.push_back(std::move(session));
+        }
+      }
+    }
+    listening.store(false, std::memory_order_release);
+  }
+#endif
 };
 
 LiveBridgeHost::LiveBridgeHost() : impl_(std::make_unique<Impl>()) {}
@@ -491,6 +874,7 @@ bool LiveBridgeHost::start(const std::string& pipeName) {
   stop();
 
   const std::string targetName = pipeName.empty() ? defaultLiveBridgePipeName() : pipeName;
+#ifdef _WIN32
   HANDLE firstPipe = impl_->createListeningPipe(utf8ToWide(targetName), true);
   if (firstPipe == INVALID_HANDLE_VALUE) {
     return false;
@@ -511,6 +895,78 @@ bool LiveBridgeHost::start(const std::string& pipeName) {
   impl_->listening.store(true, std::memory_order_release);
   impl_->worker = std::thread([this, targetName, firstPipe]() { impl_->acceptLoop(targetName, firstPipe); });
   return true;
+#else
+  ensureSigpipeIgnored();
+
+  sockaddr_un addr{};
+  if (!fillUnixAddr(targetName, addr)) {
+    return false;
+  }
+
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return false;
+  }
+  setFdNonBlockingAndCloexec(fd);
+
+  auto tryBind = [&]() -> int {
+    return ::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0 ? 0 : errno;
+  };
+
+  int bindErr = tryBind();
+  if (bindErr == EADDRINUSE) {
+    // Probe whether an existing LiveBridgeHost is actively listening on this socket.
+    const int probeFd = socket(AF_UNIX, SOCK_STREAM, 0);
+    bool activeHost = false;
+    if (probeFd >= 0) {
+      setFdNonBlockingAndCloexec(probeFd);
+      if (::connect(probeFd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0 ||
+          errno == EINPROGRESS || errno == EAGAIN) {
+        activeHost = true;
+      }
+      close(probeFd);
+    }
+    if (activeHost) {
+      close(fd);
+      return false;
+    }
+    unlink(targetName.c_str());
+    bindErr = tryBind();
+  }
+  if (bindErr != 0) {
+    close(fd);
+    return false;
+  }
+
+  chmod(targetName.c_str(), 0600);
+  if (listen(fd, 16) != 0) {
+    close(fd);
+    unlink(targetName.c_str());
+    return false;
+  }
+
+  int stopFds[2]{-1, -1};
+  if (pipe(stopFds) != 0) {
+    close(fd);
+    unlink(targetName.c_str());
+    return false;
+  }
+  setFdNonBlockingAndCloexec(stopFds[0]);
+  setFdNonBlockingAndCloexec(stopFds[1]);
+
+  {
+    std::lock_guard<std::mutex> lock(impl_->configMutex);
+    impl_->pipeName = targetName;
+  }
+  impl_->listenFd = fd;
+  impl_->stopPipeReadFd = stopFds[0];
+  impl_->stopPipeWriteFd = stopFds[1];
+  impl_->stopRequested.store(false, std::memory_order_release);
+  impl_->activeClients.store(0, std::memory_order_release);
+  impl_->listening.store(true, std::memory_order_release);
+  impl_->worker = std::thread([this]() { impl_->acceptLoop(); });
+  return true;
+#endif
 }
 
 void LiveBridgeHost::stop() {
@@ -518,9 +974,17 @@ void LiveBridgeHost::stop() {
     return;
   }
   impl_->stopRequested.store(true, std::memory_order_release);
+#ifdef _WIN32
   if (impl_->stopEvent != nullptr) {
     SetEvent(impl_->stopEvent);
   }
+#else
+  if (impl_->stopPipeWriteFd >= 0) {
+    const uint8_t b = 1;
+    const ssize_t ignored = write(impl_->stopPipeWriteFd, &b, 1);
+    (void)ignored;
+  }
+#endif
   {
     std::lock_guard<std::mutex> lock(impl_->queueMutex);
     while (!impl_->queue.empty()) {
@@ -540,10 +1004,33 @@ void LiveBridgeHost::stop() {
     impl_->worker.join();
   }
   impl_->joinAllClients();
+#ifdef _WIN32
   if (impl_->stopEvent != nullptr) {
     CloseHandle(impl_->stopEvent);
     impl_->stopEvent = nullptr;
   }
+#else
+  if (impl_->listenFd >= 0) {
+    close(impl_->listenFd);
+    impl_->listenFd = -1;
+  }
+  if (impl_->stopPipeReadFd >= 0) {
+    close(impl_->stopPipeReadFd);
+    impl_->stopPipeReadFd = -1;
+  }
+  if (impl_->stopPipeWriteFd >= 0) {
+    close(impl_->stopPipeWriteFd);
+    impl_->stopPipeWriteFd = -1;
+  }
+  std::string boundPath;
+  {
+    std::lock_guard<std::mutex> lock(impl_->configMutex);
+    boundPath = std::move(impl_->pipeName);
+  }
+  if (!boundPath.empty()) {
+    unlink(boundPath.c_str());
+  }
+#endif
   impl_->listening.store(false, std::memory_order_release);
   impl_->activeClients.store(0, std::memory_order_release);
 }
@@ -608,7 +1095,11 @@ std::string LiveBridgeHost::pipeName() const {
 
 struct LiveBridgeClient::Impl {
   mutable std::mutex mutex;
+#ifdef _WIN32
   HANDLE pipe = INVALID_HANDLE_VALUE;
+#else
+  int sockFd = -1;
+#endif
   std::string pipeName;
 };
 
@@ -624,6 +1115,7 @@ bool LiveBridgeClient::connect(const std::string& pipeName,
   disconnect();
 
   const std::string targetName = pipeName.empty() ? defaultLiveBridgePipeName() : pipeName;
+#ifdef _WIN32
   const std::wstring wideName = utf8ToWide(targetName);
   const ULONGLONG deadline = GetTickCount64() + timeoutMs;
 
@@ -661,21 +1153,76 @@ bool LiveBridgeClient::connect(const std::string& pipeName,
   impl_->pipe = h;
   impl_->pipeName = targetName;
   return true;
+#else
+  ensureSigpipeIgnored();
+  sockaddr_un addr{};
+  if (!fillUnixAddr(targetName, addr)) {
+    if (outError) *outError = "Invalid Unix socket path for Iota Studio MCP Live Bridge.";
+    return false;
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  int fd = -1;
+  for (;;) {
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+      if (outError) *outError = "Failed to create Unix socket for Live Bridge.";
+      return false;
+    }
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0) {
+      setFdNonBlockingAndCloexec(fd);
+      break;
+    }
+    const int err = errno;
+    close(fd);
+    fd = -1;
+
+    if ((err == EAGAIN || err == EWOULDBLOCK || err == ECONNREFUSED || err == ENOENT) &&
+        std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      continue;
+    }
+
+    if (outError) {
+      *outError = "Could not connect to running Iota Studio MCP Live Bridge (" + targetName +
+                  "). Enable MCP -> Enable Live Studio Bridge inside Iota Studio first.";
+    }
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->sockFd = fd;
+  impl_->pipeName = targetName;
+  return true;
+#endif
 }
 
 void LiveBridgeClient::disconnect() {
   if (!impl_) return;
   std::lock_guard<std::mutex> lock(impl_->mutex);
+#ifdef _WIN32
   if (impl_->pipe != INVALID_HANDLE_VALUE) {
     CloseHandle(impl_->pipe);
     impl_->pipe = INVALID_HANDLE_VALUE;
   }
+#else
+  if (impl_->sockFd >= 0) {
+    close(impl_->sockFd);
+    impl_->sockFd = -1;
+  }
+#endif
   impl_->pipeName.clear();
 }
 
 bool LiveBridgeClient::isConnected() const noexcept {
   std::lock_guard<std::mutex> lock(impl_->mutex);
+#ifdef _WIN32
   return impl_->pipe != INVALID_HANDLE_VALUE;
+#else
+  return impl_->sockFd >= 0;
+#endif
 }
 
 std::string LiveBridgeClient::connectedPipeName() const {
@@ -687,6 +1234,7 @@ bool LiveBridgeClient::sendRequest(const nlohmann::json& request,
                                    nlohmann::json& outResponse,
                                    std::string* outError) {
   std::lock_guard<std::mutex> lock(impl_->mutex);
+#ifdef _WIN32
   if (impl_->pipe == INVALID_HANDLE_VALUE) {
     if (outError) *outError = "Not connected to Iota Studio Live Bridge.";
     return false;
@@ -700,6 +1248,21 @@ bool LiveBridgeClient::sendRequest(const nlohmann::json& request,
     return false;
   }
   return true;
+#else
+  if (impl_->sockFd < 0) {
+    if (outError) *outError = "Not connected to Iota Studio Live Bridge.";
+    return false;
+  }
+
+  if (!writeJsonFrame(impl_->sockFd, request, -1, 10000, outError) ||
+      !readJsonFrame(impl_->sockFd, outResponse, -1, 300000, outError)) {
+    close(impl_->sockFd);
+    impl_->sockFd = -1;
+    impl_->pipeName.clear();
+    return false;
+  }
+  return true;
+#endif
 }
 
 }  // namespace iota::mcp
