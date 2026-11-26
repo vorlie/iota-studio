@@ -64,6 +64,8 @@ class EditorApp {
  private:
   void applyStudioTheme();
   void applyUiDpiScale(float scale);
+  void applySwapIntervalForCurrentMode() noexcept;
+  [[nodiscard]] int currentMonitorRefreshRateHz() const noexcept;
   void setupDefaultDockLayout(unsigned int dockspaceId);
   void drawMenuBar();
   void drawViewportPanel();
@@ -123,6 +125,7 @@ class EditorApp {
   bool imguiInitialized_ = false;
   bool dockLayoutBuilt_ = false;
   bool isSmokeTest_ = false;
+  bool isWaylandPlatform_ = false;
 
   iota::rhi::Gl45RenderDevice device_;
   iota::engine::SceneRenderer renderer_;

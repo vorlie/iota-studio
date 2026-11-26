@@ -32,11 +32,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 namespace iota::studio {
@@ -99,7 +101,10 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   }
 
   glfwMakeContextCurrent(window_);
-  glfwSwapInterval(headlessSmokeTest ? 0 : 1);
+#ifdef GLFW_PLATFORM_WAYLAND
+  isWaylandPlatform_ = (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND);
+#endif
+  applySwapIntervalForCurrentMode();
 
   if (!headlessSmokeTest) {
     platform::applyWindowIcon(window_, appIconBig_, appIconSmall_);
@@ -191,6 +196,42 @@ void EditorApp::shutdown() {
   platform::destroyWindowIcons(appIconBig_, appIconSmall_);
 }
 
+void EditorApp::applySwapIntervalForCurrentMode() noexcept {
+  if (!window_) {
+    return;
+  }
+  if (isSmokeTest_ || isWaylandPlatform_) {
+    // Avoid blocking indefinitely in eglSwapBuffers() when a Wayland surface is occluded or on another workspace.
+    glfwSwapInterval(0);
+    return;
+  }
+  switch (vsyncMode_) {
+    case VSyncMode::Off:
+      glfwSwapInterval(0);
+      break;
+    case VSyncMode::Adaptive:
+      glfwSwapInterval(supportsAdaptiveSwapInterval() ? -1 : 1);
+      break;
+    case VSyncMode::On:
+    default:
+      glfwSwapInterval(1);
+      break;
+  }
+}
+
+int EditorApp::currentMonitorRefreshRateHz() const noexcept {
+  GLFWmonitor* mon = window_ ? glfwGetWindowMonitor(window_) : nullptr;
+  if (!mon) {
+    mon = glfwGetPrimaryMonitor();
+  }
+  if (mon) {
+    if (const GLFWvidmode* mode = glfwGetVideoMode(mon); mode != nullptr && mode->refreshRate > 0) {
+      return std::clamp(mode->refreshRate, 30, 360);
+    }
+  }
+  return 60;
+}
+
 void EditorApp::applyUiDpiScale(float scale) {
   const float clamped = std::clamp(scale, 1.0f, 3.0f);
   ImGuiStyle& style = ImGui::GetStyle();
@@ -268,9 +309,10 @@ int EditorApp::run() {
     }
 
     glfwPollEvents();
+    const double frameStartWallSec = glfwGetTime();
     handleShortcuts();
 
-    const double now = glfwGetTime();
+    const double now = frameStartWallSec;
     const float rawDt = static_cast<float>(now - lastWallTimeSec_);
     lastWallTimeSec_ = now;
     const float dt = std::clamp(rawDt, 1.0f / 240.0f, 0.1f);
@@ -399,6 +441,20 @@ int EditorApp::run() {
       device_.clear(0.05f, 0.055f, 0.07f, 1.0f);
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
       glfwSwapBuffers(window_);
+    }
+
+    if (isWaylandPlatform_ && vsyncMode_ != VSyncMode::Off && !exportSession_.isActive()) {
+      const double targetFrameSec = 1.0 / static_cast<double>(currentMonitorRefreshRateHz());
+      for (;;) {
+        const double remaining = targetFrameSec - (glfwGetTime() - frameStartWallSec);
+        if (remaining <= 0.001) {
+          break;
+        }
+        const double sliceSec = std::min(remaining, 0.008);
+        std::this_thread::sleep_for(
+            std::chrono::microseconds(static_cast<int64_t>(sliceSec * 1000000.0)));
+        glfwPollEvents();
+      }
     }
   }
   return 0;
@@ -899,21 +955,21 @@ void EditorApp::drawMenuBar() {
     if (ImGui::BeginMenu("VSync")) {
       if (ImGui::MenuItem("On (VSync)", nullptr, vsyncMode_ == VSyncMode::On)) {
         vsyncMode_ = VSyncMode::On;
-        glfwSwapInterval(1);
+        applySwapIntervalForCurrentMode();
       }
       if (ImGui::MenuItem("Adaptive (-1)", nullptr, vsyncMode_ == VSyncMode::Adaptive)) {
-        if (supportsAdaptiveSwapInterval()) {
+        if (isWaylandPlatform_ || supportsAdaptiveSwapInterval()) {
           vsyncMode_ = VSyncMode::Adaptive;
-          glfwSwapInterval(-1);
+          applySwapIntervalForCurrentMode();
         } else {
           vsyncMode_ = VSyncMode::On;
-          glfwSwapInterval(1);
+          applySwapIntervalForCurrentMode();
           statusBanner_ = "Adaptive VSync not supported by display driver — using standard VSync";
         }
       }
       if (ImGui::MenuItem("Off (Uncapped)", nullptr, vsyncMode_ == VSyncMode::Off)) {
         vsyncMode_ = VSyncMode::Off;
-        glfwSwapInterval(0);
+        applySwapIntervalForCurrentMode();
       }
       ImGui::EndMenu();
     }

@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #ifdef IOTA_HAS_FONTCONFIG
@@ -149,22 +150,55 @@ bool runDialogCommand(const std::vector<std::string>& args,
   }
 
   close(pipefd[1]);
+  const int pipeFlags = fcntl(pipefd[0], F_GETFL, 0);
+  if (pipeFlags >= 0) {
+    fcntl(pipefd[0], F_SETFL, pipeFlags | O_NONBLOCK);
+  }
+
+  bool pipeOpen = true;
+  bool childExited = false;
+  int status = 0;
   char buf[4096];
-  for (;;) {
-    const ssize_t n = read(pipefd[0], buf, sizeof(buf));
-    if (n > 0) {
-      outStdout.append(buf, static_cast<size_t>(n));
-    } else if (n == 0) {
-      break;
-    } else if (errno != EINTR) {
-      break;
+
+  while (pipeOpen || !childExited) {
+    if (pipeOpen) {
+      struct pollfd pfd{};
+      pfd.fd = pipefd[0];
+      pfd.events = POLLIN | POLLHUP;
+      const int prc = poll(&pfd, 1, 25);
+      if (prc > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+        for (;;) {
+          const ssize_t n = read(pipefd[0], buf, sizeof(buf));
+          if (n > 0) {
+            outStdout.append(buf, static_cast<size_t>(n));
+          } else if (n == 0) {
+            pipeOpen = false;
+            break;
+          } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            break;
+          } else if (errno != EINTR) {
+            pipeOpen = false;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!childExited) {
+      const pid_t w = waitpid(pid, &status, WNOHANG);
+      if (w == pid) {
+        childExited = true;
+      } else if (w < 0 && errno != EINTR) {
+        childExited = true;
+      }
+    }
+
+    // Pump compositor events while the external dialog is open so Wayland/X11 ping-pong stays responsive.
+    if (!childExited) {
+      glfwPollEvents();
     }
   }
   close(pipefd[0]);
-
-  int status = 0;
-  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-  }
   outExitCode = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
   return outExitCode != 127;
 }

@@ -140,7 +140,7 @@ jobs:
         env:
           LINUXDEPLOY: /tmp/linuxdeploy-x86_64.AppImage
         run: |
-          ./packaging/linux/build_release.sh \
+          bash ./packaging/linux/build_release.sh \
             --variant all \
             --build-dir build/linux-release \
             --mcp-build-dir build/linux-release-mcp \
