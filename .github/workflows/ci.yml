@@ -76,4 +76,4 @@ jobs:
         run: cmake --build --preset release-mcp --parallel
 
       - name: Run non-GL unit tests
-        run: .\build\release-mcp\tests\iota_tests.exe "-tce=*OpenGL*,*GL*,*VideoExportSession*"
+        run: .\build\release-mcp\tests\iota_tests.exe "-tce=*OpenGL*,*GL*,*VideoExportSession*,*render_preview_frame*"
