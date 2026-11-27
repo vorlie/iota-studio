@@ -137,6 +137,34 @@
         "CMAKE_CXX_COMPILER": "g++",
         "IOTA_BUILD_MCP": "ON"
       }
+    },
+    {
+      "name": "wasm-emscripten-release",
+      "displayName": "WebAssembly Emscripten Ninja Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/wasm-release",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "IOTA_BUILD_TESTS": "OFF",
+        "IOTA_BUILD_MCP": "OFF",
+        "IOTA_ENABLE_DISCORD_RPC": "OFF",
+        "IOTA_ENABLE_VIDEO_EXPORT": "OFF"
+      }
+    },
+    {
+      "name": "wasm-emscripten-debug",
+      "displayName": "WebAssembly Emscripten Ninja Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/wasm-debug",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "IOTA_BUILD_TESTS": "OFF",
+        "IOTA_BUILD_MCP": "OFF",
+        "IOTA_ENABLE_DISCORD_RPC": "OFF",
+        "IOTA_ENABLE_VIDEO_EXPORT": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -171,6 +199,14 @@
     {
       "name": "linux-debug-mcp",
       "configurePreset": "linux-gcc-ninja-debug-mcp"
+    },
+    {
+      "name": "wasm-emscripten-release",
+      "configurePreset": "wasm-emscripten-release"
+    },
+    {
+      "name": "wasm-emscripten-debug",
+      "configurePreset": "wasm-emscripten-debug"
     }
   ],
   "testPresets": [

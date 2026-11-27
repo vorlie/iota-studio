@@ -16,7 +16,10 @@ const baseDl = `${SITE.releasesUrl}/download/${tag}`;
           <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Releases</div>
           <h1 class="mt-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">Download Iota Studio</h1>
           <p class="mt-2 max-w-2xl text-sm text-slate-300 sm:text-base">
-            Latest builds fetched directly from GitHub Releases for Windows 10/11 (x64) and Linux (x86_64).
+            Latest builds fetched directly from GitHub Releases for Windows 10/11 (x64) and Linux (x86_64), or{' '}
+            <a href={withBase('/studio/')} class="font-medium text-cyan-300 hover:underline">
+              try Iota Studio directly in your browser (WebAssembly + WebGL2) →
+            </a>
           </p>
         </div>
 

@@ -60,23 +60,29 @@ const pillars = [
 
         <div class="mt-7 flex flex-wrap items-center gap-3">
           <a
-            href={withBase('/download/')}
+            href={withBase('/studio/')}
             class="inline-flex items-center gap-2 rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-300"
           >
-            Download Iota Studio
+            Launch Web Studio
             <span aria-hidden="true">→</span>
+          </a>
+          <a
+            href={withBase('/download/')}
+            class="inline-flex items-center rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-2.5 text-sm font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
+          >
+            Download Desktop
           </a>
           <a
             href={withBase('/docs/')}
             class="inline-flex items-center rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-2.5 text-sm font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
           >
-            Read Documentation
+            Documentation
           </a>
           <a
             href={withBase('/palette/')}
             class="inline-flex items-center rounded-xl border border-indigo-500/35 bg-indigo-500/10 px-4 py-2.5 text-sm font-medium text-indigo-200 transition hover:bg-indigo-500/20"
           >
-            GLSL Palette Manager
+            Palette Manager
           </a>
         </div>
 

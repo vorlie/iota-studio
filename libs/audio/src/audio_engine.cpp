@@ -18,6 +18,10 @@
 
 #include "miniaudio.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/em_js.h>
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -26,6 +30,21 @@
 namespace iota::audio {
 
 namespace {
+
+#ifdef __EMSCRIPTEN__
+EM_JS(void, iotaResumeTrackedAudioContexts, (), {
+  if (typeof window !== 'undefined' && Array.isArray(window.__iotaAudioContexts)) {
+    for (var i = 0; i < window.__iotaAudioContexts.length; ++i) {
+      var ctx = window.__iotaAudioContexts[i];
+      if (ctx && typeof ctx.resume === 'function' && ctx.state === 'suspended') {
+        try { ctx.resume(); } catch (e) {}
+      }
+    }
+  }
+});
+#else
+inline void iotaResumeTrackedAudioContexts() noexcept {}
+#endif
 
 int64_t steadyNowNs() noexcept {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -221,6 +240,7 @@ void AudioEngine::play() {
   if (!hasTrack()) {
     return;
   }
+  iotaResumeTrackedAudioContexts();
   {
     std::lock_guard<std::mutex> lock(impl_->trackMutex);
     if (impl_->cursorFrames.load(std::memory_order_acquire) >=

@@ -22,6 +22,12 @@
 
 #include "iota/core/utf8_path.hpp"
 #include "iota/preset_io/preset_io.hpp"
+#ifdef __EMSCRIPTEN__
+#include "iota/rhi/webgl2_device.hpp"
+#include <emscripten.h>
+#else
+#include "iota/rhi/gl45_device.hpp"
+#endif
 
 #include <GLFW/glfw3.h>
 
@@ -63,9 +69,13 @@ std::vector<uint8_t> readAllBytes(const std::filesystem::path& p) {
 }
 
 bool supportsAdaptiveSwapInterval() noexcept {
+#ifdef __EMSCRIPTEN__
+  return false;
+#else
   return glfwExtensionSupported("WGL_EXT_swap_control_tear") == GLFW_TRUE ||
          glfwExtensionSupported("GLX_EXT_swap_control_tear") == GLFW_TRUE ||
          glfwExtensionSupported("EGL_EXT_swap_control_tear") == GLFW_TRUE;
+#endif
 }
 
 }  // namespace
@@ -83,6 +93,15 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
     return false;
   }
 
+#ifdef __EMSCRIPTEN__
+  glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+  int initW = 1280;
+  int initH = 720;
+  platform::queryWebCanvasSize(initW, initH);
+  window_ = glfwCreateWindow(initW, initH, "Iota Studio", nullptr, nullptr);
+#else
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -94,8 +113,9 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
                              "Iota Studio",
                              nullptr,
                              nullptr);
+#endif
   if (!window_) {
-    std::cerr << "Failed to create GLFW OpenGL 4.5 window\n";
+    std::cerr << "Failed to create GLFW OpenGL window\n";
     glfwTerminate();
     return false;
   }
@@ -114,11 +134,22 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   }
 
   std::string err;
-  if (!device_.initialize(&err)) {
+#ifdef __EMSCRIPTEN__
+  auto webDev = std::make_unique<iota::rhi::WebGl2RenderDevice>();
+  if (!webDev->initialize(&err)) {
+    std::cerr << "WebGL2 device init failed: " << err << "\n";
+    return false;
+  }
+  device_ = std::move(webDev);
+#else
+  auto glDev = std::make_unique<iota::rhi::Gl45RenderDevice>();
+  if (!glDev->initialize(&err)) {
     std::cerr << "GL45 device init failed: " << err << "\n";
     return false;
   }
-  if (!renderer_.initialize(&device_, &err)) {
+  device_ = std::move(glDev);
+#endif
+  if (!renderer_.initialize(device_.get(), &err)) {
     std::cerr << "SceneRenderer init failed: " << err << "\n";
     return false;
   }
@@ -136,10 +167,18 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   platform::loadPlatformImGuiFonts(io, codeFont_);
 
   if (!ImGui_ImplGlfw_InitForOpenGL(window_, true) ||
-      !ImGui_ImplOpenGL3_Init("#version 450")) {
+#ifdef __EMSCRIPTEN__
+      !ImGui_ImplOpenGL3_Init("#version 300 es")
+#else
+      !ImGui_ImplOpenGL3_Init("#version 450")
+#endif
+  ) {
     std::cerr << "Failed to initialize Dear ImGui GLFW/OpenGL3 backends\n";
     return false;
   }
+#ifdef __EMSCRIPTEN__
+  ImGui_ImplGlfw_InstallEmscriptenCallbacks(window_, "#canvas");
+#endif
   imguiInitialized_ = true;
 
   if (!headlessSmokeTest) {
@@ -159,6 +198,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
   if (!isSmokeTest_) {
     projectLibrary_.load(iota::preset_io::ProjectLibrary::defaultRegistryPath());
     lastUserActivityWallSec_ = glfwGetTime();
+#ifndef __EMSCRIPTEN__
     discordPresence_.setExpanded(projectLibrary_.discordExpandedPresence());
     discordPresence_.setEnabled(projectLibrary_.discordRichPresenceEnabled());
     updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
@@ -166,7 +206,16 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
                                    iota::core::UpdateChecker::kDefaultRepoName,
                                    false,
                                    kPreferMcpReleaseAsset);
+#endif
   }
+#ifdef __EMSCRIPTEN__
+  platform::setWebDropHandlers(
+      [this](std::filesystem::path dropped) { handleDroppedOrPickedFile(dropped); },
+      [this](platform::DecodedAudioPayload payload) {
+        loadDecodedAudioTrack(std::move(payload));
+      },
+      [this](std::string errMsg) { statusBanner_ = "Drop error: " + errMsg; });
+#endif
   updateWindowTitle();
 
   actionLoadBuiltinTestTone(110.0f);
@@ -179,11 +228,13 @@ void EditorApp::shutdown() {
 #ifdef IOTA_ENABLE_MCP
   mcpBridgeHost_.stop();
 #endif
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   exportSession_.cancel();
   encoderProbe_.cancel();
+#endif
   updateChecker_.cancel();
   renderer_.shutdown();
-  device_.shutdown();
+  device_.reset();
 
   if (imguiInitialized_) {
     ImGui_ImplOpenGL3_Shutdown();
@@ -201,6 +252,9 @@ void EditorApp::shutdown() {
 }
 
 void EditorApp::applySwapIntervalForCurrentMode() noexcept {
+#ifdef __EMSCRIPTEN__
+  return;
+#else
   if (!window_) {
     return;
   }
@@ -224,6 +278,15 @@ void EditorApp::applySwapIntervalForCurrentMode() noexcept {
       glfwSwapInterval(1);
       break;
   }
+#endif
+}
+
+int EditorApp::currentTargetFps() const noexcept {
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
+  return exportCfg_.fps;
+#else
+  return targetFpsSetting_;
+#endif
 }
 
 int EditorApp::currentMonitorRefreshRateHz() const noexcept {
@@ -299,192 +362,231 @@ void EditorApp::setupDefaultDockLayout(unsigned int dockspaceId) {
   ImGui::DockBuilderFinish(dockspaceId);
 }
 
+#ifdef __EMSCRIPTEN__
+void EditorApp::emscriptenMainLoop(void* arg) {
+  static_cast<EditorApp*>(arg)->tickFrame();
+}
+#endif
+
 int EditorApp::run() {
+#ifdef __EMSCRIPTEN__
+  emscripten_set_main_loop_arg(&EditorApp::emscriptenMainLoop, this, 0, 1);
+  return 0;
+#else
   while (!glfwWindowShouldClose(window_)) {
-    int fbW = 0, fbH = 0;
-    glfwGetFramebufferSize(window_, &fbW, &fbH);
-    const bool isMinimized = (glfwGetWindowAttrib(window_, GLFW_ICONIFIED) != 0) || fbW <= 0 || fbH <= 0;
-    if (isMinimized && !exportSession_.isActive()) {
-      glfwWaitEventsTimeout(0.05);
-      handleShortcuts();
+    tickFrame();
+  }
+  return 0;
+#endif
+}
+
+void EditorApp::tickFrame() {
+  platform::pollPlatformEvents();
+
+  int fbW = 0, fbH = 0;
+  glfwGetFramebufferSize(window_, &fbW, &fbH);
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
+  const bool exportingNow = exportSession_.isActive();
+#else
+  const bool exportingNow = false;
+#endif
+#ifndef __EMSCRIPTEN__
+  const bool isMinimized = (glfwGetWindowAttrib(window_, GLFW_ICONIFIED) != 0) || fbW <= 0 || fbH <= 0;
+  if (isMinimized && !exportingNow) {
+    glfwWaitEventsTimeout(0.05);
+    handleShortcuts();
+    lastWallTimeSec_ = glfwGetTime();
+#ifdef IOTA_ENABLE_MCP
+    pollMcpLiveBridge();
+#endif
+    updateDiscordPresence(lastWallTimeSec_, true);
+    return;
+  }
+
+  if (waylandPacer_.isActive() && waylandPacer_.isWaitingForCompositor() &&
+      vsyncMode_ != VSyncMode::Off && !exportingNow) {
+    waylandPacer_.waitForFrameOrTimeout(50);
+    if (waylandPacer_.isWaitingForCompositor()) {
       lastWallTimeSec_ = glfwGetTime();
 #ifdef IOTA_ENABLE_MCP
       pollMcpLiveBridge();
 #endif
       updateDiscordPresence(lastWallTimeSec_, true);
-      continue;
+      return;
     }
-
-    if (waylandPacer_.isActive() && waylandPacer_.isWaitingForCompositor() &&
-        vsyncMode_ != VSyncMode::Off && !exportSession_.isActive()) {
-      waylandPacer_.waitForFrameOrTimeout(50);
-      if (waylandPacer_.isWaitingForCompositor()) {
-        lastWallTimeSec_ = glfwGetTime();
-#ifdef IOTA_ENABLE_MCP
-        pollMcpLiveBridge();
+  }
+#else
+  (void)exportingNow;
 #endif
-        updateDiscordPresence(lastWallTimeSec_, true);
-        continue;
+
+  glfwPollEvents();
+  const double frameStartWallSec = glfwGetTime();
+  handleShortcuts();
+
+  const double now = frameStartWallSec;
+  const float rawDt = static_cast<float>(now - lastWallTimeSec_);
+  lastWallTimeSec_ = now;
+  const float dt = std::clamp(rawDt, 1.0f / 240.0f, 0.1f);
+  totalTimeSec_ += dt;
+  if (audio_.isPlaying()) {
+    playAccumTimeSec_ += dt;
+  }
+
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
+  // Progress active offline video export in bounded time slices so GPU encoders run fast and UI stays responsive
+  if (exportSession_.isActive()) {
+    std::string err;
+    const double sliceStart = glfwGetTime();
+    int stepped = 0;
+    while (exportSession_.isActive() && !exportSession_.isDone() && stepped < 12) {
+      if (!exportSession_.stepFrame(*device_, renderer_, project_, audio_, &err)) {
+        exportSession_.cancel();
+        statusBanner_ = "Export error: " + err;
+        exportModalError_ = err;
+        break;
+      }
+      ++stepped;
+      if (glfwGetTime() - sliceStart >= 0.025) {
+        break;
       }
     }
-
-    glfwPollEvents();
-    const double frameStartWallSec = glfwGetTime();
-    handleShortcuts();
-
-    const double now = frameStartWallSec;
-    const float rawDt = static_cast<float>(now - lastWallTimeSec_);
-    lastWallTimeSec_ = now;
-    const float dt = std::clamp(rawDt, 1.0f / 240.0f, 0.1f);
-    totalTimeSec_ += dt;
-    if (audio_.isPlaying()) {
-      playAccumTimeSec_ += dt;
+    if (exportSession_.isActive() && exportSession_.isDone()) {
+      std::string finErr;
+      if (exportSession_.finish(&finErr)) {
+        const std::string doneMsg = "Export finished (" + exportSession_.activeEncoderDisplayName() +
+                                    "): " + iota::core::pathToUtf8(exportCfg_.outputPath);
+        statusBanner_ = doneMsg;
+        exportModalSuccess_ = doneMsg;
+        exportModalError_.clear();
+      } else {
+        statusBanner_ = "Export finish error: " + finErr;
+        exportModalError_ = finErr;
+      }
     }
-
-    // Progress active offline video export in bounded time slices so GPU encoders run fast and UI stays responsive
-    if (exportSession_.isActive()) {
-      std::string err;
-      const double sliceStart = glfwGetTime();
-      int stepped = 0;
-      while (exportSession_.isActive() && !exportSession_.isDone() && stepped < 12) {
-        if (!exportSession_.stepFrame(device_, renderer_, project_, audio_, &err)) {
-          exportSession_.cancel();
-          statusBanner_ = "Export error: " + err;
-          exportModalError_ = err;
-          break;
-        }
-        ++stepped;
-        if (glfwGetTime() - sliceStart >= 0.025) {
-          break;
-        }
-      }
-      if (exportSession_.isActive() && exportSession_.isDone()) {
-        std::string finErr;
-        if (exportSession_.finish(&finErr)) {
-          const std::string doneMsg = "Export finished (" + exportSession_.activeEncoderDisplayName() +
-                                      "): " + iota::core::pathToUtf8(exportCfg_.outputPath);
-          statusBanner_ = doneMsg;
-          exportModalSuccess_ = doneMsg;
-          exportModalError_.clear();
-        } else {
-          statusBanner_ = "Export finish error: " + finErr;
-          exportModalError_ = finErr;
-        }
-      }
-    } else {
-#ifdef IOTA_ENABLE_MCP
-      pollMcpLiveBridge();
+  } else
 #endif
-      float previewScale = 1.0f;
-      if (previewScaleMode_ == PreviewScaleMode::Scale75) {
-        previewScale = 0.75f;
-      } else if (previewScaleMode_ == PreviewScaleMode::Scale50) {
-        previewScale = 0.50f;
-      } else if (previewScaleMode_ == PreviewScaleMode::AutoFitViewport &&
-                 lastViewportAvailW_ > 8.0f && lastViewportAvailH_ > 8.0f) {
-        const float fitScale = std::min(lastViewportAvailW_ / static_cast<float>(std::max(1, previewWidth_)),
-                                        lastViewportAvailH_ / static_cast<float>(std::max(1, previewHeight_)));
-        previewScale = std::clamp(fitScale, 0.25f, 1.0f);
-      }
-      lastLiveRenderW_ = std::max(64, (static_cast<int>(std::lround(static_cast<float>(previewWidth_) * previewScale)) + 1) & ~1);
-      lastLiveRenderH_ = std::max(64, (static_cast<int>(std::lround(static_cast<float>(previewHeight_) * previewScale)) + 1) & ~1);
-
-      iota::engine::FrameTiming timing;
-      timing.dt = dt;
-      timing.totalTimeSec = totalTimeSec_;
-      timing.playAccumTimeSec = playAccumTimeSec_;
-      timing.isExporting = false;
-      timing.visOffsetMs = visOffsetMs_;
-      timing.fxaaEnabled = fxaaEnabled_;
-      timing.fpsStat = ImGui::GetIO().Framerate;
-      renderer_.renderFrame(project_, audio_, timing, lastLiveRenderW_, lastLiveRenderH_, {}, &frameStats_);
+  {
+#ifdef IOTA_ENABLE_MCP
+    pollMcpLiveBridge();
+#endif
+    float previewScale = 1.0f;
+    if (previewScaleMode_ == PreviewScaleMode::Scale75) {
+      previewScale = 0.75f;
+    } else if (previewScaleMode_ == PreviewScaleMode::Scale50) {
+      previewScale = 0.50f;
+    } else if (previewScaleMode_ == PreviewScaleMode::AutoFitViewport &&
+               lastViewportAvailW_ > 8.0f && lastViewportAvailH_ > 8.0f) {
+      const float fitScale = std::min(lastViewportAvailW_ / static_cast<float>(std::max(1, previewWidth_)),
+                                      lastViewportAvailH_ / static_cast<float>(std::max(1, previewHeight_)));
+      previewScale = std::clamp(fitScale, 0.25f, 1.0f);
     }
+    lastLiveRenderW_ = std::max(64, (static_cast<int>(std::lround(static_cast<float>(previewWidth_) * previewScale)) + 1) & ~1);
+    lastLiveRenderH_ = std::max(64, (static_cast<int>(std::lround(static_cast<float>(previewHeight_) * previewScale)) + 1) & ~1);
 
-    if (!isSmokeTest_) {
-      const float rawScale = ImGui_ImplGlfw_GetContentScaleForWindow(window_);
-      if (rawScale > 0.0f) {
-        const float clamped = std::clamp(rawScale, 1.0f, 3.0f);
-        if (std::abs(clamped - uiDpiScale_) > 0.05f) {
-          applyUiDpiScale(clamped);
-        }
-      }
-    }
+    iota::engine::FrameTiming timing;
+    timing.dt = dt;
+    timing.totalTimeSec = totalTimeSec_;
+    timing.playAccumTimeSec = playAccumTimeSec_;
+    timing.isExporting = false;
+    timing.visOffsetMs = visOffsetMs_;
+    timing.fxaaEnabled = fxaaEnabled_;
+    timing.fpsStat = ImGui::GetIO().Framerate;
+    renderer_.renderFrame(project_, audio_, timing, lastLiveRenderW_, lastLiveRenderH_, {}, &frameStats_);
+  }
 
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-
-    const ImGuiID dockId = ImGui::DockSpaceOverViewport(
-        0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
-    if (!dockLayoutBuilt_) {
-      setupDefaultDockLayout(dockId);
-    }
-
-    drawMenuBar();
-    drawViewportPanel();
-    drawHierarchyPanel();
-    drawAssetBrowserPanel();
-    drawInspectorPanel();
-    drawShaderEditorPanel();
-    drawDocsPanel();
-    drawAudioTimelinePanel();
-    drawSoundKeysPanel();
-    drawProjectManagerModal();
-    drawExportModal();
-    drawUpdateModal();
-    drawVizImportNoticeModal();
-
-    {
-      const ImGuiIO& io = ImGui::GetIO();
-      const bool focused = (glfwGetWindowAttrib(window_, GLFW_FOCUSED) != 0);
-      bool hasMouseBtn = false;
-      for (int i = 0; i < ImGuiMouseButton_COUNT; ++i) {
-        if (io.MouseDown[i]) {
-          hasMouseBtn = true;
-          break;
-        }
-      }
-      const bool mouseMoved = (std::abs(io.MouseDelta.x) > 1.0f || std::abs(io.MouseDelta.y) > 1.0f);
-      const bool wheelMoved = (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f);
-      const bool keyOrText = (io.InputQueueCharacters.Size > 0 || io.KeyCtrl || io.KeyAlt || io.KeyShift);
-      if (focused && (hasMouseBtn || mouseMoved || wheelMoved || keyOrText || ImGui::IsAnyItemActive())) {
-        lastUserActivityWallSec_ = now;
-      }
-    }
-    updateDiscordPresence(now, false);
-
-    ImGui::Render();
-
-    glfwGetFramebufferSize(window_, &fbW, &fbH);
-    const bool useWaylandVblank =
-        waylandPacer_.isActive() && vsyncMode_ != VSyncMode::Off && !exportSession_.isActive();
-    if (fbW > 0 && fbH > 0) {
-      device_.bindRenderTarget({}, fbW, fbH);
-      device_.clear(0.05f, 0.055f, 0.07f, 1.0f);
-      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-      if (useWaylandVblank) {
-        waylandPacer_.armBeforeSwap();
-      }
-      glfwSwapBuffers(window_);
-    }
-
-    if (useWaylandVblank) {
-      waylandPacer_.waitForFrameOrTimeout(50);
-    } else if (isWaylandPlatform_ && vsyncMode_ != VSyncMode::Off && !exportSession_.isActive()) {
-      const double targetFrameSec = 1.0 / static_cast<double>(currentMonitorRefreshRateHz());
-      for (;;) {
-        const double remaining = targetFrameSec - (glfwGetTime() - frameStartWallSec);
-        if (remaining <= 0.001) {
-          break;
-        }
-        const double sliceSec = std::min(remaining, 0.008);
-        std::this_thread::sleep_for(
-            std::chrono::microseconds(static_cast<int64_t>(sliceSec * 1000000.0)));
-        glfwPollEvents();
+  if (!isSmokeTest_) {
+    const float rawScale = ImGui_ImplGlfw_GetContentScaleForWindow(window_);
+    if (rawScale > 0.0f) {
+      const float clamped = std::clamp(rawScale, 1.0f, 3.0f);
+      if (std::abs(clamped - uiDpiScale_) > 0.05f) {
+        applyUiDpiScale(clamped);
       }
     }
   }
-  return 0;
+
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ImGui::NewFrame();
+
+  const ImGuiID dockId = ImGui::DockSpaceOverViewport(
+      0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+  if (!dockLayoutBuilt_) {
+    setupDefaultDockLayout(dockId);
+  }
+
+  drawMenuBar();
+  drawViewportPanel();
+  drawHierarchyPanel();
+  drawAssetBrowserPanel();
+  drawInspectorPanel();
+  drawShaderEditorPanel();
+  drawDocsPanel();
+  drawAudioTimelinePanel();
+  drawSoundKeysPanel();
+  drawProjectManagerModal();
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
+  drawExportModal();
+#endif
+  drawUpdateModal();
+  drawVizImportNoticeModal();
+
+#ifndef __EMSCRIPTEN__
+  {
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool focused = (glfwGetWindowAttrib(window_, GLFW_FOCUSED) != 0);
+    bool hasMouseBtn = false;
+    for (int i = 0; i < ImGuiMouseButton_COUNT; ++i) {
+      if (io.MouseDown[i]) {
+        hasMouseBtn = true;
+        break;
+      }
+    }
+    const bool mouseMoved = (std::abs(io.MouseDelta.x) > 1.0f || std::abs(io.MouseDelta.y) > 1.0f);
+    const bool wheelMoved = (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f);
+    const bool keyOrText = (io.InputQueueCharacters.Size > 0 || io.KeyCtrl || io.KeyAlt || io.KeyShift);
+    if (focused && (hasMouseBtn || mouseMoved || wheelMoved || keyOrText || ImGui::IsAnyItemActive())) {
+      lastUserActivityWallSec_ = now;
+    }
+  }
+  updateDiscordPresence(now, false);
+#endif
+
+  ImGui::Render();
+
+  glfwGetFramebufferSize(window_, &fbW, &fbH);
+#ifndef __EMSCRIPTEN__
+  const bool useWaylandVblank =
+      waylandPacer_.isActive() && vsyncMode_ != VSyncMode::Off && !exportingNow;
+#else
+  const bool useWaylandVblank = false;
+#endif
+  if (fbW > 0 && fbH > 0) {
+    device_->bindRenderTarget({}, fbW, fbH);
+    device_->clear(0.05f, 0.055f, 0.07f, 1.0f);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    if (useWaylandVblank) {
+      waylandPacer_.armBeforeSwap();
+    }
+    glfwSwapBuffers(window_);
+  }
+
+#ifndef __EMSCRIPTEN__
+  if (useWaylandVblank) {
+    waylandPacer_.waitForFrameOrTimeout(50);
+  } else if (isWaylandPlatform_ && vsyncMode_ != VSyncMode::Off && !exportingNow) {
+    const double targetFrameSec = 1.0 / static_cast<double>(currentMonitorRefreshRateHz());
+    for (;;) {
+      const double remaining = targetFrameSec - (glfwGetTime() - frameStartWallSec);
+      if (remaining <= 0.001) {
+        break;
+      }
+      const double sliceSec = std::min(remaining, 0.008);
+      std::this_thread::sleep_for(
+          std::chrono::microseconds(static_cast<int64_t>(sliceSec * 1000000.0)));
+      glfwPollEvents();
+    }
+  }
+#endif
 }
 
 int EditorApp::runSmokeTest() {
@@ -505,7 +607,7 @@ int EditorApp::runSmokeTest() {
 
   std::vector<uint8_t> pixels;
   int rw = 0, rh = 0;
-  if (!device_.readRenderTargetRgba(renderer_.finalRenderTarget(), rw, rh, pixels, true) ||
+  if (!device_->readRenderTargetRgba(renderer_.finalRenderTarget(), rw, rh, pixels, true) ||
       rw != 640 || rh != 360 || pixels.size() != static_cast<size_t>(640 * 360 * 4)) {
     std::cerr << "[smoke-test] Pixel readback mismatch\n";
     return 3;
@@ -534,7 +636,7 @@ int EditorApp::runSmokeTest() {
   drawAudioTimelinePanel();
   drawSoundKeysPanel();
   ImGui::Render();
-  device_.bindRenderTarget({}, 320, 240);
+  device_->bindRenderTarget({}, 320, 240);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
   std::cout << "[smoke-test] OK draws=" << frameStats_.drawCalls
@@ -848,13 +950,24 @@ void EditorApp::drawMenuBar() {
       actionLoadBuiltinTestTone(110.0f);
     }
     ImGui::Separator();
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
     if (ImGui::MenuItem("Export Video (MP4)...")) {
       openExportModal_ = true;
     }
+#else
+    ImGui::BeginDisabled();
+    ImGui::MenuItem("Export Video (MP4)...");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Offline MP4 export is available in the desktop app. Download your .iota project to render on desktop.");
+    }
+#endif
+#ifndef __EMSCRIPTEN__
     ImGui::Separator();
     if (ImGui::MenuItem("Exit")) {
       glfwSetWindowShouldClose(window_, GLFW_TRUE);
     }
+#endif
     ImGui::EndMenu();
   }
 
@@ -899,6 +1012,7 @@ void EditorApp::drawMenuBar() {
     ImGui::MenuItem("Show Advanced Hidden Properties", nullptr, &showHiddenProps_);
     ImGui::MenuItem("Show Raw Property Keys", nullptr, &showRawPropertyKeys_);
     ImGui::MenuItem("Precise Numeric Inputs", nullptr, &preciseNumericInputs_);
+#ifndef __EMSCRIPTEN__
     ImGui::Separator();
     if (ImGui::BeginMenu("Discord Rich Presence")) {
       const bool sdkAvailable = discordPresence_.isSdkAvailable();
@@ -948,6 +1062,7 @@ void EditorApp::drawMenuBar() {
       }
       ImGui::EndMenu();
     }
+#endif
     ImGui::EndMenu();
   }
 
@@ -979,6 +1094,7 @@ void EditorApp::drawMenuBar() {
       }
       ImGui::EndMenu();
     }
+#ifndef __EMSCRIPTEN__
     if (ImGui::BeginMenu("VSync")) {
       if (ImGui::MenuItem("On (VSync)", nullptr, vsyncMode_ == VSyncMode::On)) {
         vsyncMode_ = VSyncMode::On;
@@ -1000,6 +1116,7 @@ void EditorApp::drawMenuBar() {
       }
       ImGui::EndMenu();
     }
+#endif
     ImGui::Separator();
     ImGui::MenuItem("FXAA Anti-Aliasing", nullptr, &fxaaEnabled_);
     ImGui::MenuItem("Performance Stats Overlay", nullptr, &showPerfOverlay_);
@@ -1057,6 +1174,7 @@ void EditorApp::drawMenuBar() {
       showDocsPanel_ = true;
       docsPanelState_.focusRequested = true;
     }
+#ifndef __EMSCRIPTEN__
     ImGui::Separator();
     if (ImGui::MenuItem("Check for Updates...")) {
       updateChecker_.startCheckAsync(IOTA_STUDIO_VERSION,
@@ -1069,8 +1187,13 @@ void EditorApp::drawMenuBar() {
     if (ImGui::MenuItem("Open Releases Page")) {
       openExternalUrl(iota::core::UpdateChecker::kReleasesPageUrl);
     }
+#endif
     ImGui::Separator();
+#ifdef __EMSCRIPTEN__
+    const std::string verLabel = std::string("Iota Studio v") + IOTA_STUDIO_VERSION + " (WebGL2)";
+#else
     const std::string verLabel = std::string("Iota Studio v") + IOTA_STUDIO_VERSION;
+#endif
     ImGui::MenuItem(verLabel.c_str(), nullptr, false, false);
     ImGui::EndMenu();
   }
@@ -1204,7 +1327,7 @@ void EditorApp::drawViewportPanel() {
     const float padY = std::max(0.0f, (avail.y - drawH) * 0.5f);
     ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + padX, ImGui::GetCursorPosY() + padY));
 
-    const auto glId = static_cast<ImTextureID>(device_.nativeTextureId(tex));
+    const auto glId = static_cast<ImTextureID>(device_->nativeTextureId(tex));
     // OpenGL FBO color attachment has V=1 at screen top
     ImGui::Image(glId, ImVec2(drawW, drawH), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
   } else {
@@ -1939,17 +2062,23 @@ void EditorApp::drawInspectorPanel() {
           {"Images (*.png;*.jpg;*.jpeg;*.bmp)", "png;jpg;jpeg;bmp"},
           {"All Files (*.*)", "*"},
       };
-      if (auto chosen = platform::showOpenFileDialog(window_, "Import Image Asset into Preset", kFilters)) {
-        auto bytes = readAllBytes(*chosen);
-        if (!bytes.empty()) {
-          const std::string fname = iota::core::pathFilenameUtf8(*chosen);
-          project_.localAssets[fname] = std::move(bytes);
-          el.props.setString(actions.assetTargetPropName, "local:" + fname, "img", "1_image");
-          renderer_.invalidateLocalAssets();
-          pushUndoState("Import Local Asset");
-          statusBanner_ = "Bundled asset local:" + fname;
-        }
-      }
+      const int compIdx = selectedCompIdx_;
+      const int elemIdx = selectedElemIdx_;
+      const std::string propName = actions.assetTargetPropName;
+      platform::requestOpenFile(window_, "Import Image Asset into Preset", kFilters,
+          [this, compIdx, elemIdx, propName](std::filesystem::path chosen) {
+            if (compIdx < 0 || compIdx >= static_cast<int>(project_.compositions.size())) return;
+            auto& elems = project_.compositions[static_cast<size_t>(compIdx)].elements;
+            if (elemIdx < 0 || elemIdx >= static_cast<int>(elems.size())) return;
+            auto bytes = readAllBytes(chosen);
+            if (bytes.empty()) return;
+            const std::string fname = iota::core::pathFilenameUtf8(chosen);
+            project_.localAssets[fname] = std::move(bytes);
+            elems[static_cast<size_t>(elemIdx)].props.setString(propName, "local:" + fname, "img", "1_image");
+            renderer_.invalidateLocalAssets();
+            pushUndoState("Import Local Asset");
+            statusBanner_ = "Bundled asset local:" + fname;
+          });
     }
 
     if (actions.requestLocalFontImport && !actions.assetTargetPropName.empty() && window_) {
@@ -1957,17 +2086,23 @@ void EditorApp::drawInspectorPanel() {
           {"Fonts (*.ttf;*.otf;*.ttc)", "ttf;otf;ttc"},
           {"All Files (*.*)", "*"},
       };
-      if (auto chosen = platform::showOpenFileDialog(window_, "Import TrueType / OpenType Font", kFilters)) {
-        auto bytes = readAllBytes(*chosen);
-        if (!bytes.empty()) {
-          const std::string fname = iota::core::pathFilenameUtf8(*chosen);
-          project_.localAssets[fname] = std::move(bytes);
-          el.props.setString(actions.assetTargetPropName, "local:" + fname, "passet", "appearance");
-          renderer_.invalidateLocalAssets();
-          pushUndoState("Import Custom Font");
-          statusBanner_ = "Bundled font local:" + fname;
-        }
-      }
+      const int compIdx = selectedCompIdx_;
+      const int elemIdx = selectedElemIdx_;
+      const std::string propName = actions.assetTargetPropName;
+      platform::requestOpenFile(window_, "Import TrueType / OpenType Font", kFilters,
+          [this, compIdx, elemIdx, propName](std::filesystem::path chosen) {
+            if (compIdx < 0 || compIdx >= static_cast<int>(project_.compositions.size())) return;
+            auto& elems = project_.compositions[static_cast<size_t>(compIdx)].elements;
+            if (elemIdx < 0 || elemIdx >= static_cast<int>(elems.size())) return;
+            auto bytes = readAllBytes(chosen);
+            if (bytes.empty()) return;
+            const std::string fname = iota::core::pathFilenameUtf8(chosen);
+            project_.localAssets[fname] = std::move(bytes);
+            elems[static_cast<size_t>(elemIdx)].props.setString(propName, "local:" + fname, "passet", "appearance");
+            renderer_.invalidateLocalAssets();
+            pushUndoState("Import Custom Font");
+            statusBanner_ = "Bundled font local:" + fname;
+          });
     }
 
     if (actions.requestLocalShaderImport && !actions.assetTargetPropName.empty() && window_) {
@@ -1975,17 +2110,23 @@ void EditorApp::drawInspectorPanel() {
           {"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)", "glsl;frag;vert;fsh;vsh;fs;vs"},
           {"All Files (*.*)", "*"},
       };
-      if (auto chosen = platform::showOpenFileDialog(window_, "Import GLSL Shader Asset into Project", kFilters)) {
-        auto bytes = readAllBytes(*chosen);
-        if (!bytes.empty()) {
-          const std::string fname = iota::core::pathFilenameUtf8(*chosen);
-          project_.localAssets[fname] = std::move(bytes);
-          el.props.setString(actions.assetTargetPropName, "local:" + fname, "etxt", "shader");
-          renderer_.invalidateLocalAssets();
-          pushUndoState("Import Shader Asset");
-          statusBanner_ = "Bundled shader local:" + fname;
-        }
-      }
+      const int compIdx = selectedCompIdx_;
+      const int elemIdx = selectedElemIdx_;
+      const std::string propName = actions.assetTargetPropName;
+      platform::requestOpenFile(window_, "Import GLSL Shader Asset into Project", kFilters,
+          [this, compIdx, elemIdx, propName](std::filesystem::path chosen) {
+            if (compIdx < 0 || compIdx >= static_cast<int>(project_.compositions.size())) return;
+            auto& elems = project_.compositions[static_cast<size_t>(compIdx)].elements;
+            if (elemIdx < 0 || elemIdx >= static_cast<int>(elems.size())) return;
+            auto bytes = readAllBytes(chosen);
+            if (bytes.empty()) return;
+            const std::string fname = iota::core::pathFilenameUtf8(chosen);
+            project_.localAssets[fname] = std::move(bytes);
+            elems[static_cast<size_t>(elemIdx)].props.setString(propName, "local:" + fname, "etxt", "shader");
+            renderer_.invalidateLocalAssets();
+            pushUndoState("Import Shader Asset");
+            statusBanner_ = "Bundled shader local:" + fname;
+          });
     }
 
     if (actions.requestOpenShaderEditor && !actions.editShaderTargetProp.empty()) {
@@ -2178,10 +2319,12 @@ void EditorApp::drawAudioTimelinePanel() {
     playAccumTimeSec_ = 0.0;
     renderer_.resetSimulation();
   }
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   ImGui::SameLine();
   if (ImGui::Button("Export MP4...")) {
     openExportModal_ = true;
   }
+#endif
 
   float pos = static_cast<float>(audio_.currentTimeSeconds());
   const float dur = static_cast<float>(std::max(0.1, audio_.durationSeconds()));
@@ -2253,6 +2396,7 @@ void EditorApp::drawSoundKeysPanel() {
   }
 }
 
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
 void EditorApp::drawExportModal() {
   if (openExportModal_) {
     ImGui::OpenPopup("Export Video (MP4)");
@@ -2531,12 +2675,13 @@ void EditorApp::drawExportModal() {
     ImGui::EndPopup();
   }
 }
+#endif
 
 void EditorApp::drawAssetBrowserPanel() {
   AssetBrowserActions actions;
   renderAssetBrowserPanel(project_,
                           audio_,
-                          device_,
+                          *device_,
                           renderer_,
                           assetBrowserState_,
                           selectedCompIdx_,
@@ -2555,63 +2700,69 @@ void EditorApp::drawAssetBrowserPanel() {
         {"Images (*.png;*.jpg;*.jpeg;*.bmp;*.tga)", "png;jpg;jpeg;bmp;tga"},
         {"All Files (*.*)", "*"},
     };
-    const auto chosen = platform::showOpenFilesDialog(window_, "Import Image Assets into Project", kFilters);
-    int imported = 0;
-    for (const auto& path : chosen) {
-      auto bytes = readAllBytes(path);
-      if (!bytes.empty()) {
-        const std::string fname = iota::core::pathFilenameUtf8(path);
-        project_.localAssets[fname] = std::move(bytes);
-        assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
-        assetBrowserState_.selectedLabel = fname;
-        assetBrowserState_.selectedUri = "local:" + fname;
-        ++imported;
-      }
-    }
-    if (imported > 0) {
-      renderer_.invalidateLocalAssets();
-      pushUndoState(imported == 1 ? "Import Image Asset" : "Import Image Assets");
-      statusBanner_ = "Imported " + std::to_string(imported) + " asset(s)";
-    }
+    platform::requestOpenFiles(window_, "Import Image Assets into Project", kFilters,
+        [this](std::vector<std::filesystem::path> chosen) {
+          int imported = 0;
+          for (const auto& path : chosen) {
+            auto bytes = readAllBytes(path);
+            if (!bytes.empty()) {
+              const std::string fname = iota::core::pathFilenameUtf8(path);
+              project_.localAssets[fname] = std::move(bytes);
+              assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
+              assetBrowserState_.selectedLabel = fname;
+              assetBrowserState_.selectedUri = "local:" + fname;
+              ++imported;
+            }
+          }
+          if (imported > 0) {
+            renderer_.invalidateLocalAssets();
+            pushUndoState(imported == 1 ? "Import Image Asset" : "Import Image Assets");
+            statusBanner_ = "Imported " + std::to_string(imported) + " asset(s)";
+          }
+        });
   }
   if (actions.requestImportShaders && window_) {
     static constexpr platform::FileDialogFilter kFilters[] = {
         {"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)", "glsl;frag;vert;fsh;vsh;fs;vs"},
         {"All Files (*.*)", "*"},
     };
-    const auto chosen = platform::showOpenFilesDialog(window_, "Import GLSL Shader Assets into Project", kFilters);
-    int imported = 0;
-    for (const auto& path : chosen) {
-      auto bytes = readAllBytes(path);
-      if (!bytes.empty()) {
-        const std::string fname = iota::core::pathFilenameUtf8(path);
-        project_.localAssets[fname] = std::move(bytes);
-        assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
-        assetBrowserState_.selectedLabel = fname;
-        assetBrowserState_.selectedUri = "local:" + fname;
-        ++imported;
-      }
-    }
-    if (imported > 0) {
-      renderer_.invalidateLocalAssets();
-      pushUndoState(imported == 1 ? "Import Shader Asset" : "Import Shader Assets");
-      statusBanner_ = "Imported " + std::to_string(imported) + " shader(s)";
-    }
+    platform::requestOpenFiles(window_, "Import GLSL Shader Assets into Project", kFilters,
+        [this](std::vector<std::filesystem::path> chosen) {
+          int imported = 0;
+          for (const auto& path : chosen) {
+            auto bytes = readAllBytes(path);
+            if (!bytes.empty()) {
+              const std::string fname = iota::core::pathFilenameUtf8(path);
+              project_.localAssets[fname] = std::move(bytes);
+              assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
+              assetBrowserState_.selectedLabel = fname;
+              assetBrowserState_.selectedUri = "local:" + fname;
+              ++imported;
+            }
+          }
+          if (imported > 0) {
+            renderer_.invalidateLocalAssets();
+            pushUndoState(imported == 1 ? "Import Shader Asset" : "Import Shader Assets");
+            statusBanner_ = "Imported " + std::to_string(imported) + " shader(s)";
+          }
+        });
   }
   if (actions.requestReplaceLocalAsset && !actions.replaceTargetName.empty() && window_) {
     static constexpr platform::FileDialogFilter kFilters[] = {
         {"Supported Assets", "png;jpg;jpeg;bmp;tga;glsl;frag;vert;fsh;vsh;fs;vs"},
         {"All Files (*.*)", "*"},
     };
-    if (auto chosen = platform::showOpenFileDialog(window_, "Replace Local Asset File", kFilters)) {
-      auto bytes = readAllBytes(*chosen);
-      if (!bytes.empty()) {
-        project_.localAssets[actions.replaceTargetName] = std::move(bytes);
-        renderer_.invalidateLocalAssets();
-        pushUndoState("Replace Local Asset");
-        statusBanner_ = "Replaced local:" + actions.replaceTargetName;
-      }
-    }
+    const std::string targetName = actions.replaceTargetName;
+    platform::requestOpenFile(window_, "Replace Local Asset File", kFilters,
+        [this, targetName](std::filesystem::path chosen) {
+          auto bytes = readAllBytes(chosen);
+          if (!bytes.empty()) {
+            project_.localAssets[targetName] = std::move(bytes);
+            renderer_.invalidateLocalAssets();
+            pushUndoState("Replace Local Asset");
+            statusBanner_ = "Replaced local:" + targetName;
+          }
+        });
   }
   if (actions.requestImportAudio) {
     actionOpenAudio();
@@ -2649,6 +2800,7 @@ void EditorApp::drawProjectManagerModal() {
 
   if (actions.registryModified && !isSmokeTest_) {
     projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+    platform::syncPersistentStorage();
   }
   if (actions.openFileDialog) {
     actionOpenPreset();
@@ -2772,6 +2924,7 @@ void EditorApp::drawVizImportNoticeModal() {
     if (vizNoticeDontShowAgain_) {
       projectLibrary_.setSuppressVizImportNotice(true);
       projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+      platform::syncPersistentStorage();
     }
     ImGui::CloseCurrentPopup();
   }
@@ -2800,24 +2953,26 @@ void EditorApp::drawShaderEditorPanel() {
         {"Shaders (*.glsl;*.frag;*.vert;*.fsh;*.vsh;*.fs;*.vs)", "glsl;frag;vert;fsh;vsh;fs;vs"},
         {"All Files (*.*)", "*"},
     };
-    const auto chosen = platform::showOpenFilesDialog(window_, "Import GLSL Shader Assets into Project", kFilters);
-    std::string firstImported;
-    int imported = 0;
-    for (const auto& path : chosen) {
-      auto bytes = readAllBytes(path);
-      if (!bytes.empty()) {
-        const std::string fname = iota::core::pathFilenameUtf8(path);
-        project_.localAssets[fname] = std::move(bytes);
-        if (firstImported.empty()) firstImported = fname;
-        ++imported;
-      }
-    }
-    if (imported > 0) {
-      renderer_.invalidateLocalAssets();
-      pushUndoState(imported == 1 ? "Import Shader Asset" : "Import Shader Assets");
-      openShaderInEditor(firstImported);
-      statusBanner_ = "Opened local:" + firstImported + " in Shader Editor";
-    }
+    platform::requestOpenFiles(window_, "Import GLSL Shader Assets into Project", kFilters,
+        [this](std::vector<std::filesystem::path> chosen) {
+          std::string firstImported;
+          int imported = 0;
+          for (const auto& path : chosen) {
+            auto bytes = readAllBytes(path);
+            if (!bytes.empty()) {
+              const std::string fname = iota::core::pathFilenameUtf8(path);
+              project_.localAssets[fname] = std::move(bytes);
+              if (firstImported.empty()) firstImported = fname;
+              ++imported;
+            }
+          }
+          if (imported > 0) {
+            renderer_.invalidateLocalAssets();
+            pushUndoState(imported == 1 ? "Import Shader Asset" : "Import Shader Assets");
+            openShaderInEditor(firstImported);
+            statusBanner_ = "Opened local:" + firstImported + " in Shader Editor";
+          }
+        });
   }
   if (actions.requestAddCustomShaderLayer && !actions.addLayerAssetName.empty() && !project_.compositions.empty()) {
     const int compIdx = std::clamp(selectedCompIdx_, 0, static_cast<int>(project_.compositions.size()) - 1);
@@ -2883,9 +3038,13 @@ void EditorApp::updateWindowTitle() {
 void EditorApp::applyProjectMetadata(const iota::model::ProjectMetadata& meta) {
   previewWidth_ = std::max(64, meta.previewWidth);
   previewHeight_ = std::max(64, meta.previewHeight);
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   exportCfg_.width = previewWidth_;
   exportCfg_.height = previewHeight_;
   exportCfg_.fps = std::clamp(meta.targetFps, 15, 240);
+#else
+  targetFpsSetting_ = std::clamp(meta.targetFps, 15, 240);
+#endif
 }
 
 void EditorApp::recordProjectInLibrary(const std::filesystem::path& path) {
@@ -2901,6 +3060,7 @@ void EditorApp::recordProjectInLibrary(const std::filesystem::path& path) {
   entry.assetCount = static_cast<int>(project_.localAssets.size());
   projectLibrary_.recordOpened(std::move(entry));
   projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
+  platform::syncPersistentStorage();
 }
 
 bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {
@@ -2958,7 +3118,7 @@ bool EditorApp::saveCurrentProject() {
   }
   project_.metadata.previewWidth = previewWidth_;
   project_.metadata.previewHeight = previewHeight_;
-  project_.metadata.targetFps = exportCfg_.fps;
+  project_.metadata.targetFps = currentTargetFps();
   if (!project_.metadata.audioPath.empty()) {
     project_.metadata.audioPath =
         iota::preset_io::makePortableAudioPath(project_.metadata.audioPath, currentProjectPath_);
@@ -2971,6 +3131,7 @@ bool EditorApp::saveCurrentProject() {
   }
   projectDirty_ = false;
   recordProjectInLibrary(currentProjectPath_);
+  platform::syncPersistentStorage();
   updateWindowTitle();
   statusBanner_ = "Saved " + iota::core::pathFilenameUtf8(currentProjectPath_);
   return true;
@@ -2999,12 +3160,21 @@ bool EditorApp::saveProjectAsDialog(const char* preferredExt) {
     initName = "scene.json";
   }
 
+#ifdef __EMSCRIPTEN__
+  std::string baseName = project_.metadata.name.empty() ? "project" : project_.metadata.name;
+  for (char& ch : baseName) {
+    if (ch == '/' || ch == '\\' || ch == ':' || ch == '*') ch = '_';
+  }
+  const std::string dlName = baseName + "." + defExt;
+  auto chosen = platform::showSaveFileDialog(window_, title, filters, defExt, dlName.c_str());
+#else
   auto chosen = platform::showSaveFileDialog(window_, title, filters, defExt, initName);
+#endif
   if (!chosen) return false;
 
   project_.metadata.previewWidth = previewWidth_;
   project_.metadata.previewHeight = previewHeight_;
-  project_.metadata.targetFps = exportCfg_.fps;
+  project_.metadata.targetFps = currentTargetFps();
   if (!project_.metadata.audioPath.empty()) {
     project_.metadata.audioPath =
         iota::preset_io::makePortableAudioPath(project_.metadata.audioPath, *chosen);
@@ -3021,6 +3191,8 @@ bool EditorApp::saveProjectAsDialog(const char* preferredExt) {
   currentProjectPath_ = *chosen;
   projectDirty_ = false;
   recordProjectInLibrary(*chosen);
+  platform::syncPersistentStorage();
+  platform::triggerWebFileDownload(*chosen, iota::core::pathFilenameUtf8(*chosen));
   updateWindowTitle();
   statusBanner_ = "Saved " + iota::core::pathFilenameUtf8(*chosen);
   return true;
@@ -3032,10 +3204,11 @@ void EditorApp::actionOpenPreset() {
       {"Iota & Presets (*.iota;*.viz;*.json;*.txt)", "iota;viz;json;txt"},
       {"All Files (*.*)", "*"},
   };
-  auto chosen = platform::showOpenFileDialog(
-      window_, "Open Project / Visualizer Preset (.iota / .viz / .json)", kFilters);
-  if (!chosen) return;
-  loadProjectFromPath(*chosen);
+  platform::requestOpenFile(
+      window_,
+      "Open Project / Visualizer Preset (.iota / .viz / .json)",
+      kFilters,
+      [this](std::filesystem::path chosen) { loadProjectFromPath(chosen); });
 }
 
 void EditorApp::actionSavePreset(bool asViz) {
@@ -3048,24 +3221,106 @@ void EditorApp::actionOpenAudio() {
       {"Audio Files (*.mp3;*.wav;*.flac;*.ogg;*.m4a;*.aac;*.opus)", "mp3;wav;flac;ogg;m4a;aac;opus"},
       {"All Files (*.*)", "*"},
   };
-  auto chosen = platform::showOpenFileDialog(window_, "Open Audio Track", kFilters);
-  if (!chosen) return;
+  platform::requestOpenAudioFile(
+      window_,
+      "Open Audio Track",
+      kFilters,
+      [this](std::filesystem::path chosen) {
+        std::string err;
+        if (audio_.loadFile(chosen, &err)) {
+          const std::string pathStr = iota::core::pathToUtf8(chosen);
+          const std::string fname = iota::core::pathFilenameUtf8(chosen);
+          project_.metadata.audioPath = pathStr;
+          project_.metadata.audioAssets[fname] = pathStr;
+          playAccumTimeSec_ = 0.0;
+          renderer_.resetSimulation();
+          audio_.play();
+          pushUndoState("Link Audio Track");
+          statusBanner_ = "Playing " + fname;
+        } else {
+          statusBanner_ = "Audio load failed: " + err;
+        }
+      },
+      [this](platform::DecodedAudioPayload payload) {
+        loadDecodedAudioTrack(std::move(payload));
+      },
+      [this](std::string errMsg) {
+        statusBanner_ = "Audio load failed: " + errMsg;
+      });
+}
 
+bool EditorApp::loadDecodedAudioTrack(platform::DecodedAudioPayload payload) {
+  iota::audio::AudioTrackData track;
+  track.sampleRate = std::max(8000, payload.sampleRate);
+  track.channels = 2;
+  track.filePath = payload.filename;
+  track.title = iota::core::pathStemUtf8(iota::core::pathFromUtf8(payload.filename));
+  track.interleavedPcm = std::move(payload.interleavedPcm);
+  iota::audio::rebuildMonoAndDuration(track);
   std::string err;
-  if (audio_.loadFile(*chosen, &err)) {
-    const std::string pathStr = iota::core::pathToUtf8(*chosen);
-    const std::string fname = iota::core::pathFilenameUtf8(*chosen);
-    project_.metadata.audioPath = pathStr;
-    project_.metadata.audioAssets[fname] = pathStr;
-    playAccumTimeSec_ = 0.0;
-    renderer_.resetSimulation();
-    audio_.play();
-    pushUndoState("Link Audio Track");
-    statusBanner_ = "Playing " + fname;
-  } else {
+  if (!audio_.loadTrack(std::move(track), &err)) {
     statusBanner_ = "Audio load failed: " + err;
+    return false;
+  }
+  project_.metadata.audioPath = payload.filename;
+  project_.metadata.audioAssets[payload.filename] = payload.filename;
+  playAccumTimeSec_ = 0.0;
+  renderer_.resetSimulation();
+  platform::resumeWebAudioContext();
+  audio_.play();
+  pushUndoState("Link Audio Track");
+  statusBanner_ = "Playing " + payload.filename;
+  return true;
+}
+
+#ifdef __EMSCRIPTEN__
+void EditorApp::handleDroppedOrPickedFile(const std::filesystem::path& path) {
+  std::string ext = iota::core::pathToUtf8(path.extension());
+  for (char& ch : ext) {
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
+  }
+  if (ext == ".iota" || ext == ".viz" || ext == ".json" || ext == ".txt") {
+    loadProjectFromPath(path);
+    return;
+  }
+  if (ext == ".mp3" || ext == ".wav" || ext == ".flac" || ext == ".ogg" ||
+      ext == ".m4a" || ext == ".aac" || ext == ".opus") {
+    std::string err;
+    if (audio_.loadFile(path, &err)) {
+      const std::string fname = iota::core::pathFilenameUtf8(path);
+      project_.metadata.audioPath = fname;
+      playAccumTimeSec_ = 0.0;
+      renderer_.resetSimulation();
+      platform::resumeWebAudioContext();
+      audio_.play();
+      pushUndoState("Drop Audio Track");
+      statusBanner_ = "Playing " + fname;
+    } else {
+      statusBanner_ = "Audio drop failed: " + err;
+    }
+    return;
+  }
+  auto bytes = readAllBytes(path);
+  if (bytes.empty()) {
+    statusBanner_ = "Dropped file was empty";
+    return;
+  }
+  const std::string fname = iota::core::pathFilenameUtf8(path);
+  project_.localAssets[fname] = std::move(bytes);
+  renderer_.invalidateLocalAssets();
+  if (ext == ".glsl" || ext == ".frag" || ext == ".vert" || ext == ".fsh" || ext == ".vsh" || ext == ".fs" || ext == ".vs") {
+    pushUndoState("Drop Shader Asset");
+    openShaderInEditor(fname);
+    statusBanner_ = "Imported local:" + fname + " into Shader Editor";
+  } else {
+    assetBrowserState_.selectedKind = BrowserItemKind::LocalImage;
+    assetBrowserState_.selectedLabel = fname;
+    assetBrowserState_.selectedUri = "local:" + fname;
+    pushUndoState("Drop Local Asset");
+    statusBanner_ = "Imported asset local:" + fname;
   }
 }
+#endif
 
 void EditorApp::actionLoadBuiltinTestTone(float freqHz) {
   auto track = iota::audio::createSyntheticSineTrack(freqHz, 8.0, 44100, 0.35f, "110 Hz Synth Test Tone");
@@ -3269,7 +3524,7 @@ class EditorLiveStudioTarget final : public iota::mcp::IStudioBridgeTarget {
     std::vector<uint8_t> rgba;
     int rw = 0;
     int rh = 0;
-    if (!app_.device_.readRenderTargetRgba(finalRt, rw, rh, rgba, true) || rw != w || rh != h) {
+    if (!app_.device_->readRenderTargetRgba(finalRt, rw, rh, rgba, true) || rw != w || rh != h) {
       if (outError) *outError = "Failed to read rendered preview framebuffer.";
       return false;
     }
@@ -3299,7 +3554,7 @@ class EditorLiveStudioTarget final : public iota::mcp::IStudioBridgeTarget {
 
     app_.renderer_.resetSimulation();
     while (!session.isDone()) {
-      if (!session.stepFrame(app_.device_, app_.renderer_, app_.project_, app_.audio_, outError)) {
+      if (!session.stepFrame(*app_.device_, app_.renderer_, app_.project_, app_.audio_, outError)) {
         session.cancel();
         return false;
       }
@@ -3449,11 +3704,14 @@ void EditorApp::updateDiscordPresence(double nowWallSec, bool isMinimized) {
   iota::discord::PresenceSnapshot snapshot;
   snapshot.compositionName = activeCompositionDisplayName();
 
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   if (exportSession_.isActive()) {
     snapshot.state = iota::discord::PresenceActivityState::Exporting;
     snapshot.exportEncodedFrames = exportSession_.encodedFrames();
     snapshot.exportTotalFrames = exportSession_.totalFrames();
-  } else if (audio_.isPlaying()) {
+  } else
+#endif
+  if (audio_.isPlaying()) {
     snapshot.state = iota::discord::PresenceActivityState::Previewing;
   } else if (isMinimized || (nowWallSec - lastUserActivityWallSec_ >= kIdleTimeoutSec)) {
     snapshot.state = iota::discord::PresenceActivityState::Idle;

@@ -128,8 +128,6 @@ struct AtlasShelf {
   int cursorX = 0;
 };
 
-#if defined(_WIN32) || defined(IOTA_HAS_FREETYPE_HARFBUZZ)
-
 std::vector<uint8_t> readFileBytes(const std::filesystem::path& p) {
   std::ifstream f(p, std::ios::binary | std::ios::ate);
   if (!f.is_open()) {
@@ -205,6 +203,8 @@ void dilateAlphaCircle(const std::vector<uint8_t>& alphaIn,
     }
   }
 }
+
+#if defined(_WIN32) || defined(IOTA_HAS_FREETYPE_HARFBUZZ)
 
 struct ShapedLayoutKeyView {
   std::string_view typeFaceKey;
@@ -853,6 +853,20 @@ struct FontAtlasCache::Impl {
   uint64_t shapedLruCounter = 0;
   uint64_t shapedLayoutHits = 0;
   std::unordered_map<ShapedLayoutKey, FtShapedLayoutEntry, ShapedLayoutKeyHash, ShapedLayoutKeyEq> shapedLayoutCache;
+#else
+  struct StbFaceEntry {
+    std::vector<uint8_t> ttfBytes;
+    stbtt_fontinfo info{};
+    int ascent = 0;
+    int descent = 0;
+    int lineGap = 0;
+    bool valid = false;
+  };
+  bool stbInitAttempted = false;
+  std::shared_ptr<StbFaceEntry> defaultStbSans;
+  std::shared_ptr<StbFaceEntry> defaultStbMono;
+  std::unordered_map<std::string, std::shared_ptr<StbFaceEntry>> customStbFaces;
+  std::unordered_map<uintptr_t, std::shared_ptr<StbFaceEntry>> pinnedStbFaces;
 #endif
 
   iota::rhi::TextureHandle fallbackTex{};
@@ -937,6 +951,156 @@ struct FontAtlasCache::Impl {
     ftInitAttempted = false;
     ftReady = false;
   }
+#else
+  static std::shared_ptr<StbFaceEntry> loadStbFaceFromBytes(std::vector<uint8_t> bytes) {
+    if (bytes.empty()) return nullptr;
+    auto entry = std::make_shared<StbFaceEntry>();
+    entry->ttfBytes = std::move(bytes);
+    const int offset = stbtt_GetFontOffsetForIndex(entry->ttfBytes.data(), 0);
+    if (offset < 0 || !stbtt_InitFont(&entry->info, entry->ttfBytes.data(), offset)) {
+      return nullptr;
+    }
+    stbtt_GetFontVMetrics(&entry->info, &entry->ascent, &entry->descent, &entry->lineGap);
+    entry->valid = true;
+    return entry;
+  }
+
+  void initStbFonts() {
+    if (stbInitAttempted) return;
+    stbInitAttempted = true;
+    for (const char* p : {"/assets/fonts/NotoSans-Regular.ttf", "assets/fonts/NotoSans-Regular.ttf"}) {
+      if (auto bytes = readFileBytes(iota::core::pathFromUtf8(p)); !bytes.empty()) {
+        defaultStbSans = loadStbFaceFromBytes(std::move(bytes));
+        if (defaultStbSans) break;
+      }
+    }
+    for (const char* p : {"/assets/fonts/NotoSansMono-Regular.ttf", "assets/fonts/NotoSansMono-Regular.ttf"}) {
+      if (auto bytes = readFileBytes(iota::core::pathFromUtf8(p)); !bytes.empty()) {
+        defaultStbMono = loadStbFaceFromBytes(std::move(bytes));
+        if (defaultStbMono) break;
+      }
+    }
+  }
+
+  void shutdownStbFonts() {
+    pinnedStbFaces.clear();
+    customStbFaces.clear();
+    defaultStbSans.reset();
+    defaultStbMono.reset();
+    stbInitAttempted = false;
+  }
+
+  std::shared_ptr<StbFaceEntry> resolveStbFace(std::string_view typeFaceKey, const TextStyle& style) {
+    initStbFonts();
+    if (!typeFaceKey.empty()) {
+      const bool isLocalUri = (typeFaceKey.rfind("local:", 0) == 0);
+      const std::filesystem::path diskPath =
+          isLocalUri ? std::filesystem::path() : iota::core::pathFromUtf8(typeFaceKey);
+      const bool isDiskFont = !isLocalUri && iota::core::pathExistsNoThrow(diskPath);
+      if (isLocalUri || isDiskFont) {
+        const std::string cacheKey(typeFaceKey);
+        if (auto it = customStbFaces.find(cacheKey); it != customStbFaces.end()) {
+          return it->second;
+        }
+        std::vector<uint8_t> bytes;
+        if (isLocalUri && style.localAssets) {
+          const std::string assetName(typeFaceKey.substr(6));
+          if (auto mapIt = style.localAssets->find(assetName); mapIt != style.localAssets->end()) {
+            bytes = mapIt->second;
+          }
+        } else if (isDiskFont) {
+          bytes = readFileBytes(diskPath);
+        }
+        if (auto face = loadStbFaceFromBytes(std::move(bytes))) {
+          customStbFaces.emplace(cacheKey, face);
+          return face;
+        }
+      }
+    }
+    if (typeFaceKey == "internal_1" && defaultStbMono) {
+      return defaultStbMono;
+    }
+    return defaultStbSans ? defaultStbSans : defaultStbMono;
+  }
+
+  bool ensureGlyphStb(const std::shared_ptr<StbFaceEntry>& faceHolder,
+                      int glyphIdx,
+                      uint16_t sizeBucketPx,
+                      uint8_t outlinePx,
+                      bool& outResetOccurred) {
+    if (!faceHolder || !faceHolder->valid) return false;
+    const uintptr_t faceKey = reinterpret_cast<uintptr_t>(faceHolder.get());
+    pinnedStbFaces.try_emplace(faceKey, faceHolder);
+
+    const GlyphKey key{faceKey, static_cast<uint32_t>(glyphIdx), sizeBucketPx, outlinePx};
+    if (glyphCache.find(key) != glyphCache.end()) {
+      return true;
+    }
+
+    const float scale = stbtt_ScaleForPixelHeight(&faceHolder->info, static_cast<float>(sizeBucketPx));
+    int gw = 0, gh = 0, xoff = 0, yoff = 0;
+    uint8_t* rawBmp = stbtt_GetGlyphBitmap(&faceHolder->info, scale, scale, glyphIdx, &gw, &gh, &xoff, &yoff);
+    if (!rawBmp || gw <= 0 || gh <= 0) {
+      if (rawBmp) stbtt_FreeBitmap(rawBmp, nullptr);
+      glyphCache.emplace(key, CachedGlyph{false});
+      return true;
+    }
+
+    alphaScratch.assign(rawBmp, rawBmp + static_cast<size_t>(gw) * static_cast<size_t>(gh));
+    stbtt_FreeBitmap(rawBmp, nullptr);
+
+    const uint8_t* finalAlpha = alphaScratch.data();
+    int outW = gw;
+    int outH = gh;
+    int offX = xoff;
+    int offY = yoff;
+
+    if (outlinePx > 0) {
+      const int rad = static_cast<int>(outlinePx);
+      outW = gw + 2 * rad;
+      outH = gh + 2 * rad;
+      offX -= rad;
+      offY -= rad;
+      dilateAlphaCircle(alphaScratch, gw, gh, rad, dilatedScratch);
+      finalAlpha = dilatedScratch.data();
+    }
+
+    int px = 0;
+    int py = 0;
+    if (!packRect(outW, outH, px, py)) {
+      resetAtlas();
+      outResetOccurred = true;
+      pinnedStbFaces.try_emplace(faceKey, faceHolder);
+      if (!packRect(outW, outH, px, py)) {
+        glyphCache.emplace(key, CachedGlyph{false});
+        return false;
+      }
+    }
+
+    const size_t totalOut = static_cast<size_t>(outW) * static_cast<size_t>(outH);
+    rgbaScratch.resize(totalOut * 4u);
+    for (size_t i = 0; i < totalOut; ++i) {
+      const uint8_t a = finalAlpha[i];
+      rgbaScratch[i * 4 + 0] = a;
+      rgbaScratch[i * 4 + 1] = a;
+      rgbaScratch[i * 4 + 2] = a;
+      rgbaScratch[i * 4 + 3] = a;
+    }
+    device->updateTexture2DRegion(atlasTex, px, py, outW, outH, rgbaScratch.data());
+
+    CachedGlyph cg;
+    cg.visible = true;
+    cg.u0 = static_cast<float>(px) / static_cast<float>(atlasW);
+    cg.v0 = static_cast<float>(py) / static_cast<float>(atlasH);
+    cg.u1 = static_cast<float>(px + outW) / static_cast<float>(atlasW);
+    cg.v1 = static_cast<float>(py + outH) / static_cast<float>(atlasH);
+    cg.offsetX = offX;
+    cg.offsetY = offY;
+    cg.width = outW;
+    cg.height = outH;
+    glyphCache.emplace(key, cg);
+    return true;
+  }
 #endif
 
   bool ensureAtlasTexture() {
@@ -966,6 +1130,8 @@ struct FontAtlasCache::Impl {
     pinnedFontFaces.clear();
 #elif defined(IOTA_HAS_FREETYPE_HARFBUZZ)
     pinnedFaces.clear();
+#else
+    pinnedStbFaces.clear();
 #endif
     ++atlasResets;
     if (device && atlasTex) {
@@ -1563,6 +1729,8 @@ void FontAtlasCache::setDevice(iota::rhi::IRenderDevice* device) {
       impl_->initDirectWrite();
 #elif defined(IOTA_HAS_FREETYPE_HARFBUZZ)
       impl_->initFreeType();
+#else
+      impl_->initStbFonts();
 #endif
     }
   }
@@ -1587,6 +1755,8 @@ void FontAtlasCache::shutdown() {
   impl_->shutdownDirectWrite();
 #elif defined(IOTA_HAS_FREETYPE_HARFBUZZ)
   impl_->shutdownFreeType();
+#else
+  impl_->shutdownStbFonts();
 #endif
   impl_->device = nullptr;
 }
@@ -1601,6 +1771,8 @@ void FontAtlasCache::invalidateCustomFonts() {
   impl_->shapedLayoutCache.clear();
   ++impl_->customFontGen;
   impl_->customFaces.clear();
+#else
+  impl_->customStbFaces.clear();
 #endif
   impl_->resetAtlas();
 }
@@ -2323,8 +2495,199 @@ iota::rhi::TextureHandle FontAtlasCache::buildTextQuads(std::string_view typeFac
     return impl_->atlasTex;
   }
 #else
-  (void)typeFaceKey;
-  (void)style;
+  if (auto faceHolder = impl_->resolveStbFace(typeFaceKey, style)) {
+    const float clampedSize = std::max(8.0f, fontSizePx);
+    const uint16_t bucketPx = quantizeFontBucketPx(clampedSize);
+    const float renderScale = clampedSize / static_cast<float>(bucketPx);
+    const float safeScale = std::max(renderScale, 0.05f);
+    const float pxScale = stbtt_ScaleForPixelHeight(&faceHolder->info, static_cast<float>(bucketPx));
+    const float letterSpacingBucket = style.letterSpacingPx / safeScale;
+    const float lineSpacingNorm = std::clamp(style.lineSpacing, 0.4f, 4.0f);
+
+    std::vector<uint32_t> codepoints;
+    codepoints.reserve(text.size());
+    for (size_t i = 0; i < text.size();) {
+      const unsigned char c0 = static_cast<unsigned char>(text[i]);
+      uint32_t cp = '?';
+      size_t adv = 1;
+      if (c0 < 0x80) {
+        cp = c0;
+      } else if ((c0 & 0xE0) == 0xC0 && i + 1 < text.size()) {
+        cp = ((c0 & 0x1Fu) << 6) | (static_cast<unsigned char>(text[i + 1]) & 0x3Fu);
+        adv = 2;
+      } else if ((c0 & 0xF0) == 0xE0 && i + 2 < text.size()) {
+        cp = ((c0 & 0x0Fu) << 12) | ((static_cast<unsigned char>(text[i + 1]) & 0x3Fu) << 6) |
+             (static_cast<unsigned char>(text[i + 2]) & 0x3Fu);
+        adv = 3;
+      } else if ((c0 & 0xF8) == 0xF0 && i + 3 < text.size()) {
+        cp = ((c0 & 0x07u) << 18) | ((static_cast<unsigned char>(text[i + 1]) & 0x3Fu) << 12) |
+             ((static_cast<unsigned char>(text[i + 2]) & 0x3Fu) << 6) |
+             (static_cast<unsigned char>(text[i + 3]) & 0x3Fu);
+        adv = 4;
+      }
+      codepoints.push_back(cp);
+      i += adv;
+    }
+
+    const float layoutW = style.wordWrap ? std::max(bounds.width() / safeScale, 16.0f) : 16384.0f;
+    struct StbRawGlyph {
+      int glyphIdx = 0;
+      float x = 0.0f;
+      float y = 0.0f;
+    };
+    auto measureLine = [&](size_t start, size_t end, std::vector<int>& outIndices, std::vector<float>& outX) -> float {
+      outIndices.clear();
+      outX.clear();
+      float penX = 0.0f;
+      int prevGlyph = 0;
+      for (size_t idx = start; idx < end; ++idx) {
+        const uint32_t cp = codepoints[idx];
+        const int gi = stbtt_FindGlyphIndex(&faceHolder->info, static_cast<int>(cp));
+        if (prevGlyph != 0 && gi != 0) {
+          penX += static_cast<float>(stbtt_GetGlyphKernAdvance(&faceHolder->info, prevGlyph, gi)) * pxScale;
+        }
+        outIndices.push_back(gi);
+        outX.push_back(penX);
+        int advW = 0, lsb = 0;
+        stbtt_GetGlyphHMetrics(&faceHolder->info, gi, &advW, &lsb);
+        penX += static_cast<float>(advW) * pxScale + letterSpacingBucket;
+        prevGlyph = gi;
+      }
+      return penX;
+    };
+
+    struct LineSpan { size_t begin = 0; size_t end = 0; };
+    std::vector<LineSpan> lines;
+    std::vector<int> tmpIdx;
+    std::vector<float> tmpX;
+    for (size_t pStart = 0; pStart <= codepoints.size();) {
+      size_t nl = pStart;
+      while (nl < codepoints.size() && codepoints[nl] != '\n') ++nl;
+      if (!style.wordWrap || nl == pStart) {
+        lines.push_back({pStart, nl});
+      } else {
+        size_t curStart = pStart;
+        while (curStart < nl) {
+          size_t bestEnd = curStart + 1;
+          size_t lastSpace = curStart;
+          for (size_t probe = curStart + 1; probe <= nl; ++probe) {
+            const bool isSep = (probe == nl || codepoints[probe - 1] == ' ' || codepoints[probe - 1] == '\t');
+            if (isSep || probe == curStart + 1) {
+              const float w = measureLine(curStart, probe, tmpIdx, tmpX);
+              if (w <= layoutW || probe == curStart + 1) {
+                bestEnd = probe;
+                if (probe < nl && codepoints[probe - 1] == ' ') lastSpace = probe;
+              } else {
+                break;
+              }
+            }
+          }
+          if (bestEnd < nl && lastSpace > curStart) bestEnd = lastSpace;
+          while (bestEnd > curStart && codepoints[bestEnd - 1] == ' ') --bestEnd;
+          lines.push_back({curStart, bestEnd});
+          curStart = (bestEnd == curStart) ? (curStart + 1) : bestEnd;
+          while (curStart < nl && codepoints[curStart] == ' ') ++curStart;
+        }
+      }
+      if (nl >= codepoints.size()) break;
+      pStart = nl + 1;
+    }
+
+    const float ascender = static_cast<float>(faceHolder->ascent) * pxScale;
+    const float descender = static_cast<float>(-faceHolder->descent) * pxScale;
+    const float lineAdvance = std::max(
+        static_cast<float>(bucketPx) * 1.15f,
+        (static_cast<float>(faceHolder->ascent - faceHolder->descent + faceHolder->lineGap) * pxScale)) *
+        lineSpacingNorm;
+    const float metricsHeight = std::max(
+        static_cast<float>(bucketPx),
+        static_cast<float>(std::max<size_t>(1, lines.size()) - 1) * lineAdvance + ascender + std::max(0.0f, descender));
+
+    std::vector<StbRawGlyph> shaped;
+    float maxLineWidth = 0.0f;
+    std::vector<float> lineWidths;
+    lineWidths.reserve(lines.size());
+    float baselineY = ascender;
+    for (const auto& ln : lines) {
+      const float lw = measureLine(ln.begin, ln.end, tmpIdx, tmpX);
+      maxLineWidth = std::max(maxLineWidth, lw);
+      lineWidths.push_back(lw);
+    }
+    const float boxW = style.wordWrap ? layoutW : maxLineWidth;
+    for (size_t li = 0; li < lines.size(); ++li) {
+      const float lw = measureLine(lines[li].begin, lines[li].end, tmpIdx, tmpX);
+      float originX = (boxW - lw) * 0.5f;
+      if (style.alignment == TextAlignment::Left) originX = 0.0f;
+      else if (style.alignment == TextAlignment::Right) originX = boxW - lw;
+      for (size_t gi = 0; gi < tmpIdx.size(); ++gi) {
+        shaped.push_back({tmpIdx[gi], originX + tmpX[gi], baselineY});
+      }
+      baselineY += lineAdvance;
+    }
+
+    float originScreenX = bounds.centerX() - (boxW * 0.5f) * renderScale;
+    if (style.alignment == TextAlignment::Left) originScreenX = bounds.left;
+    else if (style.alignment == TextAlignment::Right) originScreenX = bounds.right - boxW * renderScale;
+    const float originScreenY = bounds.centerY() - (metricsHeight * 0.5f) * renderScale;
+
+    const int outlineRad = (style.outlineWidthPx > 0.05f)
+                               ? std::clamp(static_cast<int>(std::lround(style.outlineWidthPx / safeScale)), 1, 10)
+                               : 0;
+    const uint8_t outlineKey = static_cast<uint8_t>(outlineRad);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      bool anyReset = false;
+      for (const auto& sg : shaped) {
+        if (outlineKey > 0) {
+          impl_->ensureGlyphStb(faceHolder, sg.glyphIdx, bucketPx, outlineKey, anyReset);
+          if (anyReset) break;
+        }
+        impl_->ensureGlyphStb(faceHolder, sg.glyphIdx, bucketPx, 0, anyReset);
+        if (anyReset) break;
+      }
+      if (!anyReset) break;
+    }
+
+    if (!impl_->atlasTex) return {};
+
+    const uintptr_t faceKey = reinterpret_cast<uintptr_t>(faceHolder.get());
+    auto emitGlyphQuads = [&](uint8_t glyphOutlineKey, uint32_t abgrCol, float shiftX, float shiftY) {
+      for (const auto& sg : shaped) {
+        const GlyphKey gk{faceKey, static_cast<uint32_t>(sg.glyphIdx), bucketPx, glyphOutlineKey};
+        const auto it = impl_->glyphCache.find(gk);
+        if (it == impl_->glyphCache.end() || !it->second.visible) continue;
+        const auto& cg = it->second;
+        const float gx = originScreenX + (sg.x + static_cast<float>(cg.offsetX)) * renderScale + shiftX;
+        const float gy = originScreenY + (sg.y + static_cast<float>(cg.offsetY)) * renderScale + shiftY;
+        const float gw = static_cast<float>(cg.width) * renderScale;
+        const float gh = static_cast<float>(cg.height) * renderScale;
+
+        const uint32_t base = static_cast<uint32_t>(outVertices.size());
+        outVertices.push_back({gx, gy, 0.0f, abgrCol, cg.u0, cg.v0});
+        outVertices.push_back({gx + gw, gy, 0.0f, abgrCol, cg.u1, cg.v0});
+        outVertices.push_back({gx + gw, gy + gh, 0.0f, abgrCol, cg.u1, cg.v1});
+        outVertices.push_back({gx, gy + gh, 0.0f, abgrCol, cg.u0, cg.v1});
+        outIndices.push_back(base + 0);
+        outIndices.push_back(base + 1);
+        outIndices.push_back(base + 2);
+        outIndices.push_back(base + 0);
+        outIndices.push_back(base + 2);
+        outIndices.push_back(base + 3);
+      }
+    };
+
+    const bool hasShadow =
+        style.shadowColor.a > 0 &&
+        (std::abs(style.shadowOffsetPx.x) > 0.01f || std::abs(style.shadowOffsetPx.y) > 0.01f);
+    if (hasShadow) {
+      emitGlyphQuads(outlineKey, packPremultipliedAbgr(style.shadowColor), style.shadowOffsetPx.x, style.shadowOffsetPx.y);
+    }
+    if (outlineKey > 0 && style.outlineColor.a > 0) {
+      emitGlyphQuads(outlineKey, packPremultipliedAbgr(style.outlineColor), 0.0f, 0.0f);
+    }
+    emitGlyphQuads(0, fillAbgr, 0.0f, 0.0f);
+    return impl_->atlasTex;
+  }
 #endif
 
   return impl_->buildFallbackQuads(text, fontSizePx, bounds, fillAbgr, outVertices, outIndices);

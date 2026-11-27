@@ -13,10 +13,18 @@
 # See the LICENSE file for the full license text.
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+set(IOTA_STUDIO_PLATFORM_SOURCES
+  src/platform_desktop.hpp
+)
+if(EMSCRIPTEN)
+  list(APPEND IOTA_STUDIO_PLATFORM_SOURCES src/platform_web.cpp)
+else()
+  list(APPEND IOTA_STUDIO_PLATFORM_SOURCES src/platform_desktop.cpp)
+endif()
+
 add_executable(iota_studio
   src/main.cpp
-  src/platform_desktop.hpp
-  src/platform_desktop.cpp
+  ${IOTA_STUDIO_PLATFORM_SOURCES}
   src/editor_app.hpp
   src/editor_app.cpp
   src/hierarchy_panel.hpp
@@ -58,9 +66,7 @@ target_link_libraries(iota_studio
     iota_dsp
     iota_audio
     iota_rhi
-    iota_rhi_gl45
     iota_engine
-    iota_export
     iota_discord
     glfw
     imgui_docking
@@ -68,9 +74,20 @@ target_link_libraries(iota_studio
     stb_hdr
 )
 
+if(EMSCRIPTEN)
+  target_link_libraries(iota_studio PRIVATE iota_rhi_webgl2)
+else()
+  target_link_libraries(iota_studio PRIVATE iota_rhi_gl45)
+endif()
+
+if(IOTA_ENABLE_VIDEO_EXPORT)
+  target_compile_definitions(iota_studio PRIVATE IOTA_ENABLE_VIDEO_EXPORT=1)
+  target_link_libraries(iota_studio PRIVATE iota_export)
+endif()
+
 if(WIN32)
   target_link_libraries(iota_studio PRIVATE comdlg32 shell32)
-elseif(UNIX AND NOT APPLE)
+elseif(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
   find_package(Fontconfig QUIET)
   if(Fontconfig_FOUND)
     target_compile_definitions(iota_studio PRIVATE IOTA_HAS_FONTCONFIG=1)
@@ -108,11 +125,30 @@ endif()
 
 iota_configure_target(iota_studio)
 
-install(TARGETS iota_studio RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-if(IOTA_DISCORD_SDK_FOUND)
+if(EMSCRIPTEN)
+  set_target_properties(iota_studio PROPERTIES SUFFIX ".js")
+  target_compile_options(iota_studio PRIVATE -Wno-dollar-in-identifier-extension)
+  target_link_options(iota_studio PRIVATE
+    "-sMAX_WEBGL_VERSION=2"
+    "-sMIN_WEBGL_VERSION=2"
+    "-sALLOW_MEMORY_GROWTH=1"
+    "-sINITIAL_MEMORY=134217728"
+    "-sSTACK_SIZE=2097152"
+    "-sNO_EXIT_RUNTIME=1"
+    "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free']"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS','IDBFS','UTF8ToString','stringToUTF8','lengthBytesUTF8','HEAPF32','HEAPU8']"
+    "-lidbfs.js"
+    "--preload-file" "${CMAKE_SOURCE_DIR}/assets/fonts@/assets/fonts"
+  )
+endif()
+
+if(NOT EMSCRIPTEN)
+  install(TARGETS iota_studio RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
+if(IOTA_DISCORD_SDK_FOUND AND NOT EMSCRIPTEN)
   install(FILES "$<TARGET_FILE:discord_social_sdk>" DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
   install(FILES "${CMAKE_SOURCE_DIR}/assets/icon.png"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/pixmaps"
     RENAME "iota-studio.png"

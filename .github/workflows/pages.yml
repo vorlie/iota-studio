@@ -4,6 +4,11 @@ on:
   push:
     branches: ["main"]
     paths:
+      - "libs/**"
+      - "apps/studio/**"
+      - "assets/fonts/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
       - "web/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -23,22 +28,52 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "7.0.1"
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache Wasm FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/wasm-release/_deps
+          key: wasm-deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure & Build Studio (WebAssembly)
+        run: |
+          cmake --preset wasm-emscripten-release
+          cmake --build --preset wasm-emscripten-release --target iota_studio
+          mkdir -p web/public/studio
+          cp build/wasm-release/apps/studio/iota_studio.js web/public/studio/
+          cp build/wasm-release/apps/studio/iota_studio.wasm web/public/studio/
+          cp build/wasm-release/apps/studio/iota_studio.data web/public/studio/
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 12.23.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
+
       - name: Install web dependencies
         run: pnpm --dir web install --frozen-lockfile
+
       - name: Typecheck & Build Astro site
         run: pnpm --dir web run check && pnpm --dir web run build
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:

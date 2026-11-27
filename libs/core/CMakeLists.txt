@@ -25,7 +25,7 @@ target_compile_definitions(iota_core PUBLIC IOTA_STUDIO_VERSION="${PROJECT_VERSI
 target_link_libraries(iota_core PRIVATE miniz nlohmann_json::nlohmann_json)
 if(WIN32)
   target_link_libraries(iota_core PRIVATE winhttp)
-elseif(UNIX AND NOT APPLE)
+elseif(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
   target_link_libraries(iota_core PRIVATE Threads::Threads)
   find_package(CURL QUIET)
   if(CURL_FOUND)

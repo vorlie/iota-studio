@@ -929,4 +929,43 @@ bool WaylandFramePacer::waitForFrameOrTimeout(int maxWaitMs) {
 #endif
 }
 
+void requestOpenFile(GLFWwindow* owner,
+                     const char* title,
+                     std::span<const FileDialogFilter> filters,
+                     std::function<void(std::filesystem::path)> onPicked) {
+  if (auto chosen = showOpenFileDialog(owner, title, filters)) {
+    if (onPicked) onPicked(std::move(*chosen));
+  }
+}
+
+void requestOpenFiles(GLFWwindow* owner,
+                      const char* title,
+                      std::span<const FileDialogFilter> filters,
+                      std::function<void(std::vector<std::filesystem::path>)> onPicked) {
+  auto chosen = showOpenFilesDialog(owner, title, filters);
+  if (!chosen.empty() && onPicked) {
+    onPicked(std::move(chosen));
+  }
+}
+
+void requestOpenAudioFile(GLFWwindow* owner,
+                          const char* title,
+                          std::span<const FileDialogFilter> filters,
+                          std::function<void(std::filesystem::path)> onPathPicked,
+                          std::function<void(DecodedAudioPayload)> /*onDecodedPcm*/,
+                          std::function<void(std::string)> /*onError*/) {
+  if (auto chosen = showOpenFileDialog(owner, title, filters)) {
+    if (onPathPicked) onPathPicked(std::move(*chosen));
+  }
+}
+
+void triggerWebFileDownload(const std::filesystem::path& /*path*/, const std::string& /*downloadName*/) {}
+void syncPersistentStorage() {}
+void pollPlatformEvents() {}
+void setWebDropHandlers(std::function<void(std::filesystem::path)> /*onFileDropped*/,
+                        std::function<void(DecodedAudioPayload)> /*onAudioDropped*/,
+                        std::function<void(std::string)> /*onDropError*/) {}
+void queryWebCanvasSize(int& /*outWidth*/, int& /*outHeight*/) {}
+void resumeWebAudioContext() {}
+
 }  // namespace iota::studio::platform

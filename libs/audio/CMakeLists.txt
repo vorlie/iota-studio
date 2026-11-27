@@ -30,7 +30,7 @@ target_link_libraries(iota_audio
     miniaudio_hdr
 )
 
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
   target_link_libraries(iota_audio PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
 endif()
 

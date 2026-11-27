@@ -687,6 +687,14 @@ void UpdateChecker::startCheckAsync(std::string currentVersion,
     state_ = nextState;
   }
 
+#ifdef __EMSCRIPTEN__
+  {
+    std::lock_guard<std::mutex> dataLock(nextState->dataMutex);
+    nextState->snapshot.status = UpdateCheckStatus::Error;
+    nextState->snapshot.errorMessage = "Automatic update checks are unavailable in the web build.";
+  }
+  nextState->inFlight.store(false, std::memory_order_release);
+#else
   std::thread([nextState,
                curVer = std::move(currentVersion),
                repoOwner = std::move(owner),
@@ -755,6 +763,7 @@ void UpdateChecker::startCheckAsync(std::string currentVersion,
     finishError("Automatic update checks are unavailable (built without HTTP client support).");
 #endif
   }).detach();
+#endif
 }
 
 }  // namespace iota::core

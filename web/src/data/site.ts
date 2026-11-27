@@ -21,6 +21,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: 'Home', href: '/' },
   { label: 'Features', href: '/features/' },
+  { label: 'Web Studio', href: '/studio/' },
   { label: 'Download', href: '/download/' },
   { label: 'Docs', href: '/docs/', matchPrefix: '/docs/' },
   { label: 'Palette Manager', href: '/palette/' },

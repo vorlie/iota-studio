@@ -20,3 +20,7 @@ packaging/arch/iota-studio-git*
 web/node_modules/
 web/dist/
 web/.astro/
+web/public/studio/iota_studio.js
+web/public/studio/iota_studio.wasm
+web/public/studio/iota_studio.data
+web/public/studio/iota_studio.wasm.map

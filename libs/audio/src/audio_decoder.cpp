@@ -21,7 +21,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#else
+#elif !defined(__EMSCRIPTEN__)
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -40,6 +40,7 @@ namespace iota::audio {
 
 namespace {
 
+#if !defined(__EMSCRIPTEN__)
 #ifdef _WIN32
 std::wstring quoteWindowsArg(const std::wstring& arg) {
   if (arg.find_first_of(L" \t\n\v\"") == std::wstring::npos && !arg.empty()) {
@@ -327,6 +328,7 @@ std::optional<AudioTrackData> decodeWithFfmpeg(const std::filesystem::path& path
   rebuildMonoAndDuration(track);
   return track;
 }
+#endif  // !__EMSCRIPTEN__
 
 std::optional<AudioTrackData> decodeWithMiniaudio(const std::filesystem::path& path,
                                                   int targetSampleRate,
@@ -413,9 +415,13 @@ std::optional<AudioTrackData> decodeAudioFile(const std::filesystem::path& path,
   }
 
   std::string ffmpegErr;
+#if !defined(__EMSCRIPTEN__)
   if (auto track = decodeWithFfmpeg(path, targetSampleRate, &ffmpegErr)) {
     return track;
   }
+#else
+  ffmpegErr = "FFmpeg unavailable in browser build";
+#endif
 
   std::string maErr;
   if (auto track = decodeWithMiniaudio(path, targetSampleRate, &maErr)) {

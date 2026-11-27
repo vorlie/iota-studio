@@ -27,11 +27,13 @@
 #include "iota/core/update_checker.hpp"
 #include "iota/discord/discord_presence.hpp"
 #include "iota/engine/scene_renderer.hpp"
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
 #include "iota/export/video_exporter.hpp"
+#endif
 #include "iota/model/command_stack.hpp"
 #include "iota/model/scene.hpp"
 #include "iota/preset_io/project_manager.hpp"
-#include "iota/rhi/gl45_device.hpp"
+#include "iota/rhi/rhi.hpp"
 
 #ifdef IOTA_ENABLE_MCP
 #include "iota/mcp/live_bridge.hpp"
@@ -59,8 +61,12 @@ class EditorApp {
 
   bool initialize(bool headlessSmokeTest);
   int run();
+  void tickFrame();
   int runSmokeTest();
   void shutdown();
+#ifdef __EMSCRIPTEN__
+  static void emscriptenMainLoop(void* arg);
+#endif
 
  private:
   void applyStudioTheme();
@@ -76,7 +82,9 @@ class EditorApp {
   void drawAudioTimelinePanel();
   void drawSoundKeysPanel();
   void drawProjectManagerModal();
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   void drawExportModal();
+#endif
   void drawUpdateModal();
   void drawVizImportNoticeModal();
   void drawDocsPanel();
@@ -111,6 +119,11 @@ class EditorApp {
   void actionSavePreset(bool asViz);
   void actionOpenAudio();
   void actionLoadBuiltinTestTone(float freqHz);
+  bool loadDecodedAudioTrack(platform::DecodedAudioPayload payload);
+#ifdef __EMSCRIPTEN__
+  void handleDroppedOrPickedFile(const std::filesystem::path& path);
+#endif
+  [[nodiscard]] int currentTargetFps() const noexcept;
   void updateDiscordPresence(double nowWallSec, bool isMinimized);
   void persistDiscordSettings();
   [[nodiscard]] std::string activeCompositionDisplayName() const;
@@ -129,10 +142,12 @@ class EditorApp {
   bool isWaylandPlatform_ = false;
   platform::WaylandFramePacer waylandPacer_;
 
-  iota::rhi::Gl45RenderDevice device_;
+  std::unique_ptr<iota::rhi::IRenderDevice> device_;
   iota::engine::SceneRenderer renderer_;
   iota::audio::AudioEngine audio_;
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   iota::export_video::VideoExportSession exportSession_;
+#endif
 
   iota::model::Project project_;
   iota::model::CommandStack undoStack_;
@@ -188,12 +203,16 @@ class EditorApp {
   iota::preset_io::ProjectLibrary projectLibrary_;
   bool openProjectManagerModal_ = false;
 
+#ifdef IOTA_ENABLE_VIDEO_EXPORT
   iota::export_video::ExportSettings exportCfg_;
   iota::export_video::HardwareEncoderProbe encoderProbe_;
   double exportStartWallSec_ = 0.0;
   std::string exportModalError_;
   std::string exportModalSuccess_;
   bool openExportModal_ = false;
+#else
+  int targetFpsSetting_ = 60;
+#endif
 #ifdef IOTA_ENABLE_MCP
   iota::mcp::LiveBridgeHost mcpBridgeHost_;
   std::filesystem::path mcpOriginalProjectPath_;

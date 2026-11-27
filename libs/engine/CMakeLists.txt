@@ -40,7 +40,7 @@ target_link_libraries(iota_engine
 
 if(WIN32)
   target_link_libraries(iota_engine PRIVATE dwrite)
-elseif(UNIX AND NOT APPLE)
+elseif(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
   find_package(Freetype QUIET)
   find_package(Fontconfig QUIET)
   find_package(PkgConfig QUIET)

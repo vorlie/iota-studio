@@ -1,0 +1,314 @@
+---
+import '../styles/global.css';
+import { SITE } from '../data/site';
+import { withBase } from '../lib/url';
+
+const studioBaseUrl = withBase('/studio/');
+const homeUrl = withBase('/');
+const downloadUrl = withBase('/download/');
+const iconUrl = withBase('/icon.png');
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Web Studio — {SITE.name}</title>
+    <meta
+      name="description"
+      content="Run the full Iota Studio C++20 / OpenGL audio-reactive visualizer editor directly in your browser via WebAssembly and WebGL2."
+    />
+    <link rel="icon" type="image/png" href={iconUrl} />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0d0f14;
+      }
+      #canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body class="bg-[#0d0f14] text-slate-100 antialiased">
+    <canvas id="canvas" tabindex="0"></canvas>
+
+    <!-- Startup / WebGL2 Loader Overlay -->
+    <div
+      id="studio-loader"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-[#0b0e14]/95 px-6 backdrop-blur-sm transition-opacity duration-300"
+    >
+      <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-[#101520] p-7 text-center shadow-2xl">
+        <img
+          src={iconUrl}
+          alt="Iota Studio icon"
+          width="56"
+          height="56"
+          class="mx-auto h-14 w-14 rounded-2xl ring-1 ring-white/15"
+        />
+        <h1 class="mt-4 text-xl font-bold text-white">Iota Studio · Web Edition</h1>
+        <p id="loader-subtitle" class="mt-1.5 text-xs text-slate-400">
+          Initializing WebAssembly + WebGL2 runtime…
+        </p>
+
+        <div class="mt-5 h-2 w-full overflow-hidden rounded-full bg-slate-800">
+          <div
+            id="loader-bar"
+            class="h-full w-1/5 rounded-full bg-cyan-400 transition-all duration-150"
+          ></div>
+        </div>
+        <div id="loader-status" class="mt-2 font-mono text-[11px] text-cyan-300">
+          Downloading engine…
+        </div>
+
+        <div id="loader-error" class="mt-4 hidden rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-left text-xs text-rose-200"></div>
+
+        <div class="mt-6 flex items-center justify-center gap-3 text-xs text-slate-400">
+          <a href={homeUrl} class="hover:text-white">← Back to site</a>
+          <span>·</span>
+          <a href={downloadUrl} class="text-cyan-300 hover:underline">Desktop app (MP4 export)</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Canvas Drag & Drop Overlay -->
+    <div
+      id="drop-overlay"
+      class="pointer-events-none fixed inset-4 z-40 hidden items-center justify-center rounded-2xl border-2 border-dashed border-cyan-400/75 bg-cyan-950/60 backdrop-blur-sm"
+    >
+      <div class="rounded-xl border border-cyan-400/30 bg-[#0b0e14]/90 px-6 py-4 text-center shadow-xl">
+        <div class="text-sm font-semibold text-white">Drop file into Iota Studio</div>
+        <div class="mt-1 text-xs text-cyan-200">
+          Projects (.iota / .viz / .json), Audio (MP3/WAV/FLAC/OGG/M4A/Opus), Images, Fonts, or GLSL Shaders
+        </div>
+      </div>
+    </div>
+
+    <script is:inline define:vars={{ studioBaseUrl }}>
+      (function () {
+        var canvas = document.getElementById('canvas');
+        var loader = document.getElementById('studio-loader');
+        var bar = document.getElementById('loader-bar');
+        var statusEl = document.getElementById('loader-status');
+        var subtitleEl = document.getElementById('loader-subtitle');
+        var errBox = document.getElementById('loader-error');
+        var dropOverlay = document.getElementById('drop-overlay');
+
+        canvas.addEventListener('contextmenu', function (e) {
+          e.preventDefault();
+        });
+
+        function showError(msg) {
+          if (errBox) {
+            errBox.textContent = msg;
+            errBox.classList.remove('hidden');
+          }
+          if (subtitleEl) subtitleEl.textContent = 'Unable to start Web Studio';
+          if (statusEl) statusEl.textContent = 'Error';
+          if (bar) bar.style.width = '100%';
+        }
+
+        // Verify WebGL2 availability up front
+        var glCheck = canvas.getContext('webgl2', { alpha: false, antialias: false });
+        if (!glCheck) {
+          showError(
+            'WebGL2 is disabled or unavailable in this browser/GPU context. Please enable hardware acceleration or use the desktop Iota Studio release.'
+          );
+          return;
+        }
+
+        // Track AudioContext instances created by miniaudio so autoplay unlock can resume them on gesture
+        window.__iotaAudioContexts = window.__iotaAudioContexts || [];
+        var OrigAudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (OrigAudioCtx && !window.__iotaAudioPatched) {
+          window.__iotaAudioPatched = true;
+          var PatchedAudioCtx = function () {
+            var ctx =
+              arguments.length > 0 ? new OrigAudioCtx(arguments[0]) : new OrigAudioCtx();
+            window.__iotaAudioContexts.push(ctx);
+            return ctx;
+          };
+          PatchedAudioCtx.prototype = OrigAudioCtx.prototype;
+          if (window.AudioContext) window.AudioContext = PatchedAudioCtx;
+          if (window.webkitAudioContext) window.webkitAudioContext = PatchedAudioCtx;
+        }
+
+        function resumeAudioOnGesture() {
+          var list = window.__iotaAudioContexts || [];
+          for (var i = 0; i < list.length; ++i) {
+            if (list[i] && list[i].state === 'suspended') {
+              try {
+                list[i].resume();
+              } catch (e) {}
+            }
+          }
+        }
+        window.addEventListener('pointerdown', resumeAudioOnGesture, { passive: true });
+        window.addEventListener('keydown', resumeAudioOnGesture, { passive: true });
+
+        var idbfsMounted = false;
+        window.Module = {
+          canvas: canvas,
+          locateFile: function (path) {
+            return studioBaseUrl + path;
+          },
+          preRun: [
+            function () {
+              try {
+                FS.mkdirTree('/persist');
+                FS.mount(IDBFS, {}, '/persist');
+                idbfsMounted = true;
+                addRunDependency('idbfs');
+                FS.syncfs(true, function (err) {
+                  if (err) console.warn('[IotaStudio] IDBFS load warning:', err);
+                  removeRunDependency('idbfs');
+                });
+              } catch (e) {
+                console.warn('[IotaStudio] Persistent storage unavailable:', e);
+              }
+            },
+          ],
+          setStatus: function (text) {
+            if (!text) {
+              if (bar) bar.style.width = '100%';
+              if (statusEl) statusEl.textContent = 'Ready';
+              return;
+            }
+            if (statusEl) statusEl.textContent = text;
+            var m = text.match(/([^(]+)\((\d+(?:\.\d+)?)\/(\d+)\)/);
+            if (m && bar) {
+              var pct = Math.min(100, Math.round((parseFloat(m[2]) / parseFloat(m[3])) * 100));
+              bar.style.width = pct + '%';
+            }
+          },
+          onRuntimeInitialized: function () {
+            if (loader) {
+              loader.classList.add('opacity-0', 'pointer-events-none');
+              setTimeout(function () {
+                if (loader && loader.parentNode) loader.parentNode.removeChild(loader);
+              }, 350);
+            }
+            canvas.focus();
+          },
+          onAbort: function (what) {
+            showError('WebAssembly runtime aborted: ' + String(what || 'unknown error'));
+          },
+          printErr: function (text) {
+            console.error('[IotaStudio]', text);
+          },
+        };
+
+        // Drag-and-drop file routing into Iota Studio
+        var dragDepth = 0;
+        var audioExts = { mp3: 1, wav: 1, flac: 1, ogg: 1, m4a: 1, aac: 1, opus: 1, webm: 1 };
+
+        window.addEventListener('dragenter', function (e) {
+          e.preventDefault();
+          ++dragDepth;
+          if (dropOverlay) dropOverlay.classList.remove('hidden'), dropOverlay.classList.add('flex');
+        });
+        window.addEventListener('dragover', function (e) {
+          e.preventDefault();
+        });
+        window.addEventListener('dragleave', function (e) {
+          e.preventDefault();
+          dragDepth = Math.max(0, dragDepth - 1);
+          if (dragDepth === 0 && dropOverlay) {
+            dropOverlay.classList.add('hidden');
+            dropOverlay.classList.remove('flex');
+          }
+        });
+        window.addEventListener('drop', async function (e) {
+          e.preventDefault();
+          dragDepth = 0;
+          if (dropOverlay) {
+            dropOverlay.classList.add('hidden');
+            dropOverlay.classList.remove('flex');
+          }
+          if (!window.Module || typeof Module.ccall !== 'function') return;
+          var files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+          for (var idx = 0; idx < files.length; ++idx) {
+            var file = files[idx];
+            var dot = file.name.lastIndexOf('.');
+            var ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : '';
+            try {
+              var buf = await file.arrayBuffer();
+              if (audioExts[ext] && OrigAudioCtx) {
+                var decodeCtx = null;
+                try {
+                  decodeCtx = new OrigAudioCtx();
+                  var audioBuf = await decodeCtx.decodeAudioData(buf.slice(0));
+                  var frames = audioBuf.length | 0;
+                  var sr = Math.max(8000, Math.round(audioBuf.sampleRate || 44100));
+                  var ch0 = audioBuf.getChannelData(0);
+                  var ch1 = audioBuf.numberOfChannels > 1 ? audioBuf.getChannelData(1) : ch0;
+                  var ptr = _malloc(frames * 2 * 4);
+                  if (ptr) {
+                    var baseIdx = ptr >> 2;
+                    for (var i = 0; i < frames; ++i) {
+                      HEAPF32[baseIdx + i * 2] = ch0[i];
+                      HEAPF32[baseIdx + i * 2 + 1] = ch1[i];
+                    }
+                    Module.ccall(
+                      'iota_web_on_dropped_audio_decoded',
+                      null,
+                      ['string', 'number', 'number', 'number'],
+                      [file.name, sr, ptr, frames]
+                    );
+                    _free(ptr);
+                    continue;
+                  }
+                } catch (decErr) {
+                  // Fall through to VFS drop handler
+                } finally {
+                  if (decodeCtx && typeof decodeCtx.close === 'function') {
+                    try { await decodeCtx.close(); } catch (errClose) {}
+                  }
+                }
+              }
+
+              FS.mkdirTree('/uploads');
+              var safe = file.name.replace(/[\\\/]/g, '_').replace(/\.\.+/g, '_') || 'dropped';
+              var vpath = '/uploads/' + safe;
+              FS.writeFile(vpath, new Uint8Array(buf));
+              Module.ccall('iota_web_on_file_dropped', null, ['string'], [vpath]);
+            } catch (err) {
+              Module.ccall(
+                'iota_web_on_drop_error',
+                null,
+                ['string'],
+                [String(err && err.message ? err.message : err)]
+              );
+            }
+          }
+        });
+
+        window.addEventListener('beforeunload', function () {
+          if (idbfsMounted && typeof FS !== 'undefined') {
+            try {
+              FS.syncfs(false, function () {});
+            } catch (e) {}
+          }
+        });
+
+        var script = document.createElement('script');
+        script.src = studioBaseUrl + 'iota_studio.js';
+        script.async = true;
+        script.onerror = function () {
+          showError(
+            'Could not load iota_studio.js. If testing locally, build the WebAssembly target first or visit the Download page.'
+          );
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>

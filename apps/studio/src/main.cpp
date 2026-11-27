@@ -17,6 +17,7 @@
 
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <string_view>
 
 int main(int argc, char** argv) {
@@ -27,6 +28,15 @@ int main(int argc, char** argv) {
     }
   }
 
+#ifdef __EMSCRIPTEN__
+  // Heap-allocate under Emscripten so emscripten_set_main_loop_arg unwinding never destroys app state.
+  auto* app = new iota::studio::EditorApp();
+  if (!app->initialize(false)) {
+    delete app;
+    return 1;
+  }
+  return app->run();
+#else
   iota::studio::EditorApp app;
   try {
     if (!app.initialize(smokeTest)) {
@@ -45,4 +55,5 @@ int main(int argc, char** argv) {
     app.shutdown();
     return 1;
   }
+#endif
 }

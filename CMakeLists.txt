@@ -28,13 +28,23 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(IOTA_BUILD_TESTS "Build automated doctest suite" ON)
 option(IOTA_BUILD_MCP "Build optional MCP server and Studio live bridge" OFF)
 option(IOTA_ENABLE_DISCORD_RPC "Enable optional Discord Rich Presence via Discord Social SDK" ON)
+option(IOTA_ENABLE_VIDEO_EXPORT "Build offline FFmpeg video export support" ON)
 set(IOTA_DISCORD_SDK_DIR "" CACHE PATH "Path to extracted Discord Social SDK directory")
+
+if(EMSCRIPTEN)
+  set(IOTA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(IOTA_BUILD_MCP OFF CACHE BOOL "" FORCE)
+  set(IOTA_ENABLE_DISCORD_RPC OFF CACHE BOOL "" FORCE)
+  set(IOTA_ENABLE_VIDEO_EXPORT OFF CACHE BOOL "" FORCE)
+endif()
 
 include(FetchContent)
 include(GNUInstallDirs)
 
-find_package(OpenGL REQUIRED)
-find_package(Threads REQUIRED)
+if(NOT EMSCRIPTEN)
+  find_package(OpenGL REQUIRED)
+  find_package(Threads REQUIRED)
+endif()
 
 # --- Third-party build flags (suppress unneeded examples/tests/tools) ---
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
@@ -132,18 +142,36 @@ FetchContent_Declare(
   GIT_TAG 50cf9231acc1a1e32ee9f00ca274bbe5990e2c4f
 )
 
-FetchContent_MakeAvailable(
-  nlohmann_json
-  glfw
-  imgui
-  glm
-  miniaudio
-  kissfft
-  miniz
-  stb
-  doctest
-  imgui_color_text_edit
-)
+if(EMSCRIPTEN)
+  FetchContent_MakeAvailable(
+    nlohmann_json
+    imgui
+    glm
+    miniaudio
+    kissfft
+    miniz
+    stb
+    imgui_color_text_edit
+  )
+
+  # Emscripten contrib.glfw3 port provides GLFW 3.4 APIs + HiDPI canvas support.
+  add_library(glfw INTERFACE)
+  target_compile_options(glfw INTERFACE "--use-port=contrib.glfw3")
+  target_link_options(glfw INTERFACE "--use-port=contrib.glfw3")
+else()
+  FetchContent_MakeAvailable(
+    nlohmann_json
+    glfw
+    imgui
+    glm
+    miniaudio
+    kissfft
+    miniz
+    stb
+    doctest
+    imgui_color_text_edit
+  )
+endif()
 
 # --- Wrapper targets for header-only / source-only third-party libs ---
 add_library(imgui_docking STATIC
@@ -159,7 +187,13 @@ target_include_directories(imgui_docking PUBLIC
   "${imgui_SOURCE_DIR}/backends"
 )
 target_compile_definitions(imgui_docking PUBLIC IMGUI_USE_WCHAR32)
-target_link_libraries(imgui_docking PUBLIC glfw OpenGL::GL)
+if(EMSCRIPTEN)
+  target_compile_definitions(imgui_docking PUBLIC IMGUI_IMPL_OPENGL_ES3)
+  target_link_libraries(imgui_docking PUBLIC glfw)
+  target_link_options(imgui_docking INTERFACE "-sMAX_WEBGL_VERSION=2" "-sMIN_WEBGL_VERSION=2")
+else()
+  target_link_libraries(imgui_docking PUBLIC glfw OpenGL::GL)
+endif()
 
 add_library(imgui_color_text_edit_lib STATIC
   "${imgui_color_text_edit_SOURCE_DIR}/ImGuiColorTextEdit.cpp"
@@ -328,9 +362,15 @@ add_subdirectory(libs/preset_io)
 add_subdirectory(libs/dsp)
 add_subdirectory(libs/audio)
 add_subdirectory(libs/rhi)
-add_subdirectory(libs/rhi_gl45)
+if(EMSCRIPTEN)
+  add_subdirectory(libs/rhi_webgl2)
+else()
+  add_subdirectory(libs/rhi_gl45)
+endif()
 add_subdirectory(libs/engine)
-add_subdirectory(libs/export)
+if(IOTA_ENABLE_VIDEO_EXPORT)
+  add_subdirectory(libs/export)
+endif()
 add_subdirectory(libs/discord)
 if(IOTA_BUILD_MCP)
   add_subdirectory(libs/mcp)

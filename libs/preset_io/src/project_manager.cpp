@@ -193,7 +193,9 @@ iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
 }
 
 std::filesystem::path ProjectLibrary::defaultRegistryPath() {
-#ifdef _WIN32
+#ifdef __EMSCRIPTEN__
+  return std::filesystem::path("/persist/projects.json");
+#elif defined(_WIN32)
   if (const wchar_t* localAppData = _wgetenv(L"LOCALAPPDATA"); localAppData != nullptr && *localAppData != L'\0') {
     return std::filesystem::path(localAppData) / "IotaStudio" / "projects.json";
   }
