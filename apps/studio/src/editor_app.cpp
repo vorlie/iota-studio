@@ -2050,6 +2050,140 @@ void EditorApp::drawInspectorPanel() {
         el.props.setBool("motionBlur", true, "5_motionAndCrop", "b");
         el.props.setFloat("moBlurLength", 0.80f, 0.0f, 4.0f, "5_motionAndCrop");
       });
+    } else if (el.type == iota::model::ElementType::TwitchEffect) {
+      ImGui::TextDisabled("Video Copilot Twitch-style Multi-Operator Audio Glitch (Target: composition:0)");
+      const auto defTwitch = iota::model::createDefaultElement(iota::model::ElementType::TwitchEffect);
+      auto resetTwitchToNeutral = [&]() {
+        auto& items = el.props.items();
+        auto isTwitchGroup = [](const std::string& g) {
+          return g.rfind("2_", 0) == 0 || g.rfind("3_", 0) == 0 ||
+                 g.rfind("4_", 0) == 0 || g.rfind("5_", 0) == 0 ||
+                 g.rfind("6_", 0) == 0;
+        };
+        items.erase(std::remove_if(items.begin(), items.end(),
+                                   [&](const auto& it) { return isTwitchGroup(it.entry.groupTag); }),
+                    items.end());
+        for (const auto& defItem : defTwitch.props.items()) {
+          if (isTwitchGroup(defItem.entry.groupTag) || !el.props.contains(defItem.key)) {
+            if (!el.props.contains(defItem.key)) {
+              items.push_back(defItem);
+            }
+          }
+        }
+      };
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Presets:");
+      const float maxWrapX = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+      auto applyTwitchPreset = [&](const char* label, const auto& fn) {
+        const float btnW = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + btnW <= maxWrapX) {
+          ImGui::SameLine();
+        }
+        if (ImGui::SmallButton(label)) {
+          resetTwitchToNeutral();
+          fn();
+          actions.modified = true;
+          actions.undoSnapshotNeeded = true;
+          actions.editLabel = std::string("Apply Twitch Preset: ") + label;
+        }
+      };
+      applyTwitchPreset("SoundKeys Bass Glitch", [&]() {
+        el.props.setFloat("amount", 0.08f, 0.0f, 5.0f, "2_twitchMaster");
+        el.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"SoundKeys1", 1.55f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+        el.props.setFloat("speed", 14.0f, 0.1f, 60.0f, "2_twitchMaster");
+        el.props.setString("twitchMode", "Random", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+        el.props.setFloat("threshold", 0.40f, 0.0f, 0.95f, "2_twitchMaster");
+        el.props.setBool("enableSlide", true, "3_twitchEnable", "b");
+        el.props.setBool("enableScale", true, "3_twitchEnable", "b");
+        el.props.setBool("enableLight", true, "3_twitchEnable", "b");
+        el.props.setBool("enableColor", false, "3_twitchEnable", "b");
+        el.props.setBool("enableBlur", true, "3_twitchEnable", "b");
+        el.props.setBool("enableSlice", false, "3_twitchEnable", "b");
+        el.props.setFloat("slideAmount", 0.25f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setFloat("slideRgbSplit", 0.45f, 0.0f, 2.0f, "4_twitchSlideScale");
+        el.props.setFloat("scaleAmount", 0.22f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setFloat("lightAmount", 0.65f, 0.0f, 3.0f, "5_twitchLightColor");
+      });
+      applyTwitchPreset("Strobe Impact", [&]() {
+        el.props.setFloat("amount", 0.0f, 0.0f, 5.0f, "2_twitchMaster");
+        el.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"Beat", 1.85f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+        el.props.setFloat("speed", 18.0f, 0.1f, 60.0f, "2_twitchMaster");
+        el.props.setString("twitchMode", "Pulse", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+        el.props.setFloat("threshold", 0.25f, 0.0f, 0.95f, "2_twitchMaster");
+        el.props.setBool("enableSlide", false, "3_twitchEnable", "b");
+        el.props.setBool("enableScale", true, "3_twitchEnable", "b");
+        el.props.setBool("enableLight", true, "3_twitchEnable", "b");
+        el.props.setBool("enableColor", false, "3_twitchEnable", "b");
+        el.props.setBool("enableBlur", true, "3_twitchEnable", "b");
+        el.props.setBool("enableSlice", false, "3_twitchEnable", "b");
+        el.props.setFloat("scaleAmount", 0.28f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setString("scaleDirection", "ZoomIn", "sel ZoomIn ZoomOut Both", "4_twitchSlideScale");
+        el.props.setFloat("scaleRotation", 2.0f, 0.0f, 45.0f, "4_twitchSlideScale");
+        el.props.setFloat("lightAmount", 1.20f, 0.0f, 3.0f, "5_twitchLightColor");
+        el.props.setString("lightBehavior", "Both", "sel Brighten Darken Both", "5_twitchLightColor");
+        el.props.setString("blurDirection", "RadialZoom", "sel Directional RadialZoom Isotropic", "6_twitchBlurSlice");
+        el.props.setFloat("blurAmount", 0.50f, 0.0f, 1.5f, "6_twitchBlurSlice");
+      });
+      applyTwitchPreset("Cyberpunk Slice", [&]() {
+        el.props.setFloat("amount", 0.25f, 0.0f, 5.0f, "2_twitchMaster");
+        el.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"SoundKeys1", 1.40f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+        el.props.setFloat("speed", 16.0f, 0.1f, 60.0f, "2_twitchMaster");
+        el.props.setString("twitchMode", "Stutter", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+        el.props.setFloat("threshold", 0.45f, 0.0f, 0.95f, "2_twitchMaster");
+        el.props.setBool("enableSlide", true, "3_twitchEnable", "b");
+        el.props.setBool("enableScale", false, "3_twitchEnable", "b");
+        el.props.setBool("enableLight", true, "3_twitchEnable", "b");
+        el.props.setBool("enableColor", true, "3_twitchEnable", "b");
+        el.props.setBool("enableBlur", false, "3_twitchEnable", "b");
+        el.props.setBool("enableSlice", true, "3_twitchEnable", "b");
+        el.props.setFloat("slideAmount", 0.18f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setString("slideDirection", "Horizontal", "sel Both Horizontal Vertical Diagonal", "4_twitchSlideScale");
+        el.props.setFloat("slideRgbSplit", 0.65f, 0.0f, 2.0f, "4_twitchSlideScale");
+        el.props.setFloat("colorAmount", 0.65f, 0.0f, 1.0f, "5_twitchLightColor");
+        el.props.setString("colorMode", "ChannelSwap", "sel HueShift Tint Invert ChannelSwap", "5_twitchLightColor");
+        el.props.setFloat("sliceAmount", 0.42f, 0.0f, 1.0f, "6_twitchBlurSlice");
+        el.props.setInt("sliceCount", 24, 2, 96, "6_twitchBlurSlice");
+        el.props.setFloat("sliceRgbSplit", 0.75f, 0.0f, 2.0f, "6_twitchBlurSlice");
+      });
+      applyTwitchPreset("VHS Slip", [&]() {
+        el.props.setFloat("amount", 0.35f, 0.0f, 5.0f, "2_twitchMaster");
+        el.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"SoundKeys1", 0.85f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+        el.props.setFloat("speed", 9.0f, 0.1f, 60.0f, "2_twitchMaster");
+        el.props.setString("twitchMode", "Random", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+        el.props.setFloat("threshold", 0.52f, 0.0f, 0.95f, "2_twitchMaster");
+        el.props.setBool("enableSlide", true, "3_twitchEnable", "b");
+        el.props.setBool("enableScale", false, "3_twitchEnable", "b");
+        el.props.setBool("enableLight", false, "3_twitchEnable", "b");
+        el.props.setBool("enableColor", true, "3_twitchEnable", "b");
+        el.props.setBool("enableBlur", true, "3_twitchEnable", "b");
+        el.props.setBool("enableSlice", true, "3_twitchEnable", "b");
+        el.props.setString("slideDirection", "Horizontal", "sel Both Horizontal Vertical Diagonal", "4_twitchSlideScale");
+        el.props.setFloat("slideAmount", 0.24f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setFloat("slideRgbSplit", 0.55f, 0.0f, 2.0f, "4_twitchSlideScale");
+        el.props.setString("colorMode", "HueShift", "sel HueShift Tint Invert ChannelSwap", "5_twitchLightColor");
+        el.props.setFloat("colorAmount", 0.35f, 0.0f, 1.0f, "5_twitchLightColor");
+        el.props.setFloat("blurAmount", 0.28f, 0.0f, 1.5f, "6_twitchBlurSlice");
+        el.props.setFloat("sliceAmount", 0.28f, 0.0f, 1.0f, "6_twitchBlurSlice");
+        el.props.setInt("sliceCount", 36, 2, 96, "6_twitchBlurSlice");
+      });
+      applyTwitchPreset("Subtle Kinetic", [&]() {
+        el.props.setFloat("amount", 0.20f, 0.0f, 5.0f, "2_twitchMaster");
+        el.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"SoundKeys1", 0.55f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+        el.props.setFloat("speed", 6.0f, 0.1f, 60.0f, "2_twitchMaster");
+        el.props.setString("twitchMode", "Smooth", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+        el.props.setFloat("threshold", 0.35f, 0.0f, 0.95f, "2_twitchMaster");
+        el.props.setBool("enableSlide", true, "3_twitchEnable", "b");
+        el.props.setBool("enableScale", true, "3_twitchEnable", "b");
+        el.props.setBool("enableLight", true, "3_twitchEnable", "b");
+        el.props.setBool("enableColor", false, "3_twitchEnable", "b");
+        el.props.setBool("enableBlur", false, "3_twitchEnable", "b");
+        el.props.setBool("enableSlice", false, "3_twitchEnable", "b");
+        el.props.setFloat("slideAmount", 0.10f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setFloat("slideRgbSplit", 0.15f, 0.0f, 2.0f, "4_twitchSlideScale");
+        el.props.setFloat("scaleAmount", 0.12f, 0.0f, 1.5f, "4_twitchSlideScale");
+        el.props.setFloat("scaleRotation", 1.5f, 0.0f, 45.0f, "4_twitchSlideScale");
+        el.props.setFloat("lightAmount", 0.25f, 0.0f, 3.0f, "5_twitchLightColor");
+      });
     }
 
     ImGui::Separator();

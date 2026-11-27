@@ -23,6 +23,7 @@
 #include "iota/engine/layout.hpp"
 #include "iota/engine/particle_system.hpp"
 #include "iota/engine/shake_eval.hpp"
+#include "iota/engine/twitch_eval.hpp"
 
 #ifdef _MSC_VER
 #pragma warning(push, 0)
@@ -716,6 +717,7 @@ struct SceneRenderer::Impl {
   iota::rhi::ShaderHandle shTemporalBlur{};
   iota::rhi::ShaderHandle shParticle{};
   iota::rhi::ShaderHandle shShake{};
+  iota::rhi::ShaderHandle shTwitch{};
   iota::rhi::ShaderHandle shBloomPrefilter{};
   iota::rhi::ShaderHandle shBloomDown{};
   iota::rhi::ShaderHandle shBloomUp{};
@@ -807,6 +809,8 @@ struct SceneRenderer::Impl {
     if (!shParticle) return false;
     shShake = device->createShader(shaders::kBufferVert, shaders::kShakeFrag, outError);
     if (!shShake) return false;
+    shTwitch = device->createShader(shaders::kBufferVert, shaders::kTwitchFrag, outError);
+    if (!shTwitch) return false;
     shBloomPrefilter = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomPrefilterFrag, outError);
     if (!shBloomPrefilter) return false;
     shBloomDown = device->createShader(shaders::kBlurFullscreenVert, shaders::kBloomDownFrag, outError);
@@ -818,7 +822,7 @@ struct SceneRenderer::Impl {
     shFxaa = device->createShader(shaders::kBlurFullscreenVert, shaders::kFxaaFrag, outError);
     if (!shFxaa) return false;
 
-    for (auto sh : {shBuffer, shFxLight, shRgbSplit, shMotionBlur, shParticle, shShake}) {
+    for (auto sh : {shBuffer, shFxLight, shRgbSplit, shMotionBlur, shParticle, shShake, shTwitch}) {
       device->setUniformFloat(sh, "u_hdrGain", 1.0f);
     }
     return true;
@@ -2653,6 +2657,177 @@ struct SceneRenderer::Impl {
     if (stats) stats->drawCalls += 1;
   }
 
+  void renderTwitchEffect(const iota::model::Project& project,
+                          int compIdx,
+                          int elemIdx,
+                          const iota::model::Element& el,
+                          iota::rhi::RenderTargetHandle currentTargetRt,
+                          const iota::dsp::MVarEvalContext& mctx,
+                          RenderFrameStats* stats) {
+    const auto& p = el.props;
+    const int rid = el.runtimeId();
+    const std::string targetUri = getStringCI(p, "TargetImage", "composition:0");
+    const auto compRef = parseCompositionRef(targetUri);
+    const bool useCanvasBelow = targetUri.empty() ||
+        (compRef && (*compRef <= 0 || *compRef >= static_cast<int>(compTargets.size()) || *compRef == compIdx));
+
+    const LayoutSpec layout = extractLayoutSpec(project, compIdx, elemIdx, el, mvarEval, mctx);
+    const iota::core::RectF rect = computeElementRect(layout, width, height);
+    const float angleRad = computeTotalRotationRadians(layout);
+    const glm::mat4 projView = makeRotatedOrthoProjView(
+        width, height, rect.centerX(), rect.centerY(), angleRad);
+    const auto mainCol = getColorArgbCI(p, "color", {255, 255, 255, 255});
+    const auto elemBlend = iota::core::blendModeFromString(getStringCI(p, "blendMode", "Opaque"));
+
+    const bool fullCoverage =
+        (std::abs(angleRad) < 1e-4f && rect.left <= 0.5f && rect.top <= 0.5f &&
+         rect.right >= static_cast<float>(width) - 0.5f &&
+         rect.bottom >= static_cast<float>(height) - 0.5f);
+
+    ResolvedTexture target{};
+    if (useCanvasBelow) {
+      if (elemBlend == iota::core::BlendMode::Opaque && fullCoverage && canvasSnapshotRt &&
+          compIdx >= 0 && compIdx < static_cast<int>(compTargets.size())) {
+        std::swap(compTargets[static_cast<size_t>(compIdx)], canvasSnapshotRt);
+        currentTargetRt = compTargets[static_cast<size_t>(compIdx)];
+        target.tex = device->renderTargetColorTexture(canvasSnapshotRt);
+      } else {
+        target.tex = captureCanvasSnapshot(currentTargetRt, stats);
+      }
+      target.texW = width;
+      target.texH = height;
+      target.isFbo = true;
+      device->bindRenderTarget(currentTargetRt, width, height);
+    } else {
+      target = resolveTextureUri(project, targetUri);
+    }
+
+    TwitchConfig cfg;
+    const float baseAmount = std::max(0.0f, getFloatCI(p, "amount", 0.15f));
+    const float reactiveAmount = std::max(0.0f, mvarEval.evaluateScalar(
+        iota::dsp::MVarEvaluator::makeKey(rid, "measureAmount"),
+        p.getMVar("measureAmount"),
+        mctx));
+    cfg.amount = baseAmount + reactiveAmount;
+
+    const float baseSpeed = std::max(0.1f, getFloatCI(p, "speed", 12.0f));
+    const float reactiveSpeed = std::max(0.0f, mvarEval.evaluateScalar(
+        iota::dsp::MVarEvaluator::makeKey(rid, "measureSpeed"),
+        p.getMVar("measureSpeed"),
+        mctx));
+    cfg.speed = baseSpeed + reactiveSpeed;
+
+    cfg.mode = twitchModeFromString(getStringCI(p, "twitchMode", "Random"));
+    cfg.threshold = std::clamp(getFloatCI(p, "threshold", 0.45f), 0.0f, 0.95f);
+    cfg.randomSeed = getFloatCI(p, "randomSeed", 0.0f);
+    cfg.timePhase = getFloatCI(p, "timePhase", 0.0f);
+
+    cfg.enableSlide = getBoolCI(p, "enableSlide", true);
+    cfg.enableScale = getBoolCI(p, "enableScale", true);
+    cfg.enableLight = getBoolCI(p, "enableLight", true);
+    cfg.enableColor = getBoolCI(p, "enableColor", false);
+    cfg.enableBlur = getBoolCI(p, "enableBlur", true);
+    cfg.enableSlice = getBoolCI(p, "enableSlice", false);
+
+    cfg.slideAmount = std::max(0.0f, getFloatCI(p, "slideAmount", 0.22f));
+    cfg.slideDirection = twitchSlideDirectionFromString(getStringCI(p, "slideDirection", "Both"));
+    cfg.slideRgbSplit = std::max(0.0f, getFloatCI(p, "slideRgbSplit", 0.35f));
+    cfg.slideRgbAngle = getFloatCI(p, "slideRgbAngle", 0.0f);
+    cfg.slideRgbAutoAngle = getBoolCI(p, "slideRgbAutoAngle", true);
+
+    cfg.scaleAmount = std::max(0.0f, getFloatCI(p, "scaleAmount", 0.18f));
+    cfg.scaleDirection = twitchScaleDirectionFromString(getStringCI(p, "scaleDirection", "ZoomIn"));
+    cfg.scaleRotation = getFloatCI(p, "scaleRotation", 3.0f);
+
+    cfg.lightAmount = std::max(0.0f, getFloatCI(p, "lightAmount", 0.55f));
+    cfg.lightBehavior = twitchLightBehaviorFromString(getStringCI(p, "lightBehavior", "Brighten"));
+
+    cfg.colorAmount = std::clamp(getFloatCI(p, "colorAmount", 0.55f), 0.0f, 1.0f);
+    cfg.colorMode = twitchColorModeFromString(getStringCI(p, "colorMode", "HueShift"));
+
+    cfg.blurAmount = std::max(0.0f, getFloatCI(p, "blurAmount", 0.35f));
+    cfg.blurDirection = twitchBlurDirectionFromString(getStringCI(p, "blurDirection", "Directional"));
+    cfg.blurAngle = getFloatCI(p, "blurAngle", 0.0f);
+
+    cfg.sliceAmount = std::clamp(getFloatCI(p, "sliceAmount", 0.25f), 0.0f, 1.0f);
+    cfg.sliceCount = std::clamp(getIntCI(p, "sliceCount", 18), 2, 96);
+    cfg.sliceRgbSplit = std::max(0.0f, getFloatCI(p, "sliceRgbSplit", 0.40f));
+
+    const bool moBlurOn = getBoolCI(p, "motionBlur", true);
+    const float moBlurLen = std::clamp(getFloatCI(p, "moBlurLength", 0.65f), 0.0f, 4.0f);
+    const double halfShutterSec = (moBlurOn && moBlurLen > 1e-4f)
+                                      ? (0.5 * static_cast<double>(moBlurLen) / 60.0)
+                                      : 0.0;
+
+    const TwitchFrameState tw = evaluateTwitch(cfg, mctx.totalTimeSec, halfShutterSec);
+    const bool hasMotionDelta =
+        (halfShutterSec > 1e-6) &&
+        (std::abs(tw.pose2.slideX - tw.pose0.slideX) > 1e-5f ||
+         std::abs(tw.pose2.slideY - tw.pose0.slideY) > 1e-5f ||
+         std::abs(tw.pose2.scale - tw.pose0.scale) > 1e-5f ||
+         std::abs(tw.pose2.tiltRad - tw.pose0.tiltRad) > 1e-5f);
+    const bool hasBlurActive = (tw.blurRadius > 1e-5f) || hasMotionDelta;
+    const int samples = hasBlurActive ? std::clamp(getIntCI(p, "blurSamples", 12), 4, 32) : 1;
+
+    const int wrapX = static_cast<int>(shakeWrapModeFromString(getStringCI(p, "wrapX", "Reflect")));
+    const int wrapY = static_cast<int>(shakeWrapModeFromString(getStringCI(p, "wrapY", "Reflect")));
+    const float aspect = static_cast<float>(std::max(1, width)) / static_cast<float>(std::max(1, height));
+    const float ySign = target.isFbo ? -1.0f : 1.0f;
+
+    const auto lightTint = getColorArgbCI(p, "lightTint", {255, 255, 255, 255});
+    const float lightVignette = std::clamp(getFloatCI(p, "lightVignette", 0.20f), 0.0f, 1.0f);
+    const auto colorTint = getColorArgbCI(p, "colorTint", {255, 70, 180, 255});
+    const float colorSat = std::clamp(getFloatCI(p, "colorSaturation", 1.35f), 0.0f, 2.5f);
+
+    scratchVerts.clear();
+    scratchIndices.clear();
+    appendQuadVertices(rect, mainCol.toPackedAbgrU32(), target.isFbo, scratchVerts, scratchIndices);
+
+    device->setBlendMode(elemBlend);
+    device->useShader(shTwitch);
+    device->setUniformMat4(shTwitch, "u_projView", projView);
+    device->bindTexture(0, target.tex);
+    device->setUniformInt(shTwitch, "u_texture", 0);
+    device->setUniformVec4(shTwitch, "u_pose0", tw.pose0.slideX, tw.pose0.slideY * ySign, tw.pose0.scale, tw.pose0.tiltRad);
+    device->setUniformVec4(shTwitch, "u_pose1", tw.pose1.slideX, tw.pose1.slideY * ySign, tw.pose1.scale, tw.pose1.tiltRad);
+    device->setUniformVec4(shTwitch, "u_pose2", tw.pose2.slideX, tw.pose2.slideY * ySign, tw.pose2.scale, tw.pose2.tiltRad);
+    device->setUniformVec2(shTwitch, "u_rgbSplit", tw.rgbSplitX, tw.rgbSplitY * ySign);
+    device->setUniformVec4(shTwitch, "u_lightParams", tw.lightDelta, lightVignette, 0.0f, 0.0f);
+    device->setUniformVec4(shTwitch, "u_lightTint",
+                           static_cast<float>(lightTint.r) / 255.0f,
+                           static_cast<float>(lightTint.g) / 255.0f,
+                           static_cast<float>(lightTint.b) / 255.0f,
+                           static_cast<float>(lightTint.a) / 255.0f);
+    device->setUniformVec4(shTwitch, "u_colorParams",
+                           tw.colorMix,
+                           tw.colorHueShift,
+                           colorSat,
+                           static_cast<float>(static_cast<int>(cfg.colorMode)));
+    device->setUniformVec4(shTwitch, "u_colorTint",
+                           static_cast<float>(colorTint.r) / 255.0f,
+                           static_cast<float>(colorTint.g) / 255.0f,
+                           static_cast<float>(colorTint.b) / 255.0f,
+                           static_cast<float>(colorTint.a) / 255.0f);
+    device->setUniformVec4(shTwitch, "u_blurParams",
+                           tw.blurRadius,
+                           tw.blurDirX,
+                           tw.blurDirY * ySign,
+                           static_cast<float>(static_cast<int>(cfg.blurDirection)));
+    device->setUniformVec4(shTwitch, "u_sliceParams",
+                           tw.sliceStrength,
+                           static_cast<float>(cfg.sliceCount),
+                           tw.sliceSeed,
+                           tw.sliceRgbSplit);
+    device->setUniformFloat(shTwitch, "u_aspect", aspect);
+    device->setUniformInt(shTwitch, "u_wrapX", wrapX);
+    device->setUniformInt(shTwitch, "u_wrapY", wrapY);
+    device->setUniformInt(shTwitch, "u_samples", samples);
+    device->setUniformInt(shTwitch, "u_colorSwapDir", tw.colorSwapDir);
+    device->setUniformFloat(shTwitch, "u_hdrGain", evalElementHdrGain(el, mctx));
+    device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
+    if (stats) stats->drawCalls += 1;
+  }
+
   void renderMirrorEffect(const iota::model::Project& project,
                           int compIdx,
                           int elemIdx,
@@ -2926,7 +3101,7 @@ void SceneRenderer::shutdown() {
 
   for (auto* sh : {&impl_->shBuffer, &impl_->shFxLight, &impl_->shKawaseDown, &impl_->shKawaseUp,
                    &impl_->shGaussianSep, &impl_->shRadialBlur, &impl_->shRgbSplit,
-                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle, &impl_->shShake,
+                   &impl_->shMotionBlur, &impl_->shTemporalBlur, &impl_->shParticle, &impl_->shShake, &impl_->shTwitch,
                    &impl_->shBloomPrefilter, &impl_->shBloomDown, &impl_->shBloomUp,
                    &impl_->shTonemap, &impl_->shFxaa}) {
     if (*sh) {
@@ -3156,6 +3331,10 @@ iota::rhi::RenderTargetHandle SceneRenderer::renderFrame(const iota::model::Proj
           break;
         case iota::model::ElementType::ShakeEffect:
           impl_->renderShakeEffect(project, compIdx, elemIdx, el, rt, mctx, outStats);
+          rt = impl_->compTargets[static_cast<size_t>(compIdx)];
+          break;
+        case iota::model::ElementType::TwitchEffect:
+          impl_->renderTwitchEffect(project, compIdx, elemIdx, el, rt, mctx, outStats);
           rt = impl_->compTargets[static_cast<size_t>(compIdx)];
           break;
         case iota::model::ElementType::MirrorEffect:

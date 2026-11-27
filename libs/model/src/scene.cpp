@@ -127,6 +127,7 @@ ElementType elementTypeFromString(std::string_view name) noexcept {
   if (name == "CustomShader") return ElementType::CustomShader;
   if (name == "SoundKeys") return ElementType::SoundKeys;
   if (name == "ShakeEffect") return ElementType::ShakeEffect;
+  if (name == "TwitchEffect") return ElementType::TwitchEffect;
   return ElementType::Unknown;
 }
 
@@ -148,6 +149,7 @@ std::string_view elementTypeToString(ElementType type) noexcept {
     case ElementType::CustomShader: return "CustomShader";
     case ElementType::SoundKeys: return "SoundKeys";
     case ElementType::ShakeEffect: return "ShakeEffect";
+    case ElementType::TwitchEffect: return "TwitchEffect";
     default: return "None";
   }
 }
@@ -164,6 +166,7 @@ const std::vector<ElementType>& addableElementTypes() noexcept {
       ElementType::RgbSplitEffect,
       ElementType::MotionBlurEffect,
       ElementType::ShakeEffect,
+      ElementType::TwitchEffect,
       ElementType::MirrorEffect,
       ElementType::CustomShader,
   };
@@ -639,6 +642,61 @@ Element createDefaultElement(ElementType type) {
       break;
     }
 
+    case ElementType::TwitchEffect: {
+      el.displayName = "Twitch";
+      addBaseElementProperties(el.props, id, iota::core::BlendMode::Opaque);
+      el.props.setString("TargetImage", "composition:0", "img composition:0", "1_appearance");
+      el.props.setColorArgb("color", {255, 255, 255, 255}, "crgba", "1_appearance");
+      el.props.setString("wrapX", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
+      el.props.setString("wrapY", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
+      el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
+
+      el.props.setFloat("amount", 0.15f, 0.0f, 5.0f, "2_twitchMaster");
+      el.props.setMVar("measureAmount", MVariableFloat{{{"SoundKeys1", 1.25f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+      el.props.setFloat("speed", 12.0f, 0.1f, 60.0f, "2_twitchMaster");
+      el.props.setMVar("measureSpeed", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 30.0", "2_twitchMaster");
+      el.props.setString("twitchMode", "Random", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+      el.props.setFloat("threshold", 0.45f, 0.0f, 0.95f, "2_twitchMaster");
+      el.props.setFloat("randomSeed", 0.0f, 0.0f, 10000.0f, "2_twitchMaster");
+      el.props.setFloat("timePhase", 0.0f, -100.0f, 100.0f, "2_twitchMaster");
+      el.props.setBool("motionBlur", true, "2_twitchMaster", "b");
+      el.props.setFloat("moBlurLength", 0.65f, 0.0f, 4.0f, "2_twitchMaster");
+      el.props.setInt("blurSamples", 12, 4, 32, "2_twitchMaster");
+
+      el.props.setBool("enableSlide", true, "3_twitchEnable", "b");
+      el.props.setBool("enableScale", true, "3_twitchEnable", "b");
+      el.props.setBool("enableLight", true, "3_twitchEnable", "b");
+      el.props.setBool("enableColor", false, "3_twitchEnable", "b");
+      el.props.setBool("enableBlur", true, "3_twitchEnable", "b");
+      el.props.setBool("enableSlice", false, "3_twitchEnable", "b");
+
+      el.props.setFloat("slideAmount", 0.22f, 0.0f, 1.5f, "4_twitchSlideScale");
+      el.props.setString("slideDirection", "Both", "sel Both Horizontal Vertical Diagonal", "4_twitchSlideScale");
+      el.props.setFloat("slideRgbSplit", 0.35f, 0.0f, 2.0f, "4_twitchSlideScale");
+      el.props.setFloat("slideRgbAngle", 0.0f, 0.0f, 360.0f, "4_twitchSlideScale");
+      el.props.setBool("slideRgbAutoAngle", true, "4_twitchSlideScale", "b");
+      el.props.setFloat("scaleAmount", 0.18f, 0.0f, 1.5f, "4_twitchSlideScale");
+      el.props.setString("scaleDirection", "ZoomIn", "sel ZoomIn ZoomOut Both", "4_twitchSlideScale");
+      el.props.setFloat("scaleRotation", 3.0f, 0.0f, 45.0f, "4_twitchSlideScale");
+
+      el.props.setFloat("lightAmount", 0.55f, 0.0f, 3.0f, "5_twitchLightColor");
+      el.props.setString("lightBehavior", "Brighten", "sel Brighten Darken Both", "5_twitchLightColor");
+      el.props.setColorArgb("lightTint", {255, 255, 255, 255}, "crgba", "5_twitchLightColor");
+      el.props.setFloat("lightVignette", 0.20f, 0.0f, 1.0f, "5_twitchLightColor");
+      el.props.setFloat("colorAmount", 0.55f, 0.0f, 1.0f, "5_twitchLightColor");
+      el.props.setString("colorMode", "HueShift", "sel HueShift Tint Invert ChannelSwap", "5_twitchLightColor");
+      el.props.setColorArgb("colorTint", {255, 70, 180, 255}, "crgba", "5_twitchLightColor");
+      el.props.setFloat("colorSaturation", 1.35f, 0.0f, 2.5f, "5_twitchLightColor");
+
+      el.props.setFloat("blurAmount", 0.35f, 0.0f, 1.5f, "6_twitchBlurSlice");
+      el.props.setString("blurDirection", "Directional", "sel Directional RadialZoom Isotropic", "6_twitchBlurSlice");
+      el.props.setFloat("blurAngle", 0.0f, 0.0f, 360.0f, "6_twitchBlurSlice");
+      el.props.setFloat("sliceAmount", 0.25f, 0.0f, 1.0f, "6_twitchBlurSlice");
+      el.props.setInt("sliceCount", 18, 2, 96, "6_twitchBlurSlice");
+      el.props.setFloat("sliceRgbSplit", 0.40f, 0.0f, 2.0f, "6_twitchBlurSlice");
+      break;
+    }
+
     case ElementType::MirrorEffect: {
       addBaseElementProperties(el.props, id, iota::core::BlendMode::PreMulAlpha);
       el.props.setString("TargetImage", "composition:1", "img composition:0", "1_appearance");
@@ -963,6 +1021,7 @@ bool assignAssetToElement(Element& el, std::string_view uri, bool asMask) {
       }
       return true;
     case ElementType::ShakeEffect:
+    case ElementType::TwitchEffect:
       setUriPropertyPreservingMeta(el.props, "TargetImage", uri, "img composition:0", "1_appearance");
       return true;
     default:

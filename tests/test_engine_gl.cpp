@@ -1410,6 +1410,66 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     }
   }
 
+  SUBCASE("TwitchEffect: SoundKeys-driven canvas-below multi-operator glitch and zero-amount identity") {
+    auto proj = iota::model::createStarterProject();
+    auto tw = iota::model::createDefaultElement(iota::model::ElementType::TwitchEffect);
+    tw.props.setBool("enableColor", true, "3_twitchEnable", "b");
+    tw.props.setBool("enableSlice", true, "3_twitchEnable", "b");
+    tw.props.setFloat("amount", 0.0f, 0.0f, 5.0f, "2_twitchMaster");
+    tw.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+
+    // Insert SoundKeys so SoundKeys1 drives Twitch dynamically in active phase
+    auto sk = iota::model::createDefaultElement(iota::model::ElementType::SoundKeys);
+    proj.compositions[0].elements.insert(proj.compositions[0].elements.begin() + 1, std::move(sk));
+
+    auto projNoTwitch = proj;
+    proj.compositions[0].elements.push_back(tw);
+
+    auto readRgba = [&](int w, int h) {
+      std::vector<uint8_t> px;
+      int rw = 0, rh = 0;
+      REQUIRE(device.readRenderTargetRgba(renderer.finalRenderTarget(), rw, rh, px, true));
+      REQUIRE(rw == w);
+      REQUIRE(rh == h);
+      return px;
+    };
+
+    renderer.resetSimulation();
+    for (int f = 0; f < 4; ++f) {
+      REQUIRE(renderer.renderFrame(projNoTwitch, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f}, 320, 180));
+    }
+    const auto basePx = readRgba(320, 180);
+
+    renderer.resetSimulation();
+    for (int f = 0; f < 4; ++f) {
+      REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f}, 320, 180));
+    }
+    const auto idPx = readRgba(320, 180);
+    CHECK(basePx == idPx);
+
+    // Enable SoundKeys-driven multi-operator Twitch
+    auto& activeTw = proj.compositions[0].elements.back();
+    activeTw.props.setFloat("amount", 0.65f, 0.0f, 5.0f, "2_twitchMaster");
+    activeTw.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"SoundKeys1", 1.5f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+    activeTw.props.setFloat("threshold", 0.0f, 0.0f, 0.95f, "2_twitchMaster");
+
+    renderer.resetSimulation();
+    iota::engine::RenderFrameStats st;
+    for (int f = 0; f < 6; ++f) {
+      REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f}, 320, 180, {}, &st));
+    }
+    CHECK(st.drawCalls > 0);
+    const auto fxPx = readRgba(320, 180);
+    uint64_t luma = 0;
+    size_t diffBytes = 0;
+    for (size_t i = 0; i < fxPx.size(); ++i) {
+      if ((i & 3u) != 3u) luma += fxPx[i];
+      if (fxPx[i] != basePx[i]) ++diffBytes;
+    }
+    CHECK(luma > 25000);
+    CHECK(diffBytes > 500);
+  }
+
   renderer.shutdown();
   device.shutdown();
   glfwDestroyWindow(win);

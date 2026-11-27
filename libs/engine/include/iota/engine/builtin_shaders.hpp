@@ -910,4 +910,212 @@ void main() {
 }
 )glsl";
 
+// Video Copilot Twitch-inspired multi-operator audio glitch shader (GLSL 450 + WebGL2 ES 3.00 safe).
+inline constexpr const char* kTwitchFrag = R"glsl(#version 450 core
+in vec4 v_color;
+in vec2 v_uv;
+
+uniform sampler2D u_texture;
+uniform vec4 u_pose0;        // (slideX, slideY, scale, tiltRad) at t - halfDt
+uniform vec4 u_pose1;        // at t
+uniform vec4 u_pose2;        // at t + halfDt
+uniform vec2 u_rgbSplit;     // Slide RGB split UV offset
+uniform vec4 u_lightParams;  // (lightDelta, lightVignette, 0, 0)
+uniform vec4 u_lightTint;    // RGBA flash tint
+uniform vec4 u_colorParams;  // (colorMix, colorHueShift, colorSaturation, float(colorMode))
+uniform vec4 u_colorTint;    // RGBA colorize tint
+uniform vec4 u_blurParams;   // (blurRadius, blurDirX, blurDirY, float(blurDirection))
+uniform vec4 u_sliceParams;  // (sliceStrength, float(sliceCount), sliceSeed, sliceRgbSplit)
+uniform float u_aspect;
+uniform int u_wrapX;         // 0=No, 1=Tile, 2=Reflect, 3=Clamp
+uniform int u_wrapY;
+uniform int u_samples;       // 1..32
+uniform int u_colorSwapDir;
+uniform float u_hdrGain;
+
+out vec4 fragColor;
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+float hash1(float n) {
+  return fract(sin(n * 127.1 + 311.7) * 43758.5453123);
+}
+
+float wrapCoord(float c, int mode) {
+  if (mode == 1) {
+    return fract(c);
+  } else if (mode == 2) {
+    float m = mod(c, 2.0);
+    return (m < 1.0) ? m : (2.0 - m);
+  } else if (mode == 3) {
+    return clamp(c, 0.0, 1.0);
+  }
+  return c;
+}
+
+vec4 sampleWrapped(vec2 uv) {
+  if ((u_wrapX == 0 && (uv.x < 0.0 || uv.x > 1.0)) ||
+      (u_wrapY == 0 && (uv.y < 0.0 || uv.y > 1.0))) {
+    return vec4(0.0);
+  }
+  if (u_wrapX != 0) {
+    uv.x = wrapCoord(uv.x, u_wrapX);
+  }
+  if (u_wrapY != 0) {
+    uv.y = wrapCoord(uv.y, u_wrapY);
+  }
+  return texture(u_texture, uv);
+}
+
+vec4 sampleSplit(vec2 uv, vec2 splitOff) {
+  if (dot(splitOff, splitOff) <= 1e-10) {
+    return sampleWrapped(uv);
+  }
+  vec4 cR = sampleWrapped(uv + splitOff);
+  vec4 cG = sampleWrapped(uv);
+  vec4 cB = sampleWrapped(uv - splitOff);
+  float a = max(cG.a, (cR.a + cG.a + cB.a) * 0.3333333);
+  return vec4(cR.r, cG.g, cB.b, a);
+}
+
+vec4 evalCurve(vec4 p0, vec4 p1, vec4 p2, float s) {
+  float w0 = 2.0 * (s - 0.5) * (s - 1.0);
+  float w1 = -4.0 * s * (s - 1.0);
+  float w2 = 2.0 * s * (s - 0.5);
+  return p0 * w0 + p1 * w1 + p2 * w2;
+}
+
+vec2 transformPoseUv(vec4 pose, vec2 baseP, float aspect, float invAspect, float sliceShiftX) {
+  vec2 p = baseP;
+  if (abs(pose.w) > 1e-5) {
+    float cs = cos(pose.w);
+    float sn = sin(pose.w);
+    vec2 q = vec2(p.x * aspect, p.y);
+    vec2 rq = vec2(q.x * cs - q.y * sn, q.x * sn + q.y * cs);
+    p = vec2(rq.x * invAspect, rq.y);
+  }
+  p /= max(pose.z, 0.2);
+  return p + vec2(0.5) - pose.xy + vec2(sliceShiftX, 0.0);
+}
+
+vec3 rgbToHsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-6;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsvToRgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+  float aspect = max(u_aspect, 0.01);
+  float invAspect = 1.0 / aspect;
+  vec2 baseP = v_uv - vec2(0.5);
+
+  float sliceShiftX = 0.0;
+  float sliceSplitX = 0.0;
+  if (u_sliceParams.x > 1e-5) {
+    float bands = max(u_sliceParams.y, 2.0);
+    float fineBand = floor(v_uv.y * bands);
+    float coarseBand = floor(v_uv.y * (bands * 0.45));
+    float bandId = mix(fineBand, coarseBand, step(0.5, hash1(coarseBand * 13.7 + u_sliceParams.z)));
+    float gate = hash1(bandId * 17.3 + u_sliceParams.z * 31.7);
+    if (gate > 0.56) {
+      float bandStrength = (gate - 0.56) / 0.44;
+      float dir = hash1(bandId * 53.1 + u_sliceParams.z * 11.3) * 2.0 - 1.0;
+      sliceShiftX = bandStrength * dir * u_sliceParams.x;
+      sliceSplitX = bandStrength * dir * u_sliceParams.w;
+    }
+  }
+
+  vec2 totalSplit = u_rgbSplit + vec2(sliceSplitX, 0.0);
+  int count = clamp(u_samples, 1, 32);
+  float blurRad = u_blurParams.x;
+  int blurMode = int(u_blurParams.w + 0.5);
+
+  vec4 acc;
+  if (count <= 1) {
+    vec2 uv = transformPoseUv(u_pose1, baseP, aspect, invAspect, sliceShiftX);
+    acc = sampleSplit(uv, totalSplit);
+  } else {
+    float dither = ign(gl_FragCoord.xy);
+    float jitter = dither - 0.5;
+    acc = vec4(0.0);
+    for (int i = 0; i < 32; ++i) {
+      if (i >= count) break;
+      float s = clamp((float(i) + 0.5 + jitter) / float(count), 0.0, 1.0);
+      vec4 pose = evalCurve(u_pose0, u_pose1, u_pose2, s);
+      vec2 uv = transformPoseUv(pose, baseP, aspect, invAspect, sliceShiftX);
+      if (blurRad > 1e-5) {
+        vec2 bOff = vec2(0.0);
+        if (blurMode == 1) {
+          bOff = (s - 0.5) * blurRad * 2.2 * baseP;
+        } else if (blurMode == 2) {
+          float ang = float(i) * 2.3999632 + dither * 6.2831853;
+          float rad = sqrt(clamp((float(i) + 0.5) / float(count), 0.0, 1.0)) * blurRad;
+          bOff = vec2(cos(ang) * invAspect, sin(ang)) * rad;
+        } else {
+          bOff = (s - 0.5) * blurRad * 2.0 * u_blurParams.yz;
+        }
+        uv += bOff;
+      }
+      acc += sampleSplit(uv, totalSplit);
+    }
+    acc /= float(count);
+  }
+
+  vec3 col = acc.rgb;
+  float colorMix = clamp(u_colorParams.x, 0.0, 1.0);
+  if (colorMix > 1e-5) {
+    int colorMode = int(u_colorParams.w + 0.5);
+    float hdrScale = max(1.0, max(col.r, max(col.g, col.b)));
+    vec3 ldr = col / hdrScale;
+    vec3 fx = ldr;
+    if (colorMode == 1) {
+      float lum = dot(ldr, vec3(0.2126, 0.7152, 0.0722));
+      fx = vec3(lum) * u_colorTint.rgb * u_colorTint.a * 1.45;
+      vec3 hsv = rgbToHsv(max(fx, vec3(0.0)));
+      hsv.y = clamp(hsv.y * u_colorParams.z, 0.0, 1.0);
+      fx = hsvToRgb(hsv);
+    } else if (colorMode == 2) {
+      fx = max(vec3(1.0) - clamp(ldr, 0.0, 1.0), vec3(0.0));
+    } else if (colorMode == 3) {
+      fx = (u_colorSwapDir == 0) ? ldr.brg : ldr.gbr;
+    } else {
+      vec3 hsv = rgbToHsv(max(ldr, vec3(0.0)));
+      hsv.x = fract(hsv.x + u_colorParams.y);
+      hsv.y = clamp(hsv.y * mix(1.0, u_colorParams.z, colorMix), 0.0, 1.0);
+      fx = hsvToRgb(hsv);
+    }
+    col = mix(col, fx * hdrScale, colorMix);
+  }
+
+  float lightDelta = u_lightParams.x;
+  if (abs(lightDelta) > 1e-5) {
+    float dist = length(baseP * vec2(aspect, 1.0)) * 1.41421356;
+    if (lightDelta > 0.0) {
+      float centerWeight = mix(1.0, clamp(1.25 - 0.55 * dist, 0.2, 1.25), u_lightParams.y);
+      float boost = lightDelta * centerWeight;
+      vec3 tintRgb = u_lightTint.rgb * u_lightTint.a;
+      col = col * (1.0 + boost * tintRgb * 1.2) + tintRgb * (boost * 0.14 * acc.a);
+    } else {
+      float edgeWeight = mix(1.0, clamp(dist, 0.15, 1.6), u_lightParams.y);
+      float darkScale = clamp(1.0 + lightDelta * edgeWeight, 0.02, 1.0);
+      col *= darkScale;
+    }
+  }
+
+  vec4 outCol = vec4(col, acc.a) * v_color;
+  fragColor = vec4(outCol.rgb * u_hdrGain, clamp(outCol.a, 0.0, 1.0));
+}
+)glsl";
+
 }  // namespace iota::engine::shaders

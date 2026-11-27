@@ -81,7 +81,8 @@ bool drawCategorizedAddElementMenu(iota::model::ElementType& outSelected) {
       {"Effects & Shaders",
        {iota::model::ElementType::BlurEffect, iota::model::ElementType::RgbSplitEffect,
         iota::model::ElementType::MotionBlurEffect, iota::model::ElementType::ShakeEffect,
-        iota::model::ElementType::MirrorEffect, iota::model::ElementType::CustomShader}},
+        iota::model::ElementType::TwitchEffect, iota::model::ElementType::MirrorEffect,
+        iota::model::ElementType::CustomShader}},
   };
 
   for (size_t gi = 0; gi < std::size(kGroups); ++gi) {

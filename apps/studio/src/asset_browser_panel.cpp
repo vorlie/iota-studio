@@ -292,6 +292,7 @@ void renderAssetBrowserPanel(iota::model::Project& project,
        selectedEl->type == iota::model::ElementType::MotionBlurEffect ||
        selectedEl->type == iota::model::ElementType::MirrorEffect ||
        selectedEl->type == iota::model::ElementType::ShakeEffect ||
+       selectedEl->type == iota::model::ElementType::TwitchEffect ||
        selectedEl->type == iota::model::ElementType::CustomShader);
   const bool canAssignMask = selectedEl != nullptr &&
       (selectedEl->type == iota::model::ElementType::Image ||

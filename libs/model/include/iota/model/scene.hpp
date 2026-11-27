@@ -43,7 +43,8 @@ enum class ElementType {
   StatText,
   CustomShader,
   SoundKeys,
-  ShakeEffect
+  ShakeEffect,
+  TwitchEffect
 };
 
 ElementType elementTypeFromString(std::string_view name) noexcept;

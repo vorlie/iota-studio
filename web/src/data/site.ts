@@ -86,6 +86,7 @@ export const ELEMENTS: ElementInfo[] = [
   { name: 'RgbSplitEffect', category: 'Effect', summary: 'Audio-reactive per-channel chromatic aberration split across radial or directional offsets.' },
   { name: 'MotionBlurEffect', category: 'Effect', summary: 'IGN-jittered 4–64 sample shutter blur across translation, radial zoom, spin, and temporal persistence trails.' },
   { name: 'ShakeEffect', category: 'Effect', summary: '4-axis S_Shake-grade camera shake (X/Y/Z/Tilt) with fractal Perlin/Catmull noise, per-channel RGB split, and crop.' },
+  { name: 'TwitchEffect', category: 'Effect', summary: 'SoundKeys-driven multi-operator glitch (Slide + RGB Split, Scale + Tilt, Light Strobe, Color, Blur, Glitch Slice).' },
   { name: 'MirrorEffect', category: 'Effect', summary: 'Horizontal, vertical, or quadrant symmetry mirroring over compositions or canvas-below layers.' },
 ];
 

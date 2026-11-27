@@ -18,6 +18,7 @@ add_library(iota_engine STATIC
   src/font_atlas.cpp
   src/particle_system.cpp
   src/shake_eval.cpp
+  src/twitch_eval.cpp
   src/builtin_shader_library.cpp
   src/scene_renderer.cpp
 )

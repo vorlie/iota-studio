@@ -975,7 +975,7 @@ nlohmann::json listMcpToolDefinitions() {
 
   tools.push_back(makeToolDef(
       "layer_add",
-      "Add a layer/effect (AudioProvider, SoundKeys, Bars, Particles, Image, Text, StatText, BlurEffect, RgbSplitEffect, MotionBlurEffect, ShakeEffect, MirrorEffect, AppLogo, CustomShader).",
+      "Add a layer/effect (AudioProvider, SoundKeys, Bars, Particles, Image, Text, StatText, BlurEffect, RgbSplitEffect, MotionBlurEffect, ShakeEffect, TwitchEffect, MirrorEffect, AppLogo, CustomShader).",
       {{"element_type", {{"type", "string"}}},
        {"composition_index", {{"type", "integer"}}},
        {"insert_index", {{"type", "integer"}}},
