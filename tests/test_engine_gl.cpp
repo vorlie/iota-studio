@@ -1464,6 +1464,29 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     }
     CHECK(luma > 25000);
     CHECK(diffBytes > 500);
+
+    // Direct mode + SlideDirection::Up driven via measureSlide (R1) with velocity motion blur
+    auto& directTw = proj.compositions[0].elements.back();
+    directTw.props.setFloat("amount", 0.0f, 0.0f, 5.0f, "2_twitchMaster");
+    directTw.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+    directTw.props.setString("twitchMode", "Direct", "sel Direct Random Pulse Stutter Smooth", "2_twitchMaster");
+    directTw.props.setMVar("measureSlide", iota::model::MVariableFloat{{{"SoundKeys1", 1.4f, 0.0f}}}, "mvarf 0.0 5.0", "4_twitchSlideScale");
+    directTw.props.setString("slideDirection", "Up", "sel Both Horizontal Vertical Diagonal Up Down Left Right CustomAngle", "4_twitchSlideScale");
+    directTw.props.setFloat("slideRandomness", 0.0f, 0.0f, 1.0f, "4_twitchSlideScale");
+    directTw.props.setBool("enableLight", false, "3_twitchEnable", "b");
+    directTw.props.setBool("enableColor", false, "3_twitchEnable", "b");
+    directTw.props.setBool("enableSlice", false, "3_twitchEnable", "b");
+
+    renderer.resetSimulation();
+    for (int f = 0; f < 6; ++f) {
+      REQUIRE(renderer.renderFrame(proj, audio, {1.0f / 60.0f, f / 60.0, f / 60.0, true, 0.0f, true, 60.0f}, 320, 180, {}, &st));
+    }
+    const auto directPx = readRgba(320, 180);
+    size_t directDiffBytes = 0;
+    for (size_t i = 0; i < directPx.size(); ++i) {
+      if (directPx[i] != basePx[i]) ++directDiffBytes;
+    }
+    CHECK(directDiffBytes > 250);
   }
 
   renderer.shutdown();

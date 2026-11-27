@@ -37,6 +37,21 @@ bool asciiEqualsIgnoreCase(std::string_view a, std::string_view b) noexcept {
   return true;
 }
 
+float lerpf(float a, float b, float t) noexcept {
+  return a + (b - a) * t;
+}
+
+float resolveDrive(float opDrive, float masterAmount) noexcept {
+  return std::max(0.0f, (opDrive >= 0.0f) ? opDrive : masterAmount);
+}
+
+float resolveRandomness(TwitchMode mode, float opRandomness) noexcept {
+  if (mode == TwitchMode::Direct) {
+    return 0.0f;
+  }
+  return std::clamp(opRandomness, 0.0f, 1.0f);
+}
+
 uint32_t mixSeed(uint32_t a, uint32_t b) noexcept {
   uint32_t x = a ^ (b * 0x9e3779b9u + 0x517cc1b7u);
   x ^= x >> 16;
@@ -98,6 +113,9 @@ double evalChannelSigned(TwitchMode mode,
                          double sampleT,
                          double threshold,
                          uint32_t seed) noexcept {
+  if (mode == TwitchMode::Direct) {
+    return 1.0;
+  }
   const double th = std::clamp(threshold, 0.0, 0.95);
   switch (mode) {
     case TwitchMode::Pulse: {
@@ -136,6 +154,9 @@ double evalChannelUnipolar(TwitchMode mode,
                            double sampleT,
                            double threshold,
                            uint32_t seed) noexcept {
+  if (mode == TwitchMode::Direct) {
+    return 1.0;
+  }
   const double th = std::clamp(threshold, 0.0, 0.95);
   switch (mode) {
     case TwitchMode::Pulse: {
@@ -172,59 +193,109 @@ double evalChannelUnipolar(TwitchMode mode,
 
 TwitchPose evalPoseAtTime(const TwitchConfig& cfg,
                           double sampleT,
-                          uint32_t baseSeed) noexcept {
+                          uint32_t baseSeed,
+                          float slideDrive,
+                          float scaleDrive) noexcept {
   TwitchPose pose{};
-  const float amt = std::max(0.0f, cfg.amount);
   const double th = static_cast<double>(cfg.threshold);
 
-  if (cfg.enableSlide && cfg.slideAmount > 1e-6f) {
-    const float maxOff = 0.32f * amt * cfg.slideAmount;
-    const float sxRaw = static_cast<float>(
-        evalChannelSigned(cfg.mode, sampleT, th, mixSeed(baseSeed, 0x101u)));
-    const float syRaw = static_cast<float>(
-        evalChannelSigned(cfg.mode, sampleT, th, mixSeed(baseSeed, 0x202u)));
+  if (cfg.enableSlide && slideDrive > 1e-6f && cfg.slideAmount > 1e-6f) {
+    const float maxOff = 0.32f * slideDrive * cfg.slideAmount;
+    const float slideRand = resolveRandomness(cfg.mode, cfg.slideRandomness);
+    const float uMag = (slideRand > 1e-5f)
+                           ? lerpf(1.0f,
+                                   static_cast<float>(evalChannelUnipolar(
+                                       cfg.mode, sampleT, th, mixSeed(baseSeed, 0x105u))),
+                                   slideRand)
+                           : 1.0f;
+    const float sxRaw = (slideRand > 1e-5f)
+                            ? static_cast<float>(
+                                  evalChannelSigned(cfg.mode, sampleT, th, mixSeed(baseSeed, 0x101u)))
+                            : 1.0f;
+    const float syRaw = (slideRand > 1e-5f)
+                            ? static_cast<float>(
+                                  evalChannelSigned(cfg.mode, sampleT, th, mixSeed(baseSeed, 0x202u)))
+                            : -1.0f;
+
     switch (cfg.slideDirection) {
+      case TwitchSlideDirection::Up:
+        pose.slideX = 0.0f;
+        pose.slideY = -maxOff * uMag;
+        break;
+      case TwitchSlideDirection::Down:
+        pose.slideX = 0.0f;
+        pose.slideY = maxOff * uMag;
+        break;
+      case TwitchSlideDirection::Left:
+        pose.slideX = -maxOff * uMag;
+        pose.slideY = 0.0f;
+        break;
+      case TwitchSlideDirection::Right:
+        pose.slideX = maxOff * uMag;
+        pose.slideY = 0.0f;
+        break;
+      case TwitchSlideDirection::CustomAngle: {
+        const float rad = cfg.slideAngle * (kPiF / 180.0f);
+        pose.slideX = std::cos(rad) * maxOff * uMag;
+        pose.slideY = -std::sin(rad) * maxOff * uMag;
+        break;
+      }
       case TwitchSlideDirection::Horizontal:
-        pose.slideX = sxRaw * maxOff;
+        pose.slideX = lerpf(1.0f, sxRaw, slideRand) * maxOff;
         pose.slideY = 0.0f;
         break;
       case TwitchSlideDirection::Vertical:
         pose.slideX = 0.0f;
-        pose.slideY = syRaw * maxOff;
+        pose.slideY = lerpf(-1.0f, syRaw, slideRand) * maxOff;
         break;
       case TwitchSlideDirection::Diagonal: {
         const float signY = (hashUnit01(0, mixSeed(baseSeed, 0xD1A6u)) >= 0.5) ? 1.0f : -1.0f;
-        const float mag = sxRaw * maxOff * 0.70710678f;
+        const float mag = lerpf(1.0f, sxRaw, slideRand) * maxOff * 0.70710678f;
         pose.slideX = mag;
         pose.slideY = mag * signY;
         break;
       }
       case TwitchSlideDirection::Both:
-      default:
-        pose.slideX = sxRaw * maxOff;
-        pose.slideY = syRaw * maxOff;
+      default: {
+        constexpr float kDiagInv = 0.70710678f;
+        pose.slideX = lerpf(kDiagInv, sxRaw, slideRand) * maxOff;
+        pose.slideY = lerpf(-kDiagInv, syRaw, slideRand) * maxOff;
         break;
+      }
     }
   }
 
-  if (cfg.enableScale) {
+  if (cfg.enableScale && scaleDrive > 1e-6f) {
+    const float scaleRand = resolveRandomness(cfg.mode, cfg.scaleRandomness);
     if (cfg.scaleAmount > 1e-6f) {
       const uint32_t scSeed = mixSeed(baseSeed, 0x303u);
-      const float pump = std::clamp(amt * cfg.scaleAmount * 0.55f, 0.0f, 3.0f);
+      const float pump = std::clamp(scaleDrive * cfg.scaleAmount * 0.55f, 0.0f, 3.0f);
       switch (cfg.scaleDirection) {
         case TwitchScaleDirection::ZoomIn: {
-          const float u = static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT, th, scSeed));
+          const float u = (scaleRand > 1e-5f)
+                              ? lerpf(1.0f,
+                                      static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT, th, scSeed)),
+                                      scaleRand)
+                              : 1.0f;
           pose.scale = 1.0f + pump * u;
           break;
         }
         case TwitchScaleDirection::ZoomOut: {
-          const float u = static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT, th, scSeed));
+          const float u = (scaleRand > 1e-5f)
+                              ? lerpf(1.0f,
+                                      static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT, th, scSeed)),
+                                      scaleRand)
+                              : 1.0f;
           pose.scale = std::max(0.2f, 1.0f / (1.0f + pump * u));
           break;
         }
         case TwitchScaleDirection::Both:
         default: {
-          const float s = static_cast<float>(evalChannelSigned(cfg.mode, sampleT, th, scSeed));
+          const float s = (scaleRand > 1e-5f)
+                              ? lerpf(1.0f,
+                                      static_cast<float>(evalChannelSigned(cfg.mode, sampleT, th, scSeed)),
+                                      scaleRand)
+                              : 1.0f;
           if (s >= 0.0f) {
             pose.scale = 1.0f + pump * s;
           } else {
@@ -235,9 +306,13 @@ TwitchPose evalPoseAtTime(const TwitchConfig& cfg,
       }
     }
     if (std::abs(cfg.scaleRotation) > 1e-6f) {
-      const float sTilt = static_cast<float>(
-          evalChannelSigned(cfg.mode, sampleT, th, mixSeed(baseSeed, 0x404u)));
-      const float deg = std::clamp(amt, 0.0f, 3.0f) * cfg.scaleRotation * sTilt;
+      const float sTilt = (scaleRand > 1e-5f)
+                              ? lerpf(1.0f,
+                                      static_cast<float>(evalChannelSigned(
+                                          cfg.mode, sampleT, th, mixSeed(baseSeed, 0x404u))),
+                                      scaleRand)
+                              : 1.0f;
+      const float deg = std::clamp(scaleDrive, 0.0f, 3.0f) * cfg.scaleRotation * sTilt;
       pose.tiltRad = deg * (kPiF / 180.0f);
     }
   }
@@ -248,6 +323,7 @@ TwitchPose evalPoseAtTime(const TwitchConfig& cfg,
 }  // namespace
 
 TwitchMode twitchModeFromString(std::string_view s) noexcept {
+  if (asciiEqualsIgnoreCase(s, "Direct")) return TwitchMode::Direct;
   if (asciiEqualsIgnoreCase(s, "Pulse")) return TwitchMode::Pulse;
   if (asciiEqualsIgnoreCase(s, "Stutter")) return TwitchMode::Stutter;
   if (asciiEqualsIgnoreCase(s, "Smooth")) return TwitchMode::Smooth;
@@ -258,6 +334,11 @@ TwitchSlideDirection twitchSlideDirectionFromString(std::string_view s) noexcept
   if (asciiEqualsIgnoreCase(s, "Horizontal")) return TwitchSlideDirection::Horizontal;
   if (asciiEqualsIgnoreCase(s, "Vertical")) return TwitchSlideDirection::Vertical;
   if (asciiEqualsIgnoreCase(s, "Diagonal")) return TwitchSlideDirection::Diagonal;
+  if (asciiEqualsIgnoreCase(s, "Up")) return TwitchSlideDirection::Up;
+  if (asciiEqualsIgnoreCase(s, "Down")) return TwitchSlideDirection::Down;
+  if (asciiEqualsIgnoreCase(s, "Left")) return TwitchSlideDirection::Left;
+  if (asciiEqualsIgnoreCase(s, "Right")) return TwitchSlideDirection::Right;
+  if (asciiEqualsIgnoreCase(s, "CustomAngle")) return TwitchSlideDirection::CustomAngle;
   return TwitchSlideDirection::Both;
 }
 
@@ -290,8 +371,16 @@ TwitchFrameState evaluateTwitch(const TwitchConfig& cfg,
                               double timeSec,
                               double halfShutterSec) noexcept {
   TwitchFrameState out{};
-  const float amt = std::max(0.0f, cfg.amount);
-  if (amt <= 1e-6f) {
+  const float masterAmt = std::max(0.0f, cfg.amount);
+  const float slideDrive = resolveDrive(cfg.slideDrive, masterAmt);
+  const float scaleDrive = resolveDrive(cfg.scaleDrive, masterAmt);
+  const float lightDrive = resolveDrive(cfg.lightDrive, masterAmt);
+  const float colorDrive = resolveDrive(cfg.colorDrive, masterAmt);
+  const float blurDrive = resolveDrive(cfg.blurDrive, masterAmt);
+  const float sliceDrive = resolveDrive(cfg.sliceDrive, masterAmt);
+
+  const float maxDrive = std::max({slideDrive, scaleDrive, lightDrive, colorDrive, blurDrive, sliceDrive});
+  if (maxDrive <= 1e-6f) {
     return out;
   }
 
@@ -307,15 +396,19 @@ TwitchFrameState evaluateTwitch(const TwitchConfig& cfg,
   const double sampleT0 = sampleT1 - dtSample;
   const double sampleT2 = sampleT1 + dtSample;
 
-  out.pose1 = evalPoseAtTime(cfg, sampleT1, baseSeed);
-  out.pose0 = (dtSample > 1e-6) ? evalPoseAtTime(cfg, sampleT0, baseSeed) : out.pose1;
-  out.pose2 = (dtSample > 1e-6) ? evalPoseAtTime(cfg, sampleT2, baseSeed) : out.pose1;
+  out.pose1 = evalPoseAtTime(cfg, sampleT1, baseSeed, slideDrive, scaleDrive);
+  out.pose0 = (dtSample > 1e-6) ? evalPoseAtTime(cfg, sampleT0, baseSeed, slideDrive, scaleDrive) : out.pose1;
+  out.pose2 = (dtSample > 1e-6) ? evalPoseAtTime(cfg, sampleT2, baseSeed, slideDrive, scaleDrive) : out.pose1;
 
   // Slide chromatic aberration split
-  if (cfg.enableSlide && cfg.slideRgbSplit > 1e-6f) {
-    const float uSplit = static_cast<float>(
-        evalChannelUnipolar(cfg.mode, sampleT1, th, mixSeed(baseSeed, 0x505u)));
-    const float mag = amt * cfg.slideRgbSplit * (0.20f + 0.80f * uSplit) * 0.025f;
+  if (cfg.enableSlide && slideDrive > 1e-6f && cfg.slideRgbSplit > 1e-6f) {
+    const float slideRand = resolveRandomness(cfg.mode, cfg.slideRandomness);
+    const float uSplit = (slideRand > 1e-5f)
+                             ? static_cast<float>(evalChannelUnipolar(
+                                   cfg.mode, sampleT1, th, mixSeed(baseSeed, 0x505u)))
+                             : 1.0f;
+    const float burstScale = lerpf(1.0f, 0.20f + 0.80f * uSplit, slideRand);
+    const float mag = slideDrive * cfg.slideRgbSplit * burstScale * 0.025f;
     float dirX = 1.0f;
     float dirY = 0.0f;
     const float slideLen = std::hypot(out.pose1.slideX, out.pose1.slideY);
@@ -325,33 +418,46 @@ TwitchFrameState evaluateTwitch(const TwitchConfig& cfg,
     } else {
       const float ang = cfg.slideRgbAngle * (kPiF / 180.0f);
       dirX = std::cos(ang);
-      dirY = std::sin(ang);
+      dirY = -std::sin(ang);
     }
     out.rgbSplitX = dirX * mag;
     out.rgbSplitY = dirY * mag;
   }
 
   // Light strobe
-  if (cfg.enableLight && cfg.lightAmount > 1e-6f) {
+  if (cfg.enableLight && lightDrive > 1e-6f && cfg.lightAmount > 1e-6f) {
+    const float lightRand = resolveRandomness(cfg.mode, cfg.lightRandomness);
     const uint32_t lightSeed = mixSeed(baseSeed, 0x606u);
     switch (cfg.lightBehavior) {
       case TwitchLightBehavior::Brighten: {
-        const float u = static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, lightSeed));
-        out.lightDelta = std::max(0.0f, amt * cfg.lightAmount * u);
+        const float u = (lightRand > 1e-5f)
+                            ? lerpf(1.0f,
+                                    static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, lightSeed)),
+                                    lightRand)
+                            : 1.0f;
+        out.lightDelta = std::max(0.0f, lightDrive * cfg.lightAmount * u);
         break;
       }
       case TwitchLightBehavior::Darken: {
-        const float u = static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, lightSeed));
-        out.lightDelta = -std::clamp(amt * cfg.lightAmount * u, 0.0f, 0.95f);
+        const float u = (lightRand > 1e-5f)
+                            ? lerpf(1.0f,
+                                    static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, lightSeed)),
+                                    lightRand)
+                            : 1.0f;
+        out.lightDelta = -std::clamp(lightDrive * cfg.lightAmount * u, 0.0f, 0.95f);
         break;
       }
       case TwitchLightBehavior::Both:
       default: {
-        const float s = static_cast<float>(evalChannelSigned(cfg.mode, sampleT1, th, lightSeed));
+        const float s = (lightRand > 1e-5f)
+                            ? lerpf(1.0f,
+                                    static_cast<float>(evalChannelSigned(cfg.mode, sampleT1, th, lightSeed)),
+                                    lightRand)
+                            : 1.0f;
         if (s >= 0.0f) {
-          out.lightDelta = amt * cfg.lightAmount * s;
+          out.lightDelta = lightDrive * cfg.lightAmount * s;
         } else {
-          out.lightDelta = -std::clamp(amt * cfg.lightAmount * (-s), 0.0f, 0.95f);
+          out.lightDelta = -std::clamp(lightDrive * cfg.lightAmount * (-s), 0.0f, 0.95f);
         }
         break;
       }
@@ -359,35 +465,56 @@ TwitchFrameState evaluateTwitch(const TwitchConfig& cfg,
   }
 
   // Color bursts
-  if (cfg.enableColor && cfg.colorAmount > 1e-6f) {
+  if (cfg.enableColor && colorDrive > 1e-6f && cfg.colorAmount > 1e-6f) {
+    const float colorRand = resolveRandomness(cfg.mode, cfg.colorRandomness);
     const uint32_t colSeed = mixSeed(baseSeed, 0x707u);
-    const float uCol = static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, colSeed));
-    const float sCol = static_cast<float>(evalChannelSigned(cfg.mode, sampleT1, th, colSeed ^ 0x99u));
-    out.colorMix = std::clamp(amt * cfg.colorAmount * uCol, 0.0f, 1.0f);
-    out.colorHueShift = sCol * cfg.colorAmount * std::clamp(amt, 0.0f, 2.5f) * 0.5f;
+    const float uCol = (colorRand > 1e-5f)
+                           ? lerpf(1.0f,
+                                   static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, colSeed)),
+                                   colorRand)
+                           : 1.0f;
+    const float sCol = (colorRand > 1e-5f)
+                           ? lerpf(1.0f,
+                                   static_cast<float>(evalChannelSigned(cfg.mode, sampleT1, th, colSeed ^ 0x99u)),
+                                   colorRand)
+                           : 1.0f;
+    out.colorMix = std::clamp(colorDrive * cfg.colorAmount * uCol, 0.0f, 1.0f);
+    out.colorHueShift = sCol * cfg.colorAmount * std::clamp(colorDrive, 0.0f, 2.5f) * 0.5f;
     const int64_t cell = static_cast<int64_t>(std::floor(sampleT1));
-    out.colorSwapDir = (hashUnit01(cell, mixSeed(baseSeed, 0x708u)) >= 0.5) ? 1 : 0;
+    out.colorSwapDir = (colorRand > 1e-5f && hashUnit01(cell, mixSeed(baseSeed, 0x708u)) >= 0.5) ? 1 : 0;
   }
 
   // Operator blur bursts
-  if (cfg.enableBlur && cfg.blurAmount > 1e-6f) {
-    const float uBlur = static_cast<float>(
-        evalChannelUnipolar(cfg.mode, sampleT1, th, mixSeed(baseSeed, 0x808u)));
-    out.blurRadius = std::clamp(amt * cfg.blurAmount * uBlur * 0.045f, 0.0f, 0.18f);
+  if (cfg.enableBlur && blurDrive > 1e-6f && cfg.blurAmount > 1e-6f) {
+    const float blurRand = resolveRandomness(cfg.mode, cfg.blurRandomness);
+    const float uBlur = (blurRand > 1e-5f)
+                            ? lerpf(1.0f,
+                                    static_cast<float>(evalChannelUnipolar(
+                                        cfg.mode, sampleT1, th, mixSeed(baseSeed, 0x808u))),
+                                    blurRand)
+                            : 1.0f;
+    out.blurRadius = std::clamp(blurDrive * cfg.blurAmount * uBlur * 0.045f, 0.0f, 0.18f);
     const float ang = cfg.blurAngle * (kPiF / 180.0f);
     out.blurDirX = std::cos(ang);
-    out.blurDirY = std::sin(ang);
+    out.blurDirY = -std::sin(ang);
   }
 
   // Glitch slice tear bands
-  if (cfg.enableSlice && cfg.sliceAmount > 1e-6f) {
+  if (cfg.enableSlice && sliceDrive > 1e-6f && cfg.sliceAmount > 1e-6f) {
+    const float sliceRand = resolveRandomness(cfg.mode, cfg.sliceRandomness);
     const uint32_t slSeed = mixSeed(baseSeed, 0x909u);
-    const float uSlice = static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, slSeed));
-    out.sliceStrength = std::clamp(amt * cfg.sliceAmount * uSlice * 0.18f, 0.0f, 0.45f);
-    out.sliceRgbSplit = std::clamp(amt * std::max(0.0f, cfg.sliceRgbSplit) * uSlice * 0.04f, 0.0f, 0.15f);
+    const float uSlice = (sliceRand > 1e-5f)
+                             ? lerpf(1.0f,
+                                     static_cast<float>(evalChannelUnipolar(cfg.mode, sampleT1, th, slSeed)),
+                                     sliceRand)
+                             : 1.0f;
+    out.sliceStrength = std::clamp(sliceDrive * cfg.sliceAmount * uSlice * 0.18f, 0.0f, 0.45f);
+    out.sliceRgbSplit = std::clamp(sliceDrive * std::max(0.0f, cfg.sliceRgbSplit) * uSlice * 0.04f, 0.0f, 0.15f);
     const int64_t slCell = static_cast<int64_t>(std::floor(sampleT1));
-    out.sliceSeed = static_cast<float>(hashUnit01(slCell, mixSeed(baseSeed, 0x90Au)) * 97.0 +
-                                       static_cast<double>(baseSeed & 0xFFu) * 0.37);
+    out.sliceSeed = (sliceRand > 1e-5f)
+                        ? static_cast<float>(hashUnit01(slCell, mixSeed(baseSeed, 0x90Au)) * 97.0 +
+                                             static_cast<double>(baseSeed & 0xFFu) * 0.37)
+                        : static_cast<float>((baseSeed & 0xFFu) * 0.37 + 13.0);
   }
 
   return out;

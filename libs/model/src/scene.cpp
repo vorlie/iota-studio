@@ -651,11 +651,11 @@ Element createDefaultElement(ElementType type) {
       el.props.setString("wrapY", "Reflect", "sel No Tile Reflect Clamp", "1_appearance");
       el.props.setFloat("hdrIntensity", 1.0f, 0.0f, 16.0f, "1_appearance");
 
-      el.props.setFloat("amount", 0.15f, 0.0f, 5.0f, "2_twitchMaster");
-      el.props.setMVar("measureAmount", MVariableFloat{{{"SoundKeys1", 1.25f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
+      el.props.setFloat("amount", 0.0f, 0.0f, 5.0f, "2_twitchMaster");
+      el.props.setMVar("measureAmount", MVariableFloat{{{"SoundKeys1", 1.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
       el.props.setFloat("speed", 12.0f, 0.1f, 60.0f, "2_twitchMaster");
       el.props.setMVar("measureSpeed", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 30.0", "2_twitchMaster");
-      el.props.setString("twitchMode", "Random", "sel Random Pulse Stutter Smooth", "2_twitchMaster");
+      el.props.setString("twitchMode", "Random", "sel Direct Random Pulse Stutter Smooth", "2_twitchMaster");
       el.props.setFloat("threshold", 0.45f, 0.0f, 0.95f, "2_twitchMaster");
       el.props.setFloat("randomSeed", 0.0f, 0.0f, 10000.0f, "2_twitchMaster");
       el.props.setFloat("timePhase", 0.0f, -100.0f, 100.0f, "2_twitchMaster");
@@ -670,30 +670,45 @@ Element createDefaultElement(ElementType type) {
       el.props.setBool("enableBlur", true, "3_twitchEnable", "b");
       el.props.setBool("enableSlice", false, "3_twitchEnable", "b");
 
+      el.props.setMVar("measureSlide", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "4_twitchSlideScale");
       el.props.setFloat("slideAmount", 0.22f, 0.0f, 1.5f, "4_twitchSlideScale");
-      el.props.setString("slideDirection", "Both", "sel Both Horizontal Vertical Diagonal", "4_twitchSlideScale");
+      el.props.setString("slideDirection", "Both",
+                         "sel Both Horizontal Vertical Diagonal Up Down Left Right CustomAngle",
+                         "4_twitchSlideScale");
+      el.props.setFloat("slideAngle", 90.0f, 0.0f, 360.0f, "4_twitchSlideScale");
+      el.props.setFloat("slideRandomness", 1.0f, 0.0f, 1.0f, "4_twitchSlideScale");
       el.props.setFloat("slideRgbSplit", 0.35f, 0.0f, 2.0f, "4_twitchSlideScale");
       el.props.setFloat("slideRgbAngle", 0.0f, 0.0f, 360.0f, "4_twitchSlideScale");
       el.props.setBool("slideRgbAutoAngle", true, "4_twitchSlideScale", "b");
+      el.props.setMVar("measureScale", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "4_twitchSlideScale");
       el.props.setFloat("scaleAmount", 0.18f, 0.0f, 1.5f, "4_twitchSlideScale");
       el.props.setString("scaleDirection", "ZoomIn", "sel ZoomIn ZoomOut Both", "4_twitchSlideScale");
       el.props.setFloat("scaleRotation", 3.0f, 0.0f, 45.0f, "4_twitchSlideScale");
+      el.props.setFloat("scaleRandomness", 1.0f, 0.0f, 1.0f, "4_twitchSlideScale");
 
+      el.props.setMVar("measureLight", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "5_twitchLightColor");
       el.props.setFloat("lightAmount", 0.55f, 0.0f, 3.0f, "5_twitchLightColor");
       el.props.setString("lightBehavior", "Brighten", "sel Brighten Darken Both", "5_twitchLightColor");
       el.props.setColorArgb("lightTint", {255, 255, 255, 255}, "crgba", "5_twitchLightColor");
       el.props.setFloat("lightVignette", 0.20f, 0.0f, 1.0f, "5_twitchLightColor");
+      el.props.setFloat("lightRandomness", 1.0f, 0.0f, 1.0f, "5_twitchLightColor");
+      el.props.setMVar("measureColor", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "5_twitchLightColor");
       el.props.setFloat("colorAmount", 0.55f, 0.0f, 1.0f, "5_twitchLightColor");
       el.props.setString("colorMode", "HueShift", "sel HueShift Tint Invert ChannelSwap", "5_twitchLightColor");
       el.props.setColorArgb("colorTint", {255, 70, 180, 255}, "crgba", "5_twitchLightColor");
       el.props.setFloat("colorSaturation", 1.35f, 0.0f, 2.5f, "5_twitchLightColor");
+      el.props.setFloat("colorRandomness", 1.0f, 0.0f, 1.0f, "5_twitchLightColor");
 
+      el.props.setMVar("measureBlur", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "6_twitchBlurSlice");
       el.props.setFloat("blurAmount", 0.35f, 0.0f, 1.5f, "6_twitchBlurSlice");
       el.props.setString("blurDirection", "Directional", "sel Directional RadialZoom Isotropic", "6_twitchBlurSlice");
       el.props.setFloat("blurAngle", 0.0f, 0.0f, 360.0f, "6_twitchBlurSlice");
+      el.props.setFloat("blurRandomness", 1.0f, 0.0f, 1.0f, "6_twitchBlurSlice");
+      el.props.setMVar("measureSlice", MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "6_twitchBlurSlice");
       el.props.setFloat("sliceAmount", 0.25f, 0.0f, 1.0f, "6_twitchBlurSlice");
       el.props.setInt("sliceCount", 18, 2, 96, "6_twitchBlurSlice");
       el.props.setFloat("sliceRgbSplit", 0.40f, 0.0f, 2.0f, "6_twitchBlurSlice");
+      el.props.setFloat("sliceRandomness", 1.0f, 0.0f, 1.0f, "6_twitchBlurSlice");
       break;
     }
 

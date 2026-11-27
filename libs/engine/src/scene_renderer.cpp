@@ -756,6 +756,7 @@ struct SceneRenderer::Impl {
     bool initialized = false;
   };
   std::unordered_map<int, MotionBlurPrevTransform> motionBlurPrevTransforms;
+  std::unordered_map<int, TwitchPose> twitchPrevPoses;
   std::unordered_map<int, TemporalBlurHistory> temporalBlurHistories;
 
   // Render targets
@@ -2684,18 +2685,66 @@ struct SceneRenderer::Impl {
          rect.right >= static_cast<float>(width) - 0.5f &&
          rect.bottom >= static_cast<float>(height) - 0.5f);
 
+    auto isActiveMVar = [](const iota::model::MVariableFloat& mv) {
+      for (const auto& s : mv.slots) {
+        if (!s.measureWhat.empty() && !asciiEqualsIgnoreCase(s.measureWhat, "Nothing")) {
+          return true;
+        }
+      }
+      return false;
+    };
+    auto evalOpDrive = [&](const char* key) -> float {
+      if (findPropCI(p, key) == nullptr) {
+        return -1.0f;
+      }
+      const auto mv = p.getMVar(key);
+      if (!isActiveMVar(mv)) {
+        return -1.0f;
+      }
+      return std::max(0.0f, mvarEval.evaluateScalar(
+          iota::dsp::MVarEvaluator::makeKey(rid, key), mv, mctx));
+    };
+
     TwitchConfig cfg;
-    const float baseAmount = std::max(0.0f, getFloatCI(p, "amount", 0.15f));
+    const float baseAmount = std::max(0.0f, getFloatCI(p, "amount", 0.0f));
     const float reactiveAmount = std::max(0.0f, mvarEval.evaluateScalar(
         iota::dsp::MVarEvaluator::makeKey(rid, "measureAmount"),
         p.getMVar("measureAmount"),
         mctx));
     cfg.amount = baseAmount + reactiveAmount;
-    const float hdrGain = evalElementHdrGain(el, mctx);
 
+    cfg.enableSlide = getBoolCI(p, "enableSlide", true);
+    cfg.enableScale = getBoolCI(p, "enableScale", true);
+    cfg.enableLight = getBoolCI(p, "enableLight", true);
+    cfg.enableColor = getBoolCI(p, "enableColor", false);
+    cfg.enableBlur = getBoolCI(p, "enableBlur", true);
+    cfg.enableSlice = getBoolCI(p, "enableSlice", false);
+
+    cfg.slideDrive = evalOpDrive("measureSlide");
+    cfg.scaleDrive = evalOpDrive("measureScale");
+    cfg.lightDrive = evalOpDrive("measureLight");
+    cfg.colorDrive = evalOpDrive("measureColor");
+    cfg.blurDrive = evalOpDrive("measureBlur");
+    cfg.sliceDrive = evalOpDrive("measureSlice");
+
+    auto effOpDrive = [&](bool enabled, float overrideVal) {
+      if (!enabled) return 0.0f;
+      return std::max(0.0f, (overrideVal >= 0.0f) ? overrideVal : cfg.amount);
+    };
+    const float maxOpDrive = std::max({
+        effOpDrive(cfg.enableSlide, cfg.slideDrive),
+        effOpDrive(cfg.enableScale, cfg.scaleDrive),
+        effOpDrive(cfg.enableLight, cfg.lightDrive),
+        effOpDrive(cfg.enableColor, cfg.colorDrive),
+        effOpDrive(cfg.enableBlur, cfg.blurDrive),
+        effOpDrive(cfg.enableSlice, cfg.sliceDrive),
+    });
+
+    const float hdrGain = evalElementHdrGain(el, mctx);
     if (useCanvasBelow && elemBlend == iota::core::BlendMode::Opaque && fullCoverage &&
-        cfg.amount <= 1e-6f && mainCol.r == 255 && mainCol.g == 255 &&
+        maxOpDrive <= 1e-6f && mainCol.r == 255 && mainCol.g == 255 &&
         mainCol.b == 255 && mainCol.a == 255 && std::abs(hdrGain - 1.0f) <= 1e-5f) {
+      twitchPrevPoses[rid] = TwitchPose{};
       return;
     }
 
@@ -2729,15 +2778,10 @@ struct SceneRenderer::Impl {
     cfg.randomSeed = getFloatCI(p, "randomSeed", 0.0f);
     cfg.timePhase = getFloatCI(p, "timePhase", 0.0f);
 
-    cfg.enableSlide = getBoolCI(p, "enableSlide", true);
-    cfg.enableScale = getBoolCI(p, "enableScale", true);
-    cfg.enableLight = getBoolCI(p, "enableLight", true);
-    cfg.enableColor = getBoolCI(p, "enableColor", false);
-    cfg.enableBlur = getBoolCI(p, "enableBlur", true);
-    cfg.enableSlice = getBoolCI(p, "enableSlice", false);
-
     cfg.slideAmount = std::max(0.0f, getFloatCI(p, "slideAmount", 0.22f));
     cfg.slideDirection = twitchSlideDirectionFromString(getStringCI(p, "slideDirection", "Both"));
+    cfg.slideAngle = getFloatCI(p, "slideAngle", 90.0f);
+    cfg.slideRandomness = std::clamp(getFloatCI(p, "slideRandomness", 1.0f), 0.0f, 1.0f);
     cfg.slideRgbSplit = std::max(0.0f, getFloatCI(p, "slideRgbSplit", 0.35f));
     cfg.slideRgbAngle = getFloatCI(p, "slideRgbAngle", 0.0f);
     cfg.slideRgbAutoAngle = getBoolCI(p, "slideRgbAutoAngle", true);
@@ -2745,20 +2789,25 @@ struct SceneRenderer::Impl {
     cfg.scaleAmount = std::max(0.0f, getFloatCI(p, "scaleAmount", 0.18f));
     cfg.scaleDirection = twitchScaleDirectionFromString(getStringCI(p, "scaleDirection", "ZoomIn"));
     cfg.scaleRotation = getFloatCI(p, "scaleRotation", 3.0f);
+    cfg.scaleRandomness = std::clamp(getFloatCI(p, "scaleRandomness", 1.0f), 0.0f, 1.0f);
 
     cfg.lightAmount = std::max(0.0f, getFloatCI(p, "lightAmount", 0.55f));
     cfg.lightBehavior = twitchLightBehaviorFromString(getStringCI(p, "lightBehavior", "Brighten"));
+    cfg.lightRandomness = std::clamp(getFloatCI(p, "lightRandomness", 1.0f), 0.0f, 1.0f);
 
     cfg.colorAmount = std::clamp(getFloatCI(p, "colorAmount", 0.55f), 0.0f, 1.0f);
     cfg.colorMode = twitchColorModeFromString(getStringCI(p, "colorMode", "HueShift"));
+    cfg.colorRandomness = std::clamp(getFloatCI(p, "colorRandomness", 1.0f), 0.0f, 1.0f);
 
     cfg.blurAmount = std::max(0.0f, getFloatCI(p, "blurAmount", 0.35f));
     cfg.blurDirection = twitchBlurDirectionFromString(getStringCI(p, "blurDirection", "Directional"));
     cfg.blurAngle = getFloatCI(p, "blurAngle", 0.0f);
+    cfg.blurRandomness = std::clamp(getFloatCI(p, "blurRandomness", 1.0f), 0.0f, 1.0f);
 
     cfg.sliceAmount = std::clamp(getFloatCI(p, "sliceAmount", 0.25f), 0.0f, 1.0f);
     cfg.sliceCount = std::clamp(getIntCI(p, "sliceCount", 18), 2, 96);
     cfg.sliceRgbSplit = std::max(0.0f, getFloatCI(p, "sliceRgbSplit", 0.40f));
+    cfg.sliceRandomness = std::clamp(getFloatCI(p, "sliceRandomness", 1.0f), 0.0f, 1.0f);
 
     const bool moBlurOn = getBoolCI(p, "motionBlur", true);
     const float moBlurLen = std::clamp(getFloatCI(p, "moBlurLength", 0.65f), 0.0f, 4.0f);
@@ -2766,7 +2815,30 @@ struct SceneRenderer::Impl {
                                       ? (0.5 * static_cast<double>(moBlurLen) / 60.0)
                                       : 0.0;
 
-    const TwitchFrameState tw = evaluateTwitch(cfg, mctx.totalTimeSec, halfShutterSec);
+    TwitchFrameState tw = evaluateTwitch(cfg, mctx.totalTimeSec, halfShutterSec);
+    if (moBlurOn && moBlurLen > 1e-4f) {
+      if (const auto prevIt = twitchPrevPoses.find(rid); prevIt != twitchPrevPoses.end()) {
+        const float effSlideRand = (cfg.mode == TwitchMode::Direct) ? 0.0f : cfg.slideRandomness;
+        const float effScaleRand = (cfg.mode == TwitchMode::Direct) ? 0.0f : cfg.scaleRandomness;
+        const float wSlide = 0.5f * std::clamp(moBlurLen, 0.0f, 3.0f) * (1.0f - effSlideRand);
+        const float wScale = 0.5f * std::clamp(moBlurLen, 0.0f, 3.0f) * (1.0f - effScaleRand);
+        const TwitchPose& prev = prevIt->second;
+        const float dx = tw.pose1.slideX - prev.slideX;
+        const float dy = tw.pose1.slideY - prev.slideY;
+        const float ds = tw.pose1.scale - prev.scale;
+        const float dt = tw.pose1.tiltRad - prev.tiltRad;
+        tw.pose0.slideX -= dx * wSlide;
+        tw.pose2.slideX += dx * wSlide;
+        tw.pose0.slideY -= dy * wSlide;
+        tw.pose2.slideY += dy * wSlide;
+        tw.pose0.scale = std::max(0.2f, tw.pose0.scale - ds * wScale);
+        tw.pose2.scale = std::max(0.2f, tw.pose2.scale + ds * wScale);
+        tw.pose0.tiltRad -= dt * wScale;
+        tw.pose2.tiltRad += dt * wScale;
+      }
+      twitchPrevPoses[rid] = tw.pose1;
+    }
+
     const bool hasMotionDelta =
         (halfShutterSec > 1e-6) &&
         (std::abs(tw.pose2.slideX - tw.pose0.slideX) > 1e-5f ||
@@ -3129,6 +3201,7 @@ void SceneRenderer::resetSimulation() {
   impl_->particleSystems.clear();
   impl_->cachedEmitterSamples.clear();
   impl_->motionBlurPrevTransforms.clear();
+  impl_->twitchPrevPoses.clear();
   for (auto& [id, hist] : impl_->temporalBlurHistories) {
     hist.initialized = false;
   }

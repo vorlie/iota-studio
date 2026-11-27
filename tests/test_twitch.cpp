@@ -144,6 +144,68 @@ TEST_CASE("Twitch evaluator is deterministic, respects zero amount, toggles, and
       }
     }
   }
+
+  SUBCASE("Direct mode, directed slide axes, per-operator drives, and zero randomness") {
+    TwitchConfig d;
+    d.amount = 1.0f;
+    d.mode = TwitchMode::Direct;
+    d.slideAmount = 0.25f;
+    d.slideRgbSplit = 0.0f;
+    d.enableScale = false;
+    d.enableLight = false;
+    d.enableColor = false;
+    d.enableBlur = false;
+    d.enableSlice = false;
+
+    d.slideDirection = TwitchSlideDirection::Up;
+    const auto up1 = evaluateTwitch(d, 0.10);
+    const auto up2 = evaluateTwitch(d, 3.75);
+    CHECK(up1.pose1.slideX == 0.0f);
+    CHECK(up1.pose1.slideY < -0.05f);
+    CHECK(up1.pose1.slideY == doctest::Approx(up2.pose1.slideY));
+
+    d.slideDirection = TwitchSlideDirection::Down;
+    const auto down = evaluateTwitch(d, 0.50);
+    CHECK(down.pose1.slideX == 0.0f);
+    CHECK(down.pose1.slideY == doctest::Approx(-up1.pose1.slideY));
+
+    d.slideDirection = TwitchSlideDirection::Left;
+    const auto left = evaluateTwitch(d, 0.50);
+    CHECK(left.pose1.slideY == 0.0f);
+    CHECK(left.pose1.slideX < -0.05f);
+
+    d.slideDirection = TwitchSlideDirection::Right;
+    const auto right = evaluateTwitch(d, 0.50);
+    CHECK(right.pose1.slideY == 0.0f);
+    CHECK(right.pose1.slideX == doctest::Approx(-left.pose1.slideX));
+
+    d.slideDirection = TwitchSlideDirection::CustomAngle;
+    d.slideAngle = 90.0f;
+    const auto ang90 = evaluateTwitch(d, 0.50);
+    CHECK(ang90.pose1.slideX == doctest::Approx(0.0f).epsilon(1e-5));
+    CHECK(ang90.pose1.slideY == doctest::Approx(up1.pose1.slideY));
+
+    // Per-operator drive overrides master amount independently
+    TwitchConfig splitCfg;
+    splitCfg.amount = 0.0f;
+    splitCfg.mode = TwitchMode::Direct;
+    splitCfg.enableSlide = true;
+    splitCfg.enableLight = true;
+    splitCfg.slideDirection = TwitchSlideDirection::Up;
+    splitCfg.slideDrive = 1.0f;
+    splitCfg.lightDrive = 0.0f;
+    const auto opRes = evaluateTwitch(splitCfg, 0.25);
+    CHECK(opRes.pose1.slideY < 0.0f);
+    CHECK(opRes.lightDelta == 0.0f);
+
+    // Zero randomness in Random mode holds directed slide constant at fixed drive
+    TwitchConfig noRand = d;
+    noRand.mode = TwitchMode::Random;
+    noRand.slideDirection = TwitchSlideDirection::Up;
+    noRand.slideRandomness = 0.0f;
+    CHECK(evaluateTwitch(noRand, 0.15).pose1.slideY == doctest::Approx(up1.pose1.slideY));
+    CHECK(evaluateTwitch(noRand, 2.40).pose1.slideY == doctest::Approx(up1.pose1.slideY));
+  }
 }
 
 TEST_CASE("TwitchEffect serializes cleanly through Project JSON round-trip") {

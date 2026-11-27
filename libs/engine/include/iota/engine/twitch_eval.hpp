@@ -24,6 +24,7 @@ enum class TwitchMode {
   Pulse = 1,
   Stutter = 2,
   Smooth = 3,
+  Direct = 4,
 };
 
 enum class TwitchSlideDirection {
@@ -31,6 +32,11 @@ enum class TwitchSlideDirection {
   Horizontal = 1,
   Vertical = 2,
   Diagonal = 3,
+  Up = 4,
+  Down = 5,
+  Left = 6,
+  Right = 7,
+  CustomAngle = 8,
 };
 
 enum class TwitchScaleDirection {
@@ -66,12 +72,20 @@ enum class TwitchBlurDirection {
 [[nodiscard]] TwitchBlurDirection twitchBlurDirectionFromString(std::string_view s) noexcept;
 
 struct TwitchConfig {
-  float amount = 0.15f;
+  float amount = 0.0f;
   float speed = 12.0f;
   TwitchMode mode = TwitchMode::Random;
   float threshold = 0.45f;
   float randomSeed = 0.0f;
   float timePhase = 0.0f;
+
+  // Optional per-operator drive overrides (>= 0 overrides master `amount`; < 0 inherits `amount`).
+  float slideDrive = -1.0f;
+  float scaleDrive = -1.0f;
+  float lightDrive = -1.0f;
+  float colorDrive = -1.0f;
+  float blurDrive = -1.0f;
+  float sliceDrive = -1.0f;
 
   bool enableSlide = true;
   bool enableScale = true;
@@ -82,6 +96,8 @@ struct TwitchConfig {
 
   float slideAmount = 0.22f;
   TwitchSlideDirection slideDirection = TwitchSlideDirection::Both;
+  float slideAngle = 90.0f;
+  float slideRandomness = 1.0f;
   float slideRgbSplit = 0.35f;
   float slideRgbAngle = 0.0f;
   bool slideRgbAutoAngle = true;
@@ -89,25 +105,30 @@ struct TwitchConfig {
   float scaleAmount = 0.18f;
   TwitchScaleDirection scaleDirection = TwitchScaleDirection::ZoomIn;
   float scaleRotation = 3.0f;
+  float scaleRandomness = 1.0f;
 
   float lightAmount = 0.55f;
   TwitchLightBehavior lightBehavior = TwitchLightBehavior::Brighten;
+  float lightRandomness = 1.0f;
 
   float colorAmount = 0.55f;
   TwitchColorMode colorMode = TwitchColorMode::HueShift;
+  float colorRandomness = 1.0f;
 
   float blurAmount = 0.35f;
   TwitchBlurDirection blurDirection = TwitchBlurDirection::Directional;
   float blurAngle = 0.0f;
+  float blurRandomness = 1.0f;
 
   float sliceAmount = 0.25f;
   int sliceCount = 18;
   float sliceRgbSplit = 0.40f;
+  float sliceRandomness = 1.0f;
 };
 
 struct TwitchPose {
-  float slideX = 0.0f;   // normalized horizontal shift
-  float slideY = 0.0f;   // normalized vertical shift
+  float slideX = 0.0f;   // normalized horizontal shift (+right, -left)
+  float slideY = 0.0f;   // normalized vertical shift (+down, -up)
   float scale = 1.0f;    // magnification factor (>1 zooms in, <1 zooms out)
   float tiltRad = 0.0f;  // roll angle in radians
 };
