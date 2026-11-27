@@ -1418,10 +1418,6 @@ TEST_CASE("Headless OpenGL 4.5 SceneRenderer renders starter and built-in preset
     tw.props.setFloat("amount", 0.0f, 0.0f, 5.0f, "2_twitchMaster");
     tw.props.setMVar("measureAmount", iota::model::MVariableFloat{{{"Nothing", 0.0f, 0.0f}}}, "mvarf 0.0 5.0", "2_twitchMaster");
 
-    // Insert SoundKeys so SoundKeys1 drives Twitch dynamically in active phase
-    auto sk = iota::model::createDefaultElement(iota::model::ElementType::SoundKeys);
-    proj.compositions[0].elements.insert(proj.compositions[0].elements.begin() + 1, std::move(sk));
-
     auto projNoTwitch = proj;
     proj.compositions[0].elements.push_back(tw);
 

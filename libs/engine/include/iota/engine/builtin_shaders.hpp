@@ -960,10 +960,10 @@ vec4 sampleWrapped(vec2 uv) {
       (u_wrapY == 0 && (uv.y < 0.0 || uv.y > 1.0))) {
     return vec4(0.0);
   }
-  if (u_wrapX != 0) {
+  if (u_wrapX != 0 && (uv.x < 0.0 || uv.x > 1.0)) {
     uv.x = wrapCoord(uv.x, u_wrapX);
   }
-  if (u_wrapY != 0) {
+  if (u_wrapY != 0 && (uv.y < 0.0 || uv.y > 1.0)) {
     uv.y = wrapCoord(uv.y, u_wrapY);
   }
   return texture(u_texture, uv);
@@ -988,6 +988,9 @@ vec4 evalCurve(vec4 p0, vec4 p1, vec4 p2, float s) {
 }
 
 vec2 transformPoseUv(vec4 pose, vec2 baseP, float aspect, float invAspect, float sliceShiftX) {
+  if (abs(pose.w) <= 1e-5 && abs(pose.z - 1.0) <= 1e-5) {
+    return v_uv - pose.xy + vec2(sliceShiftX, 0.0);
+  }
   vec2 p = baseP;
   if (abs(pose.w) > 1e-5) {
     float cs = cos(pose.w);

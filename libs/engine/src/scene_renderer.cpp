@@ -2684,6 +2684,21 @@ struct SceneRenderer::Impl {
          rect.right >= static_cast<float>(width) - 0.5f &&
          rect.bottom >= static_cast<float>(height) - 0.5f);
 
+    TwitchConfig cfg;
+    const float baseAmount = std::max(0.0f, getFloatCI(p, "amount", 0.15f));
+    const float reactiveAmount = std::max(0.0f, mvarEval.evaluateScalar(
+        iota::dsp::MVarEvaluator::makeKey(rid, "measureAmount"),
+        p.getMVar("measureAmount"),
+        mctx));
+    cfg.amount = baseAmount + reactiveAmount;
+    const float hdrGain = evalElementHdrGain(el, mctx);
+
+    if (useCanvasBelow && elemBlend == iota::core::BlendMode::Opaque && fullCoverage &&
+        cfg.amount <= 1e-6f && mainCol.r == 255 && mainCol.g == 255 &&
+        mainCol.b == 255 && mainCol.a == 255 && std::abs(hdrGain - 1.0f) <= 1e-5f) {
+      return;
+    }
+
     ResolvedTexture target{};
     if (useCanvasBelow) {
       if (elemBlend == iota::core::BlendMode::Opaque && fullCoverage && canvasSnapshotRt &&
@@ -2701,14 +2716,6 @@ struct SceneRenderer::Impl {
     } else {
       target = resolveTextureUri(project, targetUri);
     }
-
-    TwitchConfig cfg;
-    const float baseAmount = std::max(0.0f, getFloatCI(p, "amount", 0.15f));
-    const float reactiveAmount = std::max(0.0f, mvarEval.evaluateScalar(
-        iota::dsp::MVarEvaluator::makeKey(rid, "measureAmount"),
-        p.getMVar("measureAmount"),
-        mctx));
-    cfg.amount = baseAmount + reactiveAmount;
 
     const float baseSpeed = std::max(0.1f, getFloatCI(p, "speed", 12.0f));
     const float reactiveSpeed = std::max(0.0f, mvarEval.evaluateScalar(
@@ -2823,7 +2830,7 @@ struct SceneRenderer::Impl {
     device->setUniformInt(shTwitch, "u_wrapY", wrapY);
     device->setUniformInt(shTwitch, "u_samples", samples);
     device->setUniformInt(shTwitch, "u_colorSwapDir", tw.colorSwapDir);
-    device->setUniformFloat(shTwitch, "u_hdrGain", evalElementHdrGain(el, mctx));
+    device->setUniformFloat(shTwitch, "u_hdrGain", hdrGain);
     device->drawIndexed(iota::rhi::PrimitiveTopology::Triangles, scratchVerts, scratchIndices);
     if (stats) stats->drawCalls += 1;
   }
