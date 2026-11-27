@@ -195,6 +195,7 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
     setSingleSelection(0, -1);
   }
   undoStack_.clear(project_);
+  loadBundledTemplateCatalog();
   if (!isSmokeTest_) {
     projectLibrary_.load(iota::preset_io::ProjectLibrary::defaultRegistryPath());
     lastUserActivityWallSec_ = glfwGetTime();
@@ -913,6 +914,30 @@ void EditorApp::drawMenuBar() {
   if (ImGui::BeginMenu("File")) {
     if (ImGui::MenuItem("Project Manager...\tCtrl+N")) {
       openProjectManagerModal_ = true;
+    }
+    if (ImGui::BeginMenu("Templates")) {
+      for (const auto& tpl : bundledTemplates_) {
+        if (ImGui::MenuItem(tpl.title.c_str())) {
+          openBundledTemplate(tpl, tpl.title, tpl.defaultWidth, tpl.defaultHeight, tpl.defaultFps, "", false);
+        }
+        if (!tpl.description.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+          ImGui::SetTooltip("%s", tpl.description.c_str());
+        }
+      }
+      if (!bundledTemplates_.empty()) {
+        ImGui::Separator();
+      }
+      for (const auto& st : iota::preset_io::projectTemplates()) {
+        if (ImGui::MenuItem(st.title)) {
+          applyCreatedTemplateProject(
+              iota::preset_io::createProjectFromTemplate(st.kind, st.title, previewWidth_, previewHeight_, currentTargetFps()),
+              false);
+        }
+        if (st.description && *st.description && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+          ImGui::SetTooltip("%s", st.description);
+        }
+      }
+      ImGui::EndMenu();
     }
     if (ImGui::MenuItem("New Starter Project")) {
       project_ = iota::model::createStarterProject();
@@ -2795,6 +2820,7 @@ void EditorApp::drawProjectManagerModal() {
                             currentProjectPath_,
                             projectDirty_,
                             projectLibrary_,
+                            bundledTemplates_,
                             projectManagerState_,
                             actions);
 
@@ -2808,25 +2834,24 @@ void EditorApp::drawProjectManagerModal() {
   if (actions.openRecentFile && !actions.openPath.empty()) {
     loadProjectFromPath(actions.openPath);
   }
-  if (actions.createTemplateProject || actions.createAndSaveProject) {
-    project_ = iota::preset_io::createProjectFromTemplate(actions.templateKind,
-                                                          projectManagerState_.newName,
-                                                          projectManagerState_.newWidth,
-                                                          projectManagerState_.newHeight,
-                                                          projectManagerState_.newFps);
-    project_.metadata.notes = projectManagerState_.newNotes;
-    currentProjectPath_.clear();
-    projectDirty_ = false;
-    applyProjectMetadata(project_.metadata);
-    setSingleSelection(0, project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0);
-    renderer_.invalidateLocalAssets();
-    renderer_.resetSimulation();
-    undoStack_.clear(project_);
-    updateWindowTitle();
-    statusBanner_ = "Created project " + project_.metadata.name;
-    if (actions.createAndSaveProject) {
-      saveProjectAsDialog("iota");
-    }
+  if (actions.createBundledTemplate &&
+      actions.bundledTemplateIndex >= 0 &&
+      actions.bundledTemplateIndex < static_cast<int>(bundledTemplates_.size())) {
+    openBundledTemplate(bundledTemplates_[static_cast<size_t>(actions.bundledTemplateIndex)],
+                        projectManagerState_.newName,
+                        projectManagerState_.newWidth,
+                        projectManagerState_.newHeight,
+                        projectManagerState_.newFps,
+                        projectManagerState_.newNotes,
+                        actions.createAndSaveProject);
+  } else if (actions.createTemplateProject || actions.createAndSaveProject) {
+    auto created = iota::preset_io::createProjectFromTemplate(actions.templateKind,
+                                                              projectManagerState_.newName,
+                                                              projectManagerState_.newWidth,
+                                                              projectManagerState_.newHeight,
+                                                              projectManagerState_.newFps);
+    created.metadata.notes = projectManagerState_.newNotes;
+    applyCreatedTemplateProject(std::move(created), actions.createAndSaveProject);
   }
   if (actions.applyCurrentSettings) {
     project_.metadata.name = projectManagerState_.curName;
@@ -3061,6 +3086,89 @@ void EditorApp::recordProjectInLibrary(const std::filesystem::path& path) {
   projectLibrary_.recordOpened(std::move(entry));
   projectLibrary_.save(iota::preset_io::ProjectLibrary::defaultRegistryPath());
   platform::syncPersistentStorage();
+}
+
+void EditorApp::loadBundledTemplateCatalog() {
+  const std::filesystem::path dir = platform::findBundledAssetPath("assets/templates");
+  if (dir.empty()) {
+    bundledTemplates_.clear();
+    return;
+  }
+#ifdef __EMSCRIPTEN__
+  constexpr bool kRequireArchiveExists = false;
+#else
+  constexpr bool kRequireArchiveExists = true;
+#endif
+  bundledTemplates_ = iota::preset_io::loadBundledTemplateManifest(dir, kRequireArchiveExists);
+}
+
+void EditorApp::applyCreatedTemplateProject(iota::model::Project proj, bool promptSaveAsIota) {
+#ifdef IOTA_ENABLE_MCP
+  if (mcpBridgeHost_.isListening()) {
+    disableMcpLiveBridge("MCP Live Bridge disabled for newly created project");
+  }
+#endif
+  project_ = std::move(proj);
+  currentProjectPath_.clear();
+  projectDirty_ = false;
+  applyProjectMetadata(project_.metadata);
+  setSingleSelection(0, project_.compositions.empty() || project_.compositions[0].elements.empty() ? -1 : 0);
+  shaderEditor_.clearIfMissing(project_);
+  renderer_.invalidateLocalAssets();
+  renderer_.resetSimulation();
+  undoStack_.clear(project_);
+  updateWindowTitle();
+  statusBanner_ = "Created project " + project_.metadata.name;
+  if (promptSaveAsIota) {
+    saveProjectAsDialog("iota");
+  }
+}
+
+void EditorApp::openBundledTemplate(const iota::preset_io::BundledTemplateInfo& tpl,
+                                    std::string nameOverride,
+                                    int widthOverride,
+                                    int heightOverride,
+                                    int fpsOverride,
+                                    std::string notesOverride,
+                                    bool promptSaveAsIota) {
+#ifdef __EMSCRIPTEN__
+  statusBanner_ = "Loading template " + tpl.title + "...";
+  platform::requestFetchBundledTemplate(
+      tpl.file,
+      [this,
+       tpl,
+       nameOverride = std::move(nameOverride),
+       widthOverride,
+       heightOverride,
+       fpsOverride,
+       notesOverride = std::move(notesOverride),
+       promptSaveAsIota](std::vector<uint8_t> bytes) mutable {
+        std::string err;
+        auto loaded = iota::preset_io::loadProjectFromBundledTemplateMemory(
+            bytes, tpl, std::move(nameOverride), widthOverride, heightOverride, fpsOverride, &err);
+        if (!loaded) {
+          statusBanner_ = "Failed to load template: " + err;
+          return;
+        }
+        if (!notesOverride.empty()) {
+          loaded->metadata.notes = std::move(notesOverride);
+        }
+        applyCreatedTemplateProject(std::move(*loaded), promptSaveAsIota);
+      },
+      [this](std::string err) { statusBanner_ = "Failed to load template: " + err; });
+#else
+  std::string err;
+  auto loaded = iota::preset_io::loadProjectFromBundledTemplate(
+      tpl, std::move(nameOverride), widthOverride, heightOverride, fpsOverride, &err);
+  if (!loaded) {
+    statusBanner_ = "Failed to load template: " + err;
+    return;
+  }
+  if (!notesOverride.empty()) {
+    loaded->metadata.notes = std::move(notesOverride);
+  }
+  applyCreatedTemplateProject(std::move(*loaded), promptSaveAsIota);
+#endif
 }
 
 bool EditorApp::loadProjectFromPath(const std::filesystem::path& path) {

@@ -67,6 +67,7 @@ if(IOTA_DISCORD_SDK_FOUND)
   endif()
 endif()
 
+target_compile_definitions(iota_tests PRIVATE IOTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 iota_configure_target(iota_tests)
 
 add_test(NAME iota_tests COMMAND iota_tests)

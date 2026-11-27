@@ -513,3 +513,48 @@ TEST_CASE("Cross-platform serialization, path traversal guards, and audio portab
 
   std::filesystem::remove_all(tmpDir, ec);
 }
+
+TEST_CASE("Bundled project templates manifest and archives load cleanly") {
+  using namespace iota::core;
+  using namespace iota::preset_io;
+
+  const std::filesystem::path templatesDir =
+      std::filesystem::path(IOTA_SOURCE_DIR) / "assets" / "templates";
+  const auto catalog = loadBundledTemplateManifest(templatesDir, true);
+  REQUIRE(catalog.size() >= 2);
+
+  bool sawBeyond = false;
+  bool sawBlaze = false;
+  for (const auto& tpl : catalog) {
+    if (tpl.id == "beyond_sdr") sawBeyond = true;
+    if (tpl.id == "blaze_halo") sawBlaze = true;
+
+    std::string err;
+    auto proj = loadProjectFromBundledTemplate(tpl, {}, 0, 0, 0, &err);
+    REQUIRE_MESSAGE(proj.has_value(), tpl.id << ": " << err);
+    CHECK_FALSE(proj->compositions.empty());
+    CHECK(proj->metadata.audioPath.empty());
+    CHECK(proj->metadata.audioAssets.empty());
+    CHECK(iota::model::removeUnusedLocalAssets(*proj) == 0);
+
+    std::ifstream in(tpl.archivePath, std::ios::binary | std::ios::ate);
+    REQUIRE(in.is_open());
+    const auto sz = in.tellg();
+    REQUIRE(sz > 0);
+    std::vector<uint8_t> bytes(static_cast<size_t>(sz));
+    in.seekg(0, std::ios::beg);
+    REQUIRE(in.read(reinterpret_cast<char*>(bytes.data()), sz).good());
+
+    auto memProj = loadProjectFromBundledTemplateMemory(bytes, tpl, "Custom Remix", 1280, 720, 30, &err);
+    REQUIRE_MESSAGE(memProj.has_value(), err);
+    CHECK(memProj->metadata.name == "Custom Remix");
+    CHECK(memProj->metadata.previewWidth == 1280);
+    CHECK(memProj->metadata.previewHeight == 720);
+    CHECK(memProj->metadata.targetFps == 30);
+    CHECK(memProj->compositions.size() == proj->compositions.size());
+    CHECK(memProj->localAssets.size() == proj->localAssets.size());
+  }
+
+  CHECK(sawBeyond);
+  CHECK(sawBlaze);
+}

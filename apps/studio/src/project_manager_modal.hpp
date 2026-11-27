@@ -26,6 +26,7 @@ namespace iota::studio {
 struct ProjectManagerModalState {
   char newName[128] = "My Visualizer";
   int selectedTemplate = 0;
+  bool selectedIsBundled = false;
   int newWidth = 1280;
   int newHeight = 720;
   int newFps = 60;
@@ -44,7 +45,9 @@ struct ProjectManagerActions {
   bool openFileDialog = false;
 
   bool createTemplateProject = false;
+  bool createBundledTemplate = false;
   bool createAndSaveProject = false;
+  int bundledTemplateIndex = -1;
   iota::preset_io::ProjectTemplateKind templateKind = iota::preset_io::ProjectTemplateKind::MinimalCircular;
 
   bool applyCurrentSettings = false;
@@ -63,6 +66,7 @@ void renderProjectManagerModal(bool& openRequested,
                                const std::filesystem::path& currentProjectPath,
                                bool projectDirty,
                                iota::preset_io::ProjectLibrary& library,
+                               const std::vector<iota::preset_io::BundledTemplateInfo>& bundledTemplates,
                                ProjectManagerModalState& state,
                                ProjectManagerActions& actions);
 

@@ -138,11 +138,18 @@ if(EMSCRIPTEN)
     "-sEXPORTED_FUNCTIONS=['_main','_malloc','_free']"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS','IDBFS','UTF8ToString','stringToUTF8','lengthBytesUTF8','HEAPF32','HEAPU8']"
     "-lidbfs.js"
-    "--preload-file" "${CMAKE_SOURCE_DIR}/assets/fonts@/assets/fonts"
+    "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/fonts@/assets/fonts"
+    "SHELL:--preload-file ${CMAKE_SOURCE_DIR}/assets/templates/manifest.json@/assets/templates/manifest.json"
   )
 endif()
 
 if(NOT EMSCRIPTEN)
+  add_custom_command(TARGET iota_studio POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_SOURCE_DIR}/assets/templates"
+      "$<TARGET_FILE_DIR:iota_studio>/assets/templates"
+    COMMENT "Copying bundled starter templates"
+  )
   install(TARGETS iota_studio RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
 if(IOTA_DISCORD_SDK_FOUND AND NOT EMSCRIPTEN)
@@ -154,6 +161,9 @@ if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
     RENAME "iota-studio.png"
   )
   install(FILES "${CMAKE_SOURCE_DIR}/assets/icon.png"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/iota-studio/assets"
+  )
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/templates"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/iota-studio/assets"
   )
   install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/io.github.vorlie.iota_studio.desktop"

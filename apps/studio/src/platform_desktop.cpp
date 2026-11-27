@@ -257,38 +257,6 @@ std::vector<std::string> splitLinesTrimmed(const std::string& raw) {
   return lines;
 }
 
-std::filesystem::path findBundledAssetPath(std::string_view relPath) {
-  std::error_code ec;
-  char exeBuf[PATH_MAX]{};
-  const ssize_t n = readlink("/proc/self/exe", exeBuf, sizeof(exeBuf) - 1);
-  if (n > 0) {
-    exeBuf[n] = '\0';
-    const std::filesystem::path exeDir = std::filesystem::path(exeBuf).parent_path();
-    const std::filesystem::path prefixAsset = (exeDir / "../share/iota-studio" / relPath).lexically_normal();
-    if (iota::core::pathExistsNoThrow(prefixAsset)) {
-      return prefixAsset;
-    }
-    std::filesystem::path dir = exeDir;
-    for (int depth = 0; depth < 5 && !dir.empty(); ++depth) {
-      const auto cand = dir / relPath;
-      if (iota::core::pathExistsNoThrow(cand)) {
-        return cand;
-      }
-      if (!dir.has_parent_path() || dir == dir.parent_path()) break;
-      dir = dir.parent_path();
-    }
-  }
-  const std::filesystem::path systemAsset = std::filesystem::path("/usr/share/iota-studio") / relPath;
-  if (iota::core::pathExistsNoThrow(systemAsset)) {
-    return systemAsset;
-  }
-  const auto cwdCand = std::filesystem::current_path(ec) / relPath;
-  if (!ec && iota::core::pathExistsNoThrow(cwdCand)) {
-    return cwdCand;
-  }
-  return {};
-}
-
 #ifdef IOTA_HAS_FONTCONFIG
 std::string queryFontconfigFile(FcConfig* cfg, const char* patternStr) {
   if (!cfg || !patternStr) return {};
@@ -957,6 +925,83 @@ void requestOpenAudioFile(GLFWwindow* owner,
   if (auto chosen = showOpenFileDialog(owner, title, filters)) {
     if (onPathPicked) onPathPicked(std::move(*chosen));
   }
+}
+
+std::filesystem::path findBundledAssetPath(std::string_view relPath) {
+  std::error_code ec;
+#ifdef _WIN32
+  std::vector<wchar_t> exeBuf(32768, L'\0');
+  const DWORD len = GetModuleFileNameW(nullptr, exeBuf.data(), static_cast<DWORD>(exeBuf.size()));
+  if (len > 0 && len < exeBuf.size()) {
+    std::filesystem::path dir = std::filesystem::path(std::wstring(exeBuf.data(), len)).parent_path();
+    for (int depth = 0; depth < 6 && !dir.empty(); ++depth) {
+      const auto cand = dir / iota::core::pathFromUtf8(relPath);
+      if (iota::core::pathExistsNoThrow(cand)) {
+        return cand;
+      }
+      if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+      dir = dir.parent_path();
+    }
+  }
+#else
+  char exeBuf[PATH_MAX]{};
+  const ssize_t n = readlink("/proc/self/exe", exeBuf, sizeof(exeBuf) - 1);
+  if (n > 0) {
+    exeBuf[n] = '\0';
+    const std::filesystem::path exeDir = std::filesystem::path(exeBuf).parent_path();
+    const std::filesystem::path prefixAsset =
+        (exeDir / "../share/iota-studio" / iota::core::pathFromUtf8(relPath)).lexically_normal();
+    if (iota::core::pathExistsNoThrow(prefixAsset)) {
+      return prefixAsset;
+    }
+    std::filesystem::path dir = exeDir;
+    for (int depth = 0; depth < 6 && !dir.empty(); ++depth) {
+      const auto cand = dir / iota::core::pathFromUtf8(relPath);
+      if (iota::core::pathExistsNoThrow(cand)) {
+        return cand;
+      }
+      if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+      dir = dir.parent_path();
+    }
+  }
+  const std::filesystem::path systemAsset =
+      std::filesystem::path("/usr/share/iota-studio") / iota::core::pathFromUtf8(relPath);
+  if (iota::core::pathExistsNoThrow(systemAsset)) {
+    return systemAsset;
+  }
+#endif
+  const auto cwdCand = std::filesystem::current_path(ec) / iota::core::pathFromUtf8(relPath);
+  if (!ec && iota::core::pathExistsNoThrow(cwdCand)) {
+    return cwdCand;
+  }
+  return {};
+}
+
+void requestFetchBundledTemplate(const std::string& templateFilename,
+                                 std::function<void(std::vector<uint8_t>)> onLoaded,
+                                 std::function<void(std::string)> onError) {
+  const std::filesystem::path path = findBundledAssetPath("assets/templates/" + templateFilename);
+  if (path.empty()) {
+    if (onError) onError("Bundled template file not found: " + templateFilename);
+    return;
+  }
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
+  if (!in.is_open()) {
+    if (onError) onError("Unable to open template: " + iota::core::pathToUtf8(path));
+    return;
+  }
+  const auto sz = in.tellg();
+  if (sz <= 0) {
+    if (onError) onError("Template archive is empty: " + templateFilename);
+    return;
+  }
+  std::vector<uint8_t> bytes(static_cast<size_t>(sz));
+  in.seekg(0, std::ios::beg);
+  if (!in.read(reinterpret_cast<char*>(bytes.data()), sz)) {
+    if (onError) onError("Failed reading template archive: " + templateFilename);
+    return;
+  }
+  if (onLoaded) onLoaded(std::move(bytes));
 }
 
 void triggerWebFileDownload(const std::filesystem::path& /*path*/, const std::string& /*downloadName*/) {}

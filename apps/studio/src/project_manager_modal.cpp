@@ -30,6 +30,7 @@ void renderProjectManagerModal(bool& openRequested,
                                const std::filesystem::path& currentProjectPath,
                                bool projectDirty,
                                iota::preset_io::ProjectLibrary& library,
+                               const std::vector<iota::preset_io::BundledTemplateInfo>& bundledTemplates,
                                ProjectManagerModalState& state,
                                ProjectManagerActions& actions) {
   if (openRequested) {
@@ -144,12 +145,47 @@ void renderProjectManagerModal(bool& openRequested,
       ImGui::TextUnformatted("Choose Starter Template:");
 
       const auto& templates = iota::preset_io::projectTemplates();
+      if (state.selectedIsBundled && bundledTemplates.empty()) {
+        state.selectedIsBundled = false;
+        state.selectedTemplate = 0;
+      }
+
       ImGui::BeginChild("##tpl_cards", ImVec2(0.0f, -42.0f), true);
+      if (!bundledTemplates.empty()) {
+        ImGui::TextDisabled("Featured Templates");
+        for (int i = 0; i < static_cast<int>(bundledTemplates.size()); ++i) {
+          const auto& tpl = bundledTemplates[static_cast<size_t>(i)];
+          const bool sel = state.selectedIsBundled && (state.selectedTemplate == i);
+          ImGui::PushID(1000 + i);
+          std::string label = tpl.title + " (" + std::to_string(tpl.defaultWidth) + "x" +
+                              std::to_string(tpl.defaultHeight) + " · " +
+                              std::to_string(tpl.defaultFps) + " FPS)";
+          if (ImGui::Selectable(label.c_str(), sel)) {
+            state.selectedIsBundled = true;
+            state.selectedTemplate = i;
+            state.newWidth = tpl.defaultWidth;
+            state.newHeight = tpl.defaultHeight;
+            state.newFps = tpl.defaultFps;
+          }
+          if (!tpl.description.empty()) {
+            ImGui::Indent(14.0f);
+            ImGui::TextWrapped("%s", tpl.description.c_str());
+            ImGui::Unindent(14.0f);
+          }
+          ImGui::Spacing();
+          ImGui::PopID();
+        }
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextDisabled("Built-in Starters");
+      }
+
       for (int i = 0; i < static_cast<int>(templates.size()); ++i) {
         const auto& tpl = templates[static_cast<size_t>(i)];
-        const bool sel = (state.selectedTemplate == i);
+        const bool sel = !state.selectedIsBundled && (state.selectedTemplate == i);
         ImGui::PushID(i);
         if (ImGui::Selectable(tpl.title, sel)) {
+          state.selectedIsBundled = false;
           state.selectedTemplate = i;
         }
         ImGui::Indent(14.0f);
@@ -160,19 +196,32 @@ void renderProjectManagerModal(bool& openRequested,
       }
       ImGui::EndChild();
 
-      const auto chosenKind =
-          templates[static_cast<size_t>(std::clamp(state.selectedTemplate, 0,
-                                                   static_cast<int>(templates.size()) - 1))].kind;
-      if (ImGui::Button("Create Project")) {
-        actions.createTemplateProject = true;
-        actions.templateKind = chosenKind;
+      auto dispatchSelection = [&](bool andSave) {
+        if (state.selectedIsBundled && !bundledTemplates.empty()) {
+          actions.createBundledTemplate = true;
+          actions.bundledTemplateIndex =
+              std::clamp(state.selectedTemplate, 0, static_cast<int>(bundledTemplates.size()) - 1);
+          actions.createAndSaveProject = andSave;
+        } else {
+          const auto chosenKind =
+              templates[static_cast<size_t>(std::clamp(state.selectedTemplate, 0,
+                                                       static_cast<int>(templates.size()) - 1))].kind;
+          if (andSave) {
+            actions.createAndSaveProject = true;
+          } else {
+            actions.createTemplateProject = true;
+          }
+          actions.templateKind = chosenKind;
+        }
         ImGui::CloseCurrentPopup();
+      };
+
+      if (ImGui::Button("Create Project")) {
+        dispatchSelection(false);
       }
       ImGui::SameLine();
       if (ImGui::Button("Create & Save (.iota)...")) {
-        actions.createAndSaveProject = true;
-        actions.templateKind = chosenKind;
-        ImGui::CloseCurrentPopup();
+        dispatchSelection(true);
       }
       ImGui::EndTabItem();
     }

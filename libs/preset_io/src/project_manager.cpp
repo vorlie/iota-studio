@@ -66,6 +66,49 @@ std::string toLowerAscii(std::string s) {
   return s;
 }
 
+bool isSafeTemplateFilename(std::string_view file) noexcept {
+  if (file.empty() || file.find('/') != std::string_view::npos ||
+      file.find('\\') != std::string_view::npos ||
+      file.find("..") != std::string_view::npos) {
+    return false;
+  }
+  return true;
+}
+
+void applyBundledTemplateOverrides(iota::model::Project& proj,
+                                    const BundledTemplateInfo& tpl,
+                                    std::string nameOverride,
+                                    int widthOverride,
+                                    int heightOverride,
+                                    int fpsOverride) {
+  proj.metadata.audioPath.clear();
+  proj.metadata.audioAssets.clear();
+
+  if (!nameOverride.empty()) {
+    proj.metadata.name = std::move(nameOverride);
+  } else if (proj.metadata.name.empty() || proj.metadata.name == "Untitled Project") {
+    proj.metadata.name = tpl.title.empty() ? "Untitled Project" : tpl.title;
+  }
+
+  if (widthOverride > 0) {
+    proj.metadata.previewWidth = std::max(16, widthOverride);
+  } else if (proj.metadata.previewWidth <= 0) {
+    proj.metadata.previewWidth = std::clamp(tpl.defaultWidth, 64, 7680);
+  }
+
+  if (heightOverride > 0) {
+    proj.metadata.previewHeight = std::max(16, heightOverride);
+  } else if (proj.metadata.previewHeight <= 0) {
+    proj.metadata.previewHeight = std::clamp(tpl.defaultHeight, 64, 4320);
+  }
+
+  if (fpsOverride > 0) {
+    proj.metadata.targetFps = std::clamp(fpsOverride, 1, 240);
+  } else if (proj.metadata.targetFps <= 0) {
+    proj.metadata.targetFps = std::clamp(tpl.defaultFps, 15, 240);
+  }
+}
+
 }  // namespace
 
 const std::vector<ProjectTemplateInfo>& projectTemplates() noexcept {
@@ -189,6 +232,98 @@ iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
   proj.metadata.previewWidth = std::max(16, width);
   proj.metadata.previewHeight = std::max(16, height);
   proj.metadata.targetFps = std::clamp(fps, 1, 240);
+  return proj;
+}
+
+std::vector<BundledTemplateInfo> loadBundledTemplateManifest(
+    const std::filesystem::path& templatesDir,
+    bool requireArchiveExists) {
+  std::vector<BundledTemplateInfo> result;
+  if (templatesDir.empty()) {
+    return result;
+  }
+
+  const std::filesystem::path manifestPath = templatesDir / "manifest.json";
+  std::ifstream in(manifestPath, std::ios::binary | std::ios::ate);
+  if (!in.is_open()) {
+    return result;
+  }
+  const auto sz = in.tellg();
+  if (sz <= 0) {
+    return result;
+  }
+  std::string raw(static_cast<size_t>(sz), '\0');
+  in.seekg(0, std::ios::beg);
+  if (!in.read(raw.data(), sz)) {
+    return result;
+  }
+
+  const std::string_view trimmed = iota::core::stripUtf8Bom(raw);
+  Json root;
+  try {
+    root = Json::parse(trimmed.begin(), trimmed.end());
+  } catch (const std::exception&) {
+    return result;
+  }
+  if (!root.is_object()) {
+    return result;
+  }
+  const auto it = root.find("templates");
+  if (it == root.end() || !it->is_array()) {
+    return result;
+  }
+
+  for (const auto& item : *it) {
+    if (!item.is_object()) continue;
+    BundledTemplateInfo info;
+    info.id = iota::core::sanitizeUtf8(item.value("id", ""));
+    info.title = iota::core::sanitizeUtf8(item.value("title", ""));
+    info.description = iota::core::sanitizeUtf8(item.value("description", ""));
+    info.file = iota::core::sanitizeUtf8(item.value("file", ""));
+    info.defaultWidth = std::clamp(item.value("width", 1920), 64, 7680);
+    info.defaultHeight = std::clamp(item.value("height", 1080), 64, 4320);
+    info.defaultFps = std::clamp(item.value("fps", 60), 15, 240);
+
+    if (info.id.empty() || info.title.empty() || !isSafeTemplateFilename(info.file)) {
+      continue;
+    }
+    info.archivePath = templatesDir / iota::core::pathFromUtf8(info.file);
+    if (requireArchiveExists && !iota::core::pathExistsNoThrow(info.archivePath)) {
+      continue;
+    }
+    result.push_back(std::move(info));
+  }
+  return result;
+}
+
+std::optional<iota::model::Project> loadProjectFromBundledTemplate(
+    const BundledTemplateInfo& tpl,
+    std::string nameOverride,
+    int widthOverride,
+    int heightOverride,
+    int fpsOverride,
+    std::string* outError) {
+  auto proj = loadProjectFromFile(tpl.archivePath, outError);
+  if (!proj) {
+    return std::nullopt;
+  }
+  applyBundledTemplateOverrides(*proj, tpl, std::move(nameOverride), widthOverride, heightOverride, fpsOverride);
+  return proj;
+}
+
+std::optional<iota::model::Project> loadProjectFromBundledTemplateMemory(
+    std::span<const uint8_t> bytes,
+    const BundledTemplateInfo& tpl,
+    std::string nameOverride,
+    int widthOverride,
+    int heightOverride,
+    int fpsOverride,
+    std::string* outError) {
+  auto proj = loadProjectFromMemory(bytes, outError);
+  if (!proj) {
+    return std::nullopt;
+  }
+  applyBundledTemplateOverrides(*proj, tpl, std::move(nameOverride), widthOverride, heightOverride, fpsOverride);
   return proj;
 }
 

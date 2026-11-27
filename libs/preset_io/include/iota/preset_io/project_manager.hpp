@@ -17,7 +17,10 @@
 
 #include "iota/model/scene.hpp"
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,6 +40,17 @@ struct ProjectTemplateInfo {
   const char* description;
 };
 
+struct BundledTemplateInfo {
+  std::string id;
+  std::string title;
+  std::string description;
+  std::string file;
+  std::filesystem::path archivePath;
+  int defaultWidth = 1920;
+  int defaultHeight = 1080;
+  int defaultFps = 60;
+};
+
 const std::vector<ProjectTemplateInfo>& projectTemplates() noexcept;
 
 iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
@@ -44,6 +58,27 @@ iota::model::Project createProjectFromTemplate(ProjectTemplateKind kind,
                                                int width = 1280,
                                                int height = 720,
                                                int fps = 60);
+
+std::vector<BundledTemplateInfo> loadBundledTemplateManifest(
+    const std::filesystem::path& templatesDir,
+    bool requireArchiveExists = true);
+
+std::optional<iota::model::Project> loadProjectFromBundledTemplate(
+    const BundledTemplateInfo& tpl,
+    std::string nameOverride = {},
+    int widthOverride = 0,
+    int heightOverride = 0,
+    int fpsOverride = 0,
+    std::string* outError = nullptr);
+
+std::optional<iota::model::Project> loadProjectFromBundledTemplateMemory(
+    std::span<const uint8_t> bytes,
+    const BundledTemplateInfo& tpl,
+    std::string nameOverride = {},
+    int widthOverride = 0,
+    int heightOverride = 0,
+    int fpsOverride = 0,
+    std::string* outError = nullptr);
 
 struct RecentProjectEntry {
   std::string name;

@@ -15,12 +15,14 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 struct GLFWwindow;
@@ -81,6 +83,12 @@ void queryWebCanvasSize(int& outWidth, int& outHeight);
 void resumeWebAudioContext();
 
 bool openExternalUrl(GLFWwindow* owner, const std::string& url);
+
+std::filesystem::path findBundledAssetPath(std::string_view relPath);
+
+void requestFetchBundledTemplate(const std::string& templateFilename,
+                                 std::function<void(std::vector<uint8_t>)> onLoaded,
+                                 std::function<void(std::string)> onError);
 
 void applyWindowHintsBeforeCreate();
 void applyWindowIcon(GLFWwindow* window, void*& outBigHandle, void*& outSmallHandle);

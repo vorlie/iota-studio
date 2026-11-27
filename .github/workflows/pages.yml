@@ -7,6 +7,7 @@ on:
       - "libs/**"
       - "apps/studio/**"
       - "assets/fonts/**"
+      - "assets/templates/**"
       - "CMakeLists.txt"
       - "CMakePresets.json"
       - "web/**"
@@ -52,6 +53,8 @@ jobs:
           cp build/wasm-release/apps/studio/iota_studio.js web/public/studio/
           cp build/wasm-release/apps/studio/iota_studio.wasm web/public/studio/
           cp build/wasm-release/apps/studio/iota_studio.data web/public/studio/
+          mkdir -p web/public/studio/templates
+          cp assets/templates/* web/public/studio/templates/
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

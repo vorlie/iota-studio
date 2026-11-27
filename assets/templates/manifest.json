@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "beyond_sdr",
+      "title": "Beyond SDR",
+      "description": "Multi-shader showcase with 7 custom GLSL effects (AudioNebula, BassShockwave, FluidGradient, LiquidFlow, WaterDroplets, FilmGrain), spectrum bars, and star particles.",
+      "file": "beyond_sdr.iota",
+      "width": 1920,
+      "height": 1080,
+      "fps": 60
+    },
+    {
+      "id": "blaze_halo",
+      "title": "Blaze Halo",
+      "description": "Glowing fiery emblem contour surrounded by layered audio-reactive spectrum bars, shake, RGB split, mirror, and motion blur waves.",
+      "file": "blaze_halo.iota",
+      "width": 1920,
+      "height": 1080,
+      "fps": 60
+    }
+  ]
+}

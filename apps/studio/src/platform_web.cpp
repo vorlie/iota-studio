@@ -47,8 +47,14 @@ struct PendingDialog {
   std::vector<std::filesystem::path> batchPaths;
 };
 
+struct PendingTemplateFetch {
+  std::function<void(std::vector<uint8_t>)> onLoaded;
+  std::function<void(std::string)> onError;
+};
+
 int gNextRequestId = 1;
 std::unordered_map<int, PendingDialog> gPendingDialogs;
+std::unordered_map<int, PendingTemplateFetch> gPendingTemplateFetches;
 std::vector<std::function<void()>> gQueuedEvents;
 
 std::function<void(std::filesystem::path)> gDropFileCb;
@@ -220,6 +226,33 @@ EM_JS(void, jsResumeAudioContexts, (), {
   }
 });
 
+EM_JS(void, jsFetchBundledTemplate, (int requestId, const char* filenameUtf8), {
+  var fname = UTF8ToString(filenameUtf8);
+  var rel = 'templates/' + fname;
+  var url = (typeof Module !== 'undefined' && typeof Module.locateFile === 'function')
+      ? Module.locateFile(rel)
+      : rel;
+  fetch(url).then(function (resp) {
+    if (!resp.ok) {
+      throw new Error('HTTP ' + resp.status + ' fetching ' + rel);
+    }
+    return resp.arrayBuffer();
+  }).then(function (buf) {
+    var u8 = new Uint8Array(buf);
+    var ptr = _malloc(u8.length);
+    if (!ptr) {
+      throw new Error('Out of Wasm memory loading template');
+    }
+    HEAPU8.set(u8, ptr);
+    Module.ccall('iota_web_on_template_fetched', null, ['number', 'number', 'number'],
+                 [requestId, ptr, u8.length]);
+    _free(ptr);
+  }).catch(function (err) {
+    Module.ccall('iota_web_on_template_error', null, ['number', 'string'],
+                 [requestId, String(err && err.message ? err.message : err)]);
+  });
+});
+
 }  // namespace
 
 extern "C" {
@@ -314,6 +347,38 @@ EMSCRIPTEN_KEEPALIVE void iota_web_on_drop_error(const char* errorMsg) {
   gQueuedEvents.push_back([msg = std::move(msg)]() {
     if (gDropErrCb) gDropErrCb(msg);
   });
+}
+
+EMSCRIPTEN_KEEPALIVE void iota_web_on_template_fetched(int requestId, const uint8_t* data, int len) {
+  auto it = gPendingTemplateFetches.find(requestId);
+  if (it == gPendingTemplateFetches.end()) return;
+  auto fetch = std::move(it->second);
+  gPendingTemplateFetches.erase(it);
+  if (!data || len <= 0) {
+    if (fetch.onError) {
+      gQueuedEvents.push_back([cb = std::move(fetch.onError)]() { cb("Empty template payload"); });
+    }
+    return;
+  }
+  std::vector<uint8_t> bytes(data, data + len);
+  if (fetch.onLoaded) {
+    gQueuedEvents.push_back([cb = std::move(fetch.onLoaded), bytes = std::move(bytes)]() mutable {
+      cb(std::move(bytes));
+    });
+  }
+}
+
+EMSCRIPTEN_KEEPALIVE void iota_web_on_template_error(int requestId, const char* errorMsg) {
+  auto it = gPendingTemplateFetches.find(requestId);
+  if (it == gPendingTemplateFetches.end()) return;
+  auto fetch = std::move(it->second);
+  gPendingTemplateFetches.erase(it);
+  if (fetch.onError) {
+    std::string msg = errorMsg ? errorMsg : "Failed to fetch bundled template";
+    gQueuedEvents.push_back([cb = std::move(fetch.onError), msg = std::move(msg)]() mutable {
+      cb(std::move(msg));
+    });
+  }
 }
 
 }  // extern "C"
@@ -438,6 +503,28 @@ void resumeWebAudioContext() {
 bool openExternalUrl(GLFWwindow* /*owner*/, const std::string& url) {
   jsOpenExternalUrl(url.c_str());
   return true;
+}
+
+std::filesystem::path findBundledAssetPath(std::string_view relPath) {
+  while (!relPath.empty() && relPath.front() == '/') {
+    relPath.remove_prefix(1);
+  }
+  const std::filesystem::path cand = std::filesystem::path("/") / iota::core::pathFromUtf8(relPath);
+  if (iota::core::pathExistsNoThrow(cand)) {
+    return cand;
+  }
+  return {};
+}
+
+void requestFetchBundledTemplate(const std::string& templateFilename,
+                                 std::function<void(std::vector<uint8_t>)> onLoaded,
+                                 std::function<void(std::string)> onError) {
+  const int reqId = gNextRequestId++;
+  PendingTemplateFetch pending;
+  pending.onLoaded = std::move(onLoaded);
+  pending.onError = std::move(onError);
+  gPendingTemplateFetches.emplace(reqId, std::move(pending));
+  jsFetchBundledTemplate(reqId, templateFilename.c_str());
 }
 
 void applyWindowHintsBeforeCreate() {

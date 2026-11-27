@@ -110,6 +110,15 @@ class EditorApp {
   void actionPrecomposeSelection();
   void actionNudgeSelection(int delta, bool toBoundary);
   void applyProjectMetadata(const iota::model::ProjectMetadata& meta);
+  void loadBundledTemplateCatalog();
+  void applyCreatedTemplateProject(iota::model::Project proj, bool promptSaveAsIota);
+  void openBundledTemplate(const iota::preset_io::BundledTemplateInfo& tpl,
+                           std::string nameOverride,
+                           int widthOverride,
+                           int heightOverride,
+                           int fpsOverride,
+                           std::string notesOverride,
+                           bool promptSaveAsIota);
   bool loadProjectFromPath(const std::filesystem::path& path);
   bool saveCurrentProject();
   bool saveProjectAsDialog(const char* preferredExt);
@@ -201,6 +210,7 @@ class EditorApp {
   iota::model::HierarchyClipboard hierarchyClipboard_;
   ProjectManagerModalState projectManagerState_;
   iota::preset_io::ProjectLibrary projectLibrary_;
+  std::vector<iota::preset_io::BundledTemplateInfo> bundledTemplates_;
   bool openProjectManagerModal_ = false;
 
 #ifdef IOTA_ENABLE_VIDEO_EXPORT

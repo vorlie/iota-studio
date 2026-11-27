@@ -78,6 +78,7 @@ Source: "{#BuildDir}\apps\mcp\{#McpExeName}"; DestDir: "{app}"; Flags: ignorever
 Source: "..\docs\MCP.md"; DestDir: "{app}"; DestName: "MCP.md"; Flags: ignoreversion
 #endif
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\assets\templates\*"; DestDir: "{app}\assets\templates"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{tmp}\{#FfmpegArchiveName}"; DestDir: "{tmp}\ffmpeg_extract"; Flags: external extractarchive recursesubdirs ignoreversion deleteafterinstall; Check: ShouldExtractFfmpeg
 
 [Icons]
