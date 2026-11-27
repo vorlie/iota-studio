@@ -54,12 +54,13 @@ pkgver() {
 
 build() {
   local _enable_mcp="${IOTA_BUILD_MCP:-OFF}"
+  local _enable_discord_rpc="${IOTA_ENABLE_DISCORD_RPC:-OFF}"
   cmake -S "${pkgname}" -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DIOTA_BUILD_TESTS=ON \
     -DIOTA_BUILD_MCP="${_enable_mcp}" \
-    -DIOTA_ENABLE_DISCORD_RPC=OFF \
+    -DIOTA_ENABLE_DISCORD_RPC="${_enable_discord_rpc}" \
     -Wno-dev
   cmake --build build
 }
