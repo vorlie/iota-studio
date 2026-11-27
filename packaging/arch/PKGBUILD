@@ -1,7 +1,7 @@
 # Maintainer: Charlie <99135647+vorlie@users.noreply.github.com>
 
 pkgname=iota-studio-git
-pkgver=1.15.0
+pkgver=1.15.1
 pkgrel=1
 pkgdesc="Native desktop studio and OpenGL 4.5 engine for designing and exporting audio-reactive music visualizers"
 arch=('x86_64')
@@ -49,7 +49,7 @@ pkgver() {
   cd "${srcdir}/${pkgname}"
   local base_ver
   base_ver="$(sed -nE 's/^[[:space:]]*project\([[:space:]]*IotaStudio[[:space:]]+VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -n1)"
-  printf "%s.r%s.g%s" "${base_ver:-1.15.0}" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  printf "%s.r%s.g%s" "${base_ver:-1.15.1}" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
 build() {

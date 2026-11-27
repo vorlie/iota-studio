@@ -2,7 +2,7 @@
 ; Compiles build/installer/IotaStudio-Setup-<AppVersion>.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.15.0"
+  #define AppVersion "1.15.1"
 #endif
 
 #ifndef IncludeMcp
