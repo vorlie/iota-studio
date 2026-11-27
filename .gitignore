@@ -14,3 +14,9 @@ test_template/
 local/
 .vscode/*
 third_party/
+packaging/arch/pkg
+packaging/arch/src
+packaging/arch/iota-studio-git*
+web/node_modules/
+web/dist/
+web/.astro/

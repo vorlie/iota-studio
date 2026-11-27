@@ -1,0 +1,205 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { BUILTIN_SHADERS, ELEMENTS } from '../data/site';
+import { withBase } from '../lib/url';
+
+const categories = ['All', 'Audio-Reactive', 'Procedural & Fluid', 'Cinematic & Lens', 'Geometric & Sci-Fi', 'Retro & Artistic'] as const;
+
+const subsystems = [
+  {
+    title: 'HDR RGBA16F Compositing & Physical Bloom',
+    points: [
+      'Per-layer HDR emissive intensity (and MVar-driven measureHdrIntensity) across shapes, bars, particles, text, blur, and motion blur.',
+      '6-mip Jimenez 2014 energy-conserving bloom pyramid with Karis anti-flicker prefiltering, soft-knee threshold, and optional anamorphic stretch.',
+      'Filmic tonemapping (ACES RRT+ODT, AgX, PBRNeutral, Reinhard, or None) with exposure EV, contrast, saturation, gamma, vignette, and 8-bit IGN dithering.',
+    ],
+  },
+  {
+    title: 'Audio Analysis, SoundKeys & Curve Splines',
+    points: [
+      'Three sample providers (Waveform, kissfft Spectrum, direct DFT Spectrum2) with AGC envelope tracking, IEC A-weighting, and 64-frame history ring.',
+      'Separate temporal smoothing (attack/release ms) and frequency smoothing (MovingAverage, Gaussian, SavitzkyGolay).',
+      'Interactive SoundKeys panel extracting 3 bands (R1, R2, R3) with linear/exponential/integrate falloff and auto-ceiling tracking.',
+      'Render-time bar interpolation using Linear, Catmull-Rom, or Cubic B-Spline curves decoupled from DSP bins.',
+    ],
+  },
+  {
+    title: '3D Particle Engine & S_Shake Camera',
+    points: [
+      'Up to 50,000 GPU particles with preRunSec warm-up, velocity inheritance, 8 emitter geometries including LayerMask, and Aux sub-particles.',
+      'Vortex, Attract, Repel, and TurbulentVortex force fields, 3-octave 3D divergence-free curl noise, floor bounce, 3D orbit camera, and Depth-of-Field bokeh.',
+      '4-axis camera shake (X, Y, Z Dist, Roll Tilt) with fractal Catmull-Rom noise, periodic waves, per-channel RGB splitting, and Lagrange shutter blur.',
+    ],
+  },
+  {
+    title: 'Cross-Platform Unicode Text & GPU Video Export',
+    points: [
+      'Windows DirectWrite & Linux FreeType + HarfBuzz + Fontconfig multi-script shaping with dynamic 2048×2048 shelf-packed glyph atlas.',
+      'Single-draw-call circularly dilated outlines, drop shadows, custom .ttf/.otf/local: font loading, word wrap, and live token expansion.',
+      'Deterministic fixed-timestep offscreen rendering piped to FFmpeg (H.264/H.265 + AAC MP4) using NVENC, Linux VA-API, AMD AMF, Intel QSV, or x264/x265.',
+    ],
+  },
+];
+---
+
+<BaseLayout title="Features & Built-In Shaders — Iota Studio">
+  <section class="border-b border-slate-800/80 bg-slate-900/25">
+    <div class="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Capabilities</div>
+      <h1 class="mt-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">
+        Every Subsystem Built for Audio-Reactive Precision
+      </h1>
+      <p class="mt-3 max-w-3xl text-base text-slate-300">
+        Designed from scratch in C++20 on top of <code class="font-mono text-cyan-200">iota_rhi</code> and OpenGL 4.5,
+        giving live preview, Wayland high-refresh monitors, headless MCP renders, and offline video export identical math.
+      </p>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+    <div class="grid gap-6 lg:grid-cols-2">
+      {
+        subsystems.map((sub) => (
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+            <h2 class="text-lg font-semibold text-white">{sub.title}</h2>
+            <ul class="mt-3 space-y-2 text-sm leading-relaxed text-slate-300">
+              {sub.points.map((pt) => (
+                <li class="flex gap-2.5">
+                  <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400"></span>
+                  <span>{pt}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <section class="border-y border-slate-800/80 bg-slate-900/20">
+    <div class="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 class="text-2xl font-bold text-white">14 Scene Element Types</h2>
+          <p class="mt-1 text-sm text-slate-400">Stack across multi-pass compositions with cross-composition targeting and blend modes.</p>
+        </div>
+        <a href={withBase('/docs/elements/')} class="text-sm font-medium text-cyan-300 hover:text-cyan-200">
+          See 26 MVar Modes →
+        </a>
+      </div>
+      <div class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {
+          ELEMENTS.map((el) => (
+            <div class="rounded-xl border border-slate-800/90 bg-[#0d121c] p-4">
+              <div class="flex items-center justify-between gap-2">
+                <code class="font-mono text-sm font-semibold text-cyan-200">{el.name}</code>
+                <span class="rounded border border-slate-700 bg-slate-800/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-300">
+                  {el.category}
+                </span>
+              </div>
+              <p class="mt-2 text-xs leading-relaxed text-slate-400">{el.summary}</p>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+    <div class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+      <div>
+        <h2 class="text-2xl font-bold text-white">15 Built-In Editable GLSL 450 Shaders</h2>
+        <p class="mt-1.5 max-w-2xl text-sm text-slate-300">
+          Instantiate any template directly into your project's local assets via <strong>Assets → Built-in Shaders</strong> or <strong>Shader Editor → + New</strong>, then tune palettes with the{' '}
+          <a href={withBase('/palette/')} class="text-indigo-300 underline decoration-indigo-500/40 underline-offset-4 hover:text-indigo-200">
+            Web GLSL Palette Manager
+          </a>.
+        </p>
+      </div>
+      <a href={withBase('/docs/shaders/')} class="text-sm font-medium text-cyan-300 hover:text-cyan-200">
+        Custom Shader Uniform Docs →
+      </a>
+    </div>
+
+    <div class="mt-6 flex flex-wrap gap-2" id="shader-filter-bar">
+      {
+        categories.map((cat, idx) => (
+          <button
+            type="button"
+            data-cat={cat}
+            class:list={[
+              'shader-cat-btn rounded-lg border px-3 py-1.5 text-xs font-medium transition',
+              idx === 0
+                ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-200'
+                : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700 hover:text-white',
+            ]}
+          >
+            {cat}
+          </button>
+        ))
+      }
+    </div>
+
+    <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3" id="shader-grid">
+      {
+        BUILTIN_SHADERS.map((sh) => (
+          <div
+            data-category={sh.category}
+            class="shader-card rounded-xl border border-slate-800 bg-slate-900/45 p-4 transition hover:border-slate-700"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div>
+                <h3 class="text-sm font-semibold text-white">{sh.title}</h3>
+                <div class="mt-0.5 font-mono text-[11px] text-slate-400">{sh.fileName}</div>
+              </div>
+              <span
+                class:list={[
+                  'rounded px-2 py-0.5 font-mono text-[10px] font-medium',
+                  sh.kind === 'Post-FX'
+                    ? 'bg-indigo-500/15 text-indigo-300 ring-1 ring-indigo-500/30'
+                    : 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30',
+                ]}
+              >
+                {sh.kind}
+              </span>
+            </div>
+            <p class="mt-2.5 text-xs leading-relaxed text-slate-300">{sh.description}</p>
+            <div class="mt-3 flex items-center justify-between text-[11px] text-slate-400">
+              <span>{sh.category}</span>
+              {sh.paletteSpace !== 'none' && (
+                <a href={withBase('/palette/')} class="font-mono text-cyan-300 hover:underline">
+                  {sh.paletteSpace} palette
+                </a>
+              )}
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <script is:inline>
+    (function () {
+      var btns = document.querySelectorAll('.shader-cat-btn');
+      var cards = document.querySelectorAll('.shader-card');
+      btns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var cat = btn.getAttribute('data-cat');
+          btns.forEach(function (b) {
+            var active = b === btn;
+            b.classList.toggle('border-cyan-400/50', active);
+            b.classList.toggle('bg-cyan-500/15', active);
+            b.classList.toggle('text-cyan-200', active);
+            b.classList.toggle('border-slate-800', !active);
+            b.classList.toggle('bg-slate-900/70', !active);
+            b.classList.toggle('text-slate-300', !active);
+          });
+          cards.forEach(function (card) {
+            var show = cat === 'All' || card.getAttribute('data-category') === cat;
+            card.style.display = show ? '' : 'none';
+          });
+        });
+      });
+    })();
+  </script>
+</BaseLayout>

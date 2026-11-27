@@ -1,0 +1,65 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { DOCS_NAV } from '../../data/site';
+import { withBase } from '../../lib/url';
+---
+
+<DocsLayout title="Getting Started — Iota Studio Docs">
+  <header>
+    <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Documentation</div>
+    <h1 class="mt-2 text-3xl font-bold text-white">Getting Started with Iota Studio</h1>
+    <p class="mt-2 text-sm leading-relaxed text-slate-300">
+      Learn the workspace layout, project serialization formats, cross-platform audio linking, and editing shortcuts.
+    </p>
+  </header>
+
+  <section class="grid gap-4 sm:grid-cols-2">
+    {
+      DOCS_NAV.slice(1).map((item) => (
+        <a
+          href={withBase(item.href)}
+          class="rounded-xl border border-slate-800 bg-slate-900/45 p-4 transition hover:border-cyan-500/40"
+        >
+          <h2 class="text-sm font-semibold text-white">{item.title} →</h2>
+          <p class="mt-1 text-xs leading-relaxed text-slate-400">{item.summary}</p>
+        </a>
+      ))
+    }
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Project Formats &amp; Portability</h2>
+    <div class="grid gap-3 sm:grid-cols-3 text-xs">
+      <div class="rounded-xl border border-slate-800 bg-[#0d121c] p-4">
+        <code class="font-mono font-semibold text-cyan-300">.iota</code>
+        <p class="mt-1.5 text-slate-300">Native zipped Iota Studio project bundle containing <code class="font-mono">scene.json</code> plus all <code class="font-mono">local:</code> textures, fonts, and GLSL shaders.</p>
+      </div>
+      <div class="rounded-xl border border-slate-800 bg-[#0d121c] p-4">
+        <code class="font-mono font-semibold text-amber-300">.viz</code>
+        <p class="mt-1.5 text-slate-300">Avee Player preset import/export archive. Always keep a backup of original mobile <code class="font-mono">.viz</code> files before overwriting.</p>
+      </div>
+      <div class="rounded-xl border border-slate-800 bg-[#0d121c] p-4">
+        <code class="font-mono font-semibold text-indigo-300">.json</code>
+        <p class="mt-1.5 text-slate-300">Human-readable uncompressed scene JSON ideal for version control, diffing, or programmatic editing.</p>
+      </div>
+    </div>
+    <p class="text-xs leading-relaxed text-slate-400">
+      <strong>Cross-OS External Audio:</strong> When you save a project whose audio track lives inside the project directory tree, Studio writes a portable POSIX relative path. When opening projects moved between Windows and Linux, Studio checks the stored path, project-relative path, and sibling filename next to the project file automatically.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Essential Keyboard Shortcuts</h2>
+    <div class="overflow-x-auto rounded-xl border border-slate-800 bg-[#0d121c]">
+      <table class="w-full border-collapse text-left text-xs">
+        <tbody class="divide-y divide-slate-800/80 text-slate-300">
+          <tr><td class="px-4 py-2.5 font-mono text-cyan-200">Ctrl + N / O / S</td><td class="px-4 py-2.5">Project Manager / Open Project / Save Project</td></tr>
+          <tr><td class="px-4 py-2.5 font-mono text-cyan-200">Ctrl + Z / Y</td><td class="px-4 py-2.5">Snapshot Undo / Redo across all edits (including live MCP changes)</td></tr>
+          <tr><td class="px-4 py-2.5 font-mono text-cyan-200">Ctrl + C / X / V / D</td><td class="px-4 py-2.5">Copy, Cut, Paste, or Duplicate selected layers with fresh IDs and keyframe sync</td></tr>
+          <tr><td class="px-4 py-2.5 font-mono text-cyan-200">Ctrl + Up / Down</td><td class="px-4 py-2.5">Nudge selected layers in Hierarchy (+ Shift moves to top/bottom)</td></tr>
+          <tr><td class="px-4 py-2.5 font-mono text-cyan-200">F1 / F2</td><td class="px-4 py-2.5">Open in-app Documentation panel / Rename selected layer</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</DocsLayout>

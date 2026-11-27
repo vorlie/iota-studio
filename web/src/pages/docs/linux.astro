@@ -1,0 +1,52 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+---
+
+<DocsLayout title="Linux & Wayland Guide — Iota Studio Docs">
+  <header>
+    <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Platform Guide</div>
+    <h1 class="mt-2 text-3xl font-bold text-white">Linux &amp; Wayland Support</h1>
+    <p class="mt-2 text-sm leading-relaxed text-slate-300">
+      First-class support for modern Linux desktops including Hyprland, Sway, GNOME, and KDE Plasma across Wayland and X11.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Linux Architecture Highlights</h2>
+    <ul class="space-y-2 text-sm leading-relaxed text-slate-300">
+      <li><strong class="text-white">Wayland VBlank Pacing:</strong> Uses <code class="font-mono text-cyan-200">wl_surface.frame</code> callbacks with bounded <code class="font-mono">glfwWaitEventsTimeout(50ms)</code> so visible viewports stay smooth on high-refresh monitors (120–180+ Hz) while occluded windows yield cleanly and answer compositor pings.</li>
+      <li><strong class="text-white">Typography:</strong> Full Unicode shaping and multi-script fallback powered by <code class="font-mono">FreeType</code> + <code class="font-mono">HarfBuzz</code> + <code class="font-mono">Fontconfig</code>.</li>
+      <li><strong class="text-white">VA-API Hardware Video Export:</strong> Auto-detects <code class="font-mono">/dev/dri/renderD*</code> nodes for <code class="font-mono">h264_vaapi</code> and <code class="font-mono">hevc_vaapi</code> encoding via FFmpeg alongside NVIDIA NVENC and CPU x264/x265.</li>
+      <li><strong class="text-white">XDG Directories:</strong> Stores layout config in <code class="font-mono">$XDG_CONFIG_HOME/IotaStudio/</code> and recent projects registry in <code class="font-mono">$XDG_DATA_HOME/IotaStudio/</code>.</li>
+      <li><strong class="text-white">Native File Dialogs:</strong> Invokes <code class="font-mono">zenity</code> or <code class="font-mono">kdialog</code> asynchronously while keeping the compositor event loop responsive.</li>
+    </ul>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Install Build Dependencies</h2>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`# Arch Linux
+sudo pacman -S base-devel cmake ninja pkgconf mesa libx11 libxrandr libxinerama \\
+  libxcursor libxkbcommon libxi wayland wayland-protocols freetype2 fontconfig \\
+  harfbuzz curl alsa-lib ffmpeg zenity
+
+# Ubuntu / Debian
+sudo apt install build-essential cmake ninja-build pkg-config libgl1-mesa-dev \\
+  libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \\
+  libwayland-dev libxkbcommon-dev wayland-protocols libfreetype-dev \\
+  libfontconfig1-dev libharfbuzz-dev libcurl4-openssl-dev libasound2-dev \\
+  ffmpeg zenity`}</code></pre>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Configure, Build, Test &amp; Install</h2>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`cmake --preset linux-gcc-ninja-release        # or linux-gcc-ninja-release-mcp
+cmake --build --preset linux-release --parallel
+ctest --preset linux-release --output-on-failure
+
+# Install locally (binaries, .desktop, AppStream metainfo, icon):
+cmake --install build/linux-release --prefix ~/.local
+
+# Or build via Arch Linux PKGBUILD:
+cd packaging/arch && makepkg -si`}</code></pre>
+  </section>
+</DocsLayout>

@@ -1,0 +1,72 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+
+const toolGroups = [
+  ['Projects & Assets', 'project_new, project_open, project_save, project_get_summary, project_set_metadata, project_import_asset'],
+  ['Compositions & Hierarchy', 'composition_add, composition_rename, composition_duplicate, composition_delete, layer_add, layer_remove, layer_rename, layer_duplicate, layer_move, layer_set_visible, layer_solo, layer_precompose'],
+  ['Properties, Shaders & Keyframes', 'layer_get_properties, layer_set_properties, layer_set_keyframe, layer_clear_keyframes'],
+  ['Documentation Discovery', 'docs_list_elements, docs_get_element_schema, docs_search'],
+  ['Audio, Preview & Export', 'audio_load, render_preview_frame, export_list_encoders, export_video'],
+  ['Studio Control', 'studio_status, studio_playback, studio_undo, studio_redo, studio_connect, studio_disconnect'],
+];
+---
+
+<DocsLayout title="MCP & Live Studio Bridge — Iota Studio Docs">
+  <header>
+    <div class="font-mono text-xs uppercase tracking-wider text-indigo-300">Opt-In AI Integration</div>
+    <h1 class="mt-2 text-3xl font-bold text-white">Model Context Protocol (MCP)</h1>
+    <p class="mt-2 text-sm leading-relaxed text-slate-300">
+      Control Iota Studio headlessly over stdio JSON-RPC (<code class="font-mono text-cyan-200">iota_mcp</code>) or attach live to a running Studio GUI via the Live Studio Bridge. Disabled by default in Standard builds (<code class="font-mono">IOTA_BUILD_MCP=OFF</code>).
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Automatic Working-Copy Protection</h2>
+    <p class="text-sm leading-relaxed text-slate-300">
+      When you enable <strong>MCP → Enable Live Studio Bridge</strong> with a project open, Studio immediately writes a sibling working copy (<code class="font-mono text-cyan-200">&lt;name&gt;.mcp.iota</code>) and switches to it before listening—so your original <code class="font-mono">.iota</code> / <code class="font-mono">.viz</code> files are never overwritten by agent mutations. Every edit pushes directly onto Studio's Undo/Redo stack.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">IPC Transport Across Operating Systems</h2>
+    <div class="grid gap-3 sm:grid-cols-2 text-xs">
+      <div class="rounded-xl border border-slate-800 bg-[#0d121c] p-4">
+        <div class="font-semibold text-white">Windows Named Pipe</div>
+        <code class="mt-1.5 block font-mono text-cyan-200">\\.\pipe\iota_studio_mcp_&lt;user&gt;</code>
+      </div>
+      <div class="rounded-xl border border-slate-800 bg-[#0d121c] p-4">
+        <div class="font-semibold text-white">Linux Unix Domain Socket (0600)</div>
+        <code class="mt-1.5 block font-mono text-cyan-200">$XDG_RUNTIME_DIR/iota_studio_mcp.sock</code>
+      </div>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Client Configuration</h2>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`{
+  "mcpServers": {
+    "iota-studio": {
+      "command": "/path/to/iota_mcp",
+      "args": ["--attach"]
+    }
+  }
+}`}</code></pre>
+    <p class="text-xs text-slate-400">
+      Using the Linux MCP AppImage? Point <code class="font-mono">"command"</code> to the <code class="font-mono">.AppImage</code> and pass <code class="font-mono">["--mcp", "--attach"]</code>.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Exposed Tools</h2>
+    <div class="divide-y divide-slate-800/80 rounded-xl border border-slate-800 bg-[#0d121c]">
+      {
+        toolGroups.map(([cat, list]) => (
+          <div class="px-4 py-3">
+            <div class="text-xs font-semibold text-white">{cat}</div>
+            <div class="mt-1 font-mono text-xs leading-relaxed text-cyan-200">{list}</div>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+</DocsLayout>

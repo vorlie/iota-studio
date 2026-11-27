@@ -1,0 +1,188 @@
+<div class="relative overflow-hidden rounded-2xl border border-slate-800 bg-[#0d121c] shadow-2xl shadow-cyan-950/30">
+  <div class="flex items-center justify-between border-b border-slate-800/90 bg-slate-900/80 px-4 py-2.5">
+    <div class="flex items-center gap-2">
+      <span class="h-2.5 w-2.5 rounded-full bg-rose-500/75"></span>
+      <span class="h-2.5 w-2.5 rounded-full bg-amber-400/75"></span>
+      <span class="h-2.5 w-2.5 rounded-full bg-emerald-400/75"></span>
+      <span class="ml-2 font-mono text-xs text-slate-400">Viewport · 1920×1080 HDR16F · OpenGL 4.5</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <button
+        id="vis-boost-btn"
+        type="button"
+        class="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 font-mono text-[11px] font-medium text-cyan-300 transition hover:bg-cyan-500/20"
+      >
+        Beat Drop
+      </button>
+      <button
+        id="vis-toggle-btn"
+        type="button"
+        class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1 font-mono text-[11px] text-slate-200 transition hover:border-slate-500"
+      >
+        Pause
+      </button>
+    </div>
+  </div>
+
+  <div class="relative aspect-[16/10] w-full bg-[#070a10]">
+    <canvas id="hero-vis-canvas" class="h-full w-full block"></canvas>
+    <div class="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-[#070a10]/90 via-[#070a10]/40 to-transparent px-4 py-3 font-mono text-[11px] text-slate-400">
+      <span>DSP: Spectrum2 + SoundKeys (R1/R2/R3)</span>
+      <span>Bloom: Jimenez 6-Mip · ACES</span>
+    </div>
+  </div>
+</div>
+
+<script is:inline>
+  (function () {
+    var canvas = document.getElementById('hero-vis-canvas');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    var toggleBtn = document.getElementById('vis-toggle-btn');
+    var boostBtn = document.getElementById('vis-boost-btn');
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var running = !reduced;
+    var boostEnergy = 0;
+    var time = 0;
+    var bars = 72;
+    var smooth = new Float32Array(bars);
+    var particles = [];
+
+    for (var i = 0; i < 42; i++) {
+      particles.push({
+        angle: Math.random() * Math.PI * 2,
+        radius: 0.28 + Math.random() * 0.42,
+        speed: 0.08 + Math.random() * 0.22,
+        size: 1 + Math.random() * 2.2,
+        alpha: 0.25 + Math.random() * 0.55,
+      });
+    }
+
+    if (toggleBtn) {
+      toggleBtn.textContent = running ? 'Pause' : 'Play';
+      toggleBtn.addEventListener('click', function () {
+        running = !running;
+        toggleBtn.textContent = running ? 'Pause' : 'Play';
+      });
+    }
+
+    if (boostBtn) {
+      boostBtn.addEventListener('click', function () {
+        boostEnergy = 1.0;
+        if (!running) drawFrame(0.016);
+      });
+    }
+
+    function resize() {
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      var rect = canvas.getBoundingClientRect();
+      var w = Math.max(320, Math.round(rect.width * dpr));
+      var h = Math.max(200, Math.round(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    }
+
+    function drawFrame(dt) {
+      resize();
+      var w = canvas.width;
+      var h = canvas.height;
+      var cx = w * 0.5;
+      var cy = h * 0.48;
+      var baseR = Math.min(w, h) * 0.22;
+
+      time += dt;
+      boostEnergy *= Math.exp(-dt * 3.8);
+      var beat = Math.pow(Math.max(0, Math.sin(time * 3.8)), 6) * 0.55 + boostEnergy * 0.85;
+
+      ctx.fillStyle = '#070a10';
+      ctx.fillRect(0, 0, w, h);
+
+      // Ambient nebula glow
+      var bgGrad = ctx.createRadialGradient(cx, cy, baseR * 0.2, cx, cy, baseR * 2.5);
+      bgGrad.addColorStop(0, 'rgba(34, 211, 238, ' + (0.18 + beat * 0.14).toFixed(3) + ')');
+      bgGrad.addColorStop(0.45, 'rgba(99, 102, 241, ' + (0.1 + beat * 0.08).toFixed(3) + ')');
+      bgGrad.addColorStop(1, 'rgba(7, 10, 16, 0)');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Orbiting particles
+      for (var p = 0; p < particles.length; p++) {
+        var pt = particles[p];
+        pt.angle += pt.speed * dt * (1 + beat * 1.4);
+        var pr = Math.min(w, h) * pt.radius * (1 + beat * 0.06);
+        var px = cx + Math.cos(pt.angle) * pr * 1.25;
+        var py = cy + Math.sin(pt.angle) * pr * 0.85;
+        ctx.fillStyle = 'rgba(125, 211, 252, ' + (pt.alpha * (0.65 + beat * 0.35)).toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.arc(px, py, pt.size * (w / 640), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Update symmetric spectrum bars
+      for (var i = 0; i < bars; i++) {
+        var norm = i < bars / 2 ? i / (bars / 2) : (bars - 1 - i) / (bars / 2);
+        var bass = Math.exp(-norm * 4.5) * (0.45 + beat * 0.9);
+        var mid = Math.sin(norm * 10 - time * 5.2) * 0.22 + 0.24;
+        var highs = Math.cos(norm * 24 + time * 9.5) * 0.12 + 0.14;
+        var target = Math.max(0.06, bass + mid * 0.7 + highs * 0.5);
+        smooth[i] += (target - smooth[i]) * Math.min(1, dt * 16);
+      }
+
+      var rPulse = baseR * (1 + beat * 0.075);
+
+      // Circular spectrum bars
+      ctx.save();
+      ctx.translate(cx, cy);
+      for (var b = 0; b < bars; b++) {
+        var a = (b / bars) * Math.PI * 2 - Math.PI * 0.5;
+        var barLen = smooth[b] * baseR * 0.72;
+        var x0 = Math.cos(a) * rPulse;
+        var y0 = Math.sin(a) * rPulse;
+        var x1 = Math.cos(a) * (rPulse + barLen);
+        var y1 = Math.sin(a) * (rPulse + barLen);
+        var hue = 186 + (b / bars) * 90;
+        ctx.strokeStyle = 'hsla(' + hue.toFixed(0) + ', 90%, 66%, 0.88)';
+        ctx.lineWidth = Math.max(2, w * 0.0045);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+
+      // Inner halo ring
+      ctx.strokeStyle = 'rgba(186, 230, 253, 0.85)';
+      ctx.lineWidth = Math.max(1.5, w * 0.003);
+      ctx.beginPath();
+      ctx.arc(0, 0, rPulse * 0.92, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Center monogram
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '600 ' + Math.round(baseR * 0.42) + 'px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('IOTA', 0, -baseR * 0.04);
+      ctx.fillStyle = 'rgba(103, 232, 249, 0.85)';
+      ctx.font = '500 ' + Math.round(baseR * 0.15) + 'px ui-monospace, monospace';
+      ctx.fillText('STUDIO', 0, baseR * 0.24);
+      ctx.restore();
+    }
+
+    var lastTs = performance.now();
+    drawFrame(0.016);
+    function loop(ts) {
+      var dt = Math.min(0.05, (ts - lastTs) / 1000);
+      lastTs = ts;
+      if (running) {
+        drawFrame(dt);
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  })();
+</script>

@@ -1,0 +1,232 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import HeroVisualizer from '../components/HeroVisualizer.astro';
+import { SITE } from '../data/site';
+import { withBase } from '../lib/url';
+
+const pillars = [
+  {
+    title: 'HDR16F + Physical Bloom',
+    badge: 'OpenGL 4.5',
+    body: '16-bit half-float RGBA16F compositing, Jimenez 2014 6-mip Karis bloom pyramid with anamorphic stretch, and ACES / AgX / PBRNeutral / Reinhard filmic tonemapping.',
+  },
+  {
+    title: 'Frame-Rate-Independent DSP',
+    badge: 'Spectrum & SoundKeys',
+    body: 'Waveform, kissfft, and direct DFT filterbanks with AGC, IEC A-weighting, 64-frame bar history rings, and 3-band interactive SoundKeys extraction.',
+  },
+  {
+    title: '3D Particle Engine',
+    badge: 'Up to 50,000',
+    body: '8 emitter shapes (including LayerMask), curl noise turbulence, Vortex/Attract/Repel force fields, aux sub-particles, orbit camera, and Depth-of-Field bokeh.',
+  },
+  {
+    title: 'Cinema-Grade Shake & Blur',
+    badge: 'Post-FX',
+    body: '4-axis S_Shake parity with fractal noise and per-channel RGB splitting, Dual Kawase / Gaussian / Radial blur, and IGN-jittered 4–64 sample shutter motion blur.',
+  },
+  {
+    title: 'Custom GLSL 450 Shaders',
+    badge: '15 Built-In',
+    body: 'Built-in shader editor with live uniforms (u_time, u_beat, u_soundKeys, u_texture), canvas-below Post-FX (composition:0), and 15 editable templates.',
+  },
+  {
+    title: 'Cross-Platform & GPU Export',
+    badge: 'Windows & Linux',
+    body: 'Native C++20 desktop workflow with deterministic fixed-timestep MP4 export (H.264/H.265 + AAC) via NVENC, Linux VA-API, AMD AMF, Intel QSV, or x264/x265.',
+  },
+];
+---
+
+<BaseLayout title={`${SITE.name} — Audio-Reactive Music Visualizer Studio`}>
+  <section class="iota-grid-bg border-b border-slate-800/80">
+    <div class="mx-auto grid max-w-6xl items-center gap-10 px-4 py-14 sm:px-6 lg:grid-cols-[1.05fr_1fr] lg:py-20">
+      <div>
+        <div class="inline-flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-300">
+          <span class="h-1.5 w-1.5 rounded-full bg-cyan-400"></span>
+          <span>Windows 10/11 &amp; Linux (X11 / Wayland)</span>
+          <span class="font-mono text-cyan-200" id="hero-version-tag">· v{SITE.fallbackVersion}</span>
+        </div>
+
+        <h1 class="mt-5 text-4xl font-bold tracking-tight text-white sm:text-5xl">
+          Design, preview, and export audio-reactive visualizers natively.
+        </h1>
+
+        <p class="mt-4 max-w-xl text-base leading-relaxed text-slate-300 sm:text-lg">
+          <strong class="font-semibold text-white">Iota Studio</strong> pairs a modular C++20 / OpenGL 4.5
+          compositor with a responsive Dear ImGui docking workspace—delivering deterministic DSP and GPU
+          export at 60 FPS, 180 Hz Wayland, or offline 4K render.
+        </p>
+
+        <div class="mt-7 flex flex-wrap items-center gap-3">
+          <a
+            href={withBase('/download/')}
+            class="inline-flex items-center gap-2 rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-300"
+          >
+            Download Iota Studio
+            <span aria-hidden="true">→</span>
+          </a>
+          <a
+            href={withBase('/docs/')}
+            class="inline-flex items-center rounded-xl border border-slate-700 bg-slate-900/70 px-4 py-2.5 text-sm font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800"
+          >
+            Read Documentation
+          </a>
+          <a
+            href={withBase('/palette/')}
+            class="inline-flex items-center rounded-xl border border-indigo-500/35 bg-indigo-500/10 px-4 py-2.5 text-sm font-medium text-indigo-200 transition hover:bg-indigo-500/20"
+          >
+            GLSL Palette Manager
+          </a>
+        </div>
+
+        <dl class="mt-8 grid grid-cols-3 gap-4 border-t border-slate-800/80 pt-6 text-xs">
+          <div>
+            <dt class="text-slate-400">Rendering</dt>
+            <dd class="mt-0.5 font-mono font-semibold text-slate-100">OpenGL 4.5 HDR16F</dd>
+          </div>
+          <div>
+            <dt class="text-slate-400">Layer Types</dt>
+            <dd class="mt-0.5 font-mono font-semibold text-slate-100">14 Elements · 26 MVars</dd>
+          </div>
+          <div>
+            <dt class="text-slate-400">License</dt>
+            <dd class="mt-0.5 font-mono font-semibold text-slate-100">GPL-3.0-or-later</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div>
+        <HeroVisualizer />
+      </div>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+    <div class="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+      <div>
+        <h2 class="text-2xl font-bold tracking-tight text-white sm:text-3xl">Engine Architecture &amp; Effects</h2>
+        <p class="mt-2 max-w-2xl text-sm text-slate-400 sm:text-base">
+          Decoupled UI-agnostic C++20 libraries power live preview, automated testing, headless MCP sessions, and fixed-timestep FFmpeg video exports identically.
+        </p>
+      </div>
+      <a href={withBase('/features/')} class="text-sm font-medium text-cyan-300 hover:text-cyan-200">
+        Explore all features &amp; shaders →
+      </a>
+    </div>
+
+    <div class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        pillars.map((p) => (
+          <div class="rounded-2xl border border-slate-800/90 bg-slate-900/45 p-6 transition hover:border-slate-700">
+            <div class="flex items-center justify-between gap-2">
+              <h3 class="text-base font-semibold text-white">{p.title}</h3>
+              <span class="rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 py-0.5 font-mono text-[11px] text-cyan-300">
+                {p.badge}
+              </span>
+            </div>
+            <p class="mt-3 text-sm leading-relaxed text-slate-300">{p.body}</p>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <section class="border-y border-slate-800/80 bg-slate-900/30">
+    <div class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+      <div class="grid gap-8 lg:grid-cols-2">
+        <div class="rounded-2xl border border-slate-800 bg-[#0d121c] p-6">
+          <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Cross-Platform Native Parity</div>
+          <h2 class="mt-2 text-xl font-bold text-white">Built natively for both Windows and Linux</h2>
+          <p class="mt-2 text-sm text-slate-300">
+            Projects (<code class="font-mono text-cyan-200">.iota</code>, <code class="font-mono text-cyan-200">.viz</code>,{' '}
+            <code class="font-mono text-cyan-200">.json</code>) share locale-independent serialization and portable audio path resolution across OS boundaries.
+          </p>
+          <div class="mt-5 grid grid-cols-2 gap-3 text-xs">
+            <div class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+              <div class="font-semibold text-white">Windows x64</div>
+              <ul class="mt-1.5 space-y-1 text-slate-400">
+                <li>DirectWrite Unicode shaping</li>
+                <li>NVENC, AMF, Intel QSV</li>
+                <li>WinHTTP &amp; Named Pipes</li>
+                <li>PerMonitorV2 Inno Setup .exe</li>
+              </ul>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+              <div class="font-semibold text-white">Linux (Wayland &amp; X11)</div>
+              <ul class="mt-1.5 space-y-1 text-slate-400">
+                <li>FreeType + HarfBuzz + Fontconfig</li>
+                <li>NVENC, Linux VA-API, AMF, QSV</li>
+                <li>wl_surface.frame vblank pacing</li>
+                <li>AppImage, Tarball &amp; Arch PKGBUILD</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-slate-800 bg-[#0d121c] p-6">
+          <div class="font-mono text-xs uppercase tracking-wider text-indigo-300">Opt-In AI Co-Creation</div>
+          <h2 class="mt-2 text-xl font-bold text-white">Model Context Protocol (MCP) &amp; Live Bridge</h2>
+          <p class="mt-2 text-sm text-slate-300">
+            Standard desktop builds stay zero-bloat with <code class="font-mono text-slate-200">IOTA_BUILD_MCP=OFF</code>.
+            Enable the MCP edition to let AI coding agents inspect schemas, edit layers, render OpenGL PNG previews, and push undoable edits straight into your live Studio session.
+          </p>
+          <div class="mt-4 rounded-xl border border-slate-800 bg-[#080b11] p-3.5 font-mono text-xs text-slate-300">
+            <div class="text-slate-500">// Safe by design: creates &lt;name&gt;.mcp.iota before listening</div>
+            <div class="mt-1 text-cyan-300">"command": "iota_mcp", "args": ["--attach"]</div>
+          </div>
+          <div class="mt-4 flex flex-wrap gap-3">
+            <a href={withBase('/docs/mcp/')} class="text-sm font-medium text-indigo-300 hover:text-indigo-200">
+              MCP Setup &amp; Tool Reference →
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-14 sm:px-6">
+    <div class="flex flex-col items-start justify-between gap-6 rounded-2xl border border-cyan-500/25 bg-gradient-to-r from-cyan-950/35 via-slate-900/70 to-indigo-950/35 p-7 sm:flex-row sm:items-center">
+      <div>
+        <h2 class="text-xl font-bold text-white sm:text-2xl">Ready to build a visualizer or craft a shader palette?</h2>
+        <p class="mt-1.5 text-sm text-slate-300">
+          Grab the latest Windows installer, Linux AppImage, or Arch PKGBUILD—or tweak GLSL OKLab palettes right in your browser.
+        </p>
+      </div>
+      <div class="flex flex-wrap gap-3">
+        <a
+          href={withBase('/download/')}
+          class="rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+        >
+          Get Latest Release
+        </a>
+        <a
+          href={withBase('/palette/')}
+          class="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-100 hover:border-slate-500"
+        >
+          Open Palette Manager
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <script is:inline define:vars={{ apiLatestUrl: SITE.apiLatestUrl }}>
+    (function () {
+      var el = document.getElementById('hero-version-tag');
+      if (!el) return;
+      try {
+        var cached = sessionStorage.getItem('iota_latest_tag');
+        if (cached) {
+          el.textContent = '· ' + cached;
+          return;
+        }
+        fetch(apiLatestUrl, { headers: { Accept: 'application/vnd.github+json' } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (d && d.tag_name) el.textContent = '· ' + d.tag_name;
+          })
+          .catch(function () {});
+      } catch (e) {}
+    })();
+  </script>
+</BaseLayout>

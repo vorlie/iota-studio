@@ -1,0 +1,190 @@
+---
+import '../styles/global.css';
+import { NAV_ITEMS, SITE } from '../data/site';
+import { withBase } from '../lib/url';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description = SITE.description } = Astro.props;
+const currentPath = Astro.url.pathname;
+
+function isActive(href: string, matchPrefix?: string): boolean {
+  const full = withBase(href);
+  if (matchPrefix) {
+    return currentPath.startsWith(withBase(matchPrefix));
+  }
+  return currentPath === full;
+}
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={withBase('/icon.png')} />
+    <link rel="icon" type="image/png" href={withBase('/icon.png')} />
+  </head>
+  <body class="min-h-screen flex flex-col bg-[#0b0e14] text-slate-100 antialiased">
+    <header class="sticky top-0 z-40 border-b border-slate-800/80 bg-[#0b0e14]/85 backdrop-blur-md">
+      <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <a href={withBase('/')} class="flex items-center gap-2.5 text-slate-100 hover:text-white">
+          <img
+            src={withBase('/icon.png')}
+            alt="Iota Studio logo"
+            width="28"
+            height="28"
+            class="h-7 w-7 rounded-lg ring-1 ring-white/15"
+          />
+          <span class="text-base font-semibold tracking-tight">Iota Studio</span>
+          <span
+            id="nav-version-badge"
+            class="hidden rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 font-mono text-[11px] font-medium text-cyan-300 sm:inline-block"
+          >
+            v{SITE.fallbackVersion}
+          </span>
+        </a>
+
+        <nav aria-label="Primary" class="hidden items-center gap-1 md:flex">
+          {
+            NAV_ITEMS.map((item) => {
+              const active = isActive(item.href, item.matchPrefix);
+              return (
+                <a
+                  href={withBase(item.href)}
+                  class:list={[
+                    'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+                    active
+                      ? 'bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-400/30'
+                      : 'text-slate-300 hover:bg-slate-800/70 hover:text-white',
+                  ]}
+                >
+                  {item.label}
+                </a>
+              );
+            })
+          }
+        </nav>
+
+        <div class="flex items-center gap-2">
+          <a
+            href={SITE.repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="hidden items-center gap-1.5 rounded-lg border border-slate-700/80 bg-slate-900/70 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-slate-500 hover:text-white sm:inline-flex"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                clip-rule="evenodd"
+                d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+              />
+            </svg>
+            GitHub
+          </a>
+          <button
+            id="mobile-menu-btn"
+            type="button"
+            aria-label="Toggle navigation"
+            aria-expanded="false"
+            class="inline-flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 p-2 text-slate-300 hover:bg-slate-800 hover:text-white md:hidden"
+          >
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="mobile-menu" class="hidden border-t border-slate-800/80 bg-[#0b0e14] px-4 py-3 md:hidden">
+        <div class="flex flex-col gap-1">
+          {
+            NAV_ITEMS.map((item) => {
+              const active = isActive(item.href, item.matchPrefix);
+              return (
+                <a
+                  href={withBase(item.href)}
+                  class:list={[
+                    'rounded-lg px-3 py-2 text-sm font-medium',
+                    active ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-300 hover:bg-slate-800/70',
+                  ]}
+                >
+                  {item.label}
+                </a>
+              );
+            })
+          }
+          <a
+            href={SITE.repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="rounded-lg px-3 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800/70"
+          >
+            GitHub Repository
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main class="flex-1">
+      <slot />
+    </main>
+
+    <footer class="border-t border-slate-800/80 bg-[#090c12]">
+      <div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div class="flex items-center gap-3">
+          <img src={withBase('/icon.png')} alt="" width="20" height="20" class="h-5 w-5 rounded" />
+          <span>
+            <strong class="font-medium text-slate-200">Iota Studio</strong> · GPL-3.0-or-later · Native Windows & Linux C++20 / OpenGL 4.5
+          </span>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <a href={withBase('/features/')} class="hover:text-slate-200">Features</a>
+          <a href={withBase('/download/')} class="hover:text-slate-200">Download</a>
+          <a href={withBase('/docs/')} class="hover:text-slate-200">Docs</a>
+          <a href={withBase('/palette/')} class="hover:text-slate-200">Palette Manager</a>
+          <a href={SITE.releasesUrl} target="_blank" rel="noopener noreferrer" class="hover:text-slate-200">Releases</a>
+          <a href={SITE.issuesUrl} target="_blank" rel="noopener noreferrer" class="hover:text-slate-200">Issues</a>
+        </div>
+      </div>
+    </footer>
+
+    <script is:inline define:vars={{ apiLatestUrl: SITE.apiLatestUrl }}>
+      (function () {
+        var btn = document.getElementById('mobile-menu-btn');
+        var menu = document.getElementById('mobile-menu');
+        if (btn && menu) {
+          btn.addEventListener('click', function () {
+            var open = menu.classList.toggle('hidden') === false;
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+          });
+        }
+        try {
+          var cached = sessionStorage.getItem('iota_latest_tag');
+          var badge = document.getElementById('nav-version-badge');
+          if (cached && badge) {
+            badge.textContent = cached;
+            return;
+          }
+          fetch(apiLatestUrl, { headers: { Accept: 'application/vnd.github+json' } })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              if (data && data.tag_name) {
+                sessionStorage.setItem('iota_latest_tag', data.tag_name);
+                if (badge) badge.textContent = data.tag_name;
+              }
+            })
+            .catch(function () {});
+        } catch (e) {}
+      })();
+    </script>
+  </body>
+</html>

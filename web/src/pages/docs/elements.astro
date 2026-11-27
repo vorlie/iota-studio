@@ -1,0 +1,49 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { ELEMENTS, MVAR_MODES } from '../../data/site';
+---
+
+<DocsLayout title="Elements & Audio-Reactive MVars — Iota Studio Docs">
+  <header>
+    <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Reference</div>
+    <h1 class="mt-2 text-3xl font-bold text-white">Elements, SoundKeys &amp; MVar Modes</h1>
+    <p class="mt-2 text-sm leading-relaxed text-slate-300">
+      Every layer property marked as an <code class="font-mono text-cyan-200">MVar</code> can combine multiple audio-reactive slots driven by beat, spectrum bands, time, and harmonic shake generators.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Scene Element Types ({ELEMENTS.length})</h2>
+    <div class="divide-y divide-slate-800/80 rounded-xl border border-slate-800 bg-[#0d121c]">
+      {
+        ELEMENTS.map((el) => (
+          <div class="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <code class="font-mono text-sm font-semibold text-cyan-200">{el.name}</code>
+              <p class="mt-0.5 text-xs text-slate-300">{el.summary}</p>
+            </div>
+            <span class="self-start rounded border border-slate-700 bg-slate-800/80 px-2 py-0.5 text-[10px] font-medium uppercase text-slate-300 sm:self-center">
+              {el.category}
+            </span>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">All {MVAR_MODES.length} MVar Signal Modes</h2>
+    <p class="text-xs leading-relaxed text-slate-300">
+      Available in Inspector MVar pickers and serialized directly inside <code class="font-mono">.iota</code> / <code class="font-mono">.viz</code> scenes.
+    </p>
+    <div class="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+      {
+        MVAR_MODES.map((mode) => (
+          <div class="rounded-lg border border-slate-800 bg-[#0d121c] px-3 py-2 font-mono text-xs text-cyan-200">
+            {mode}
+          </div>
+        ))
+      }
+    </div>
+  </section>
+</DocsLayout>

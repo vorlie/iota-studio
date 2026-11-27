@@ -1,0 +1,382 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { SITE } from '../data/site';
+import { withBase } from '../lib/url';
+
+const ver = SITE.fallbackVersion;
+const tag = `v${ver}`;
+const baseDl = `${SITE.releasesUrl}/download/${tag}`;
+---
+
+<BaseLayout title="Download — Iota Studio">
+  <section class="border-b border-slate-800/80 bg-slate-900/25">
+    <div class="mx-auto max-w-6xl px-4 py-12 sm:px-6">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Releases</div>
+          <h1 class="mt-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">Download Iota Studio</h1>
+          <p class="mt-2 max-w-2xl text-sm text-slate-300 sm:text-base">
+            Latest builds fetched directly from GitHub Releases for Windows 10/11 (x64) and Linux (x86_64).
+          </p>
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs">
+          <div class="text-slate-400">Active Release</div>
+          <div class="mt-0.5 flex items-center gap-2 font-mono text-sm font-semibold text-white">
+            <span id="dl-release-tag">{tag}</span>
+            <a
+              id="dl-release-link"
+              href={`${SITE.releasesUrl}/latest`}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-xs font-normal text-cyan-300 hover:underline"
+            >
+              Release Notes ↗
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-8 flex flex-wrap items-center gap-4">
+        <div class="inline-flex rounded-xl border border-slate-800 bg-slate-900/80 p-1" role="tablist" aria-label="Platform">
+          <button
+            id="tab-windows"
+            type="button"
+            class="rounded-lg px-4 py-2 text-sm font-medium transition"
+          >
+            Windows (x64)
+          </button>
+          <button
+            id="tab-linux"
+            type="button"
+            class="rounded-lg px-4 py-2 text-sm font-medium transition"
+          >
+            Linux (x86_64)
+          </button>
+        </div>
+
+        <div class="inline-flex rounded-xl border border-slate-800 bg-slate-900/80 p-1" role="group" aria-label="Edition">
+          <button
+            id="ed-standard"
+            type="button"
+            class="rounded-lg px-3.5 py-2 text-xs font-medium transition"
+          >
+            Standard Desktop
+          </button>
+          <button
+            id="ed-mcp"
+            type="button"
+            class="rounded-lg px-3.5 py-2 text-xs font-medium transition"
+          >
+            MCP Edition (AI Bridge)
+          </button>
+        </div>
+
+        <a
+          id="dl-sha-link"
+          href={`${baseDl}/SHA256SUMS.txt`}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="ml-auto font-mono text-xs text-slate-400 hover:text-cyan-300"
+        >
+          SHA256SUMS.txt ↗
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-10 sm:px-6">
+    <!-- Windows Panel -->
+    <div id="panel-windows" class="space-y-6">
+      <div class="grid gap-5 lg:grid-cols-[1.35fr_1fr]">
+        <div class="rounded-2xl border border-slate-800 bg-[#0d121c] p-6">
+          <div class="flex items-center justify-between gap-2">
+            <span class="rounded-md bg-cyan-500/15 px-2.5 py-1 font-mono text-xs text-cyan-300">
+              Inno Setup 6 Installer
+            </span>
+            <span id="win-asset-size" class="font-mono text-xs text-slate-400"></span>
+          </div>
+          <h2 id="win-asset-title" class="mt-4 text-xl font-bold text-white">IotaStudio-Setup-{ver}.exe</h2>
+          <p id="win-asset-desc" class="mt-2 text-sm text-slate-300">
+            Per-user or machine-wide Windows x64 installer with optional FFmpeg download/extraction during setup.
+          </p>
+          <div class="mt-6 flex flex-wrap items-center gap-3">
+            <a
+              id="win-dl-btn"
+              href={`${baseDl}/IotaStudio-Setup-${ver}.exe`}
+              class="inline-flex items-center gap-2 rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+            >
+              Download Windows Installer
+            </a>
+            <a
+              href={`${SITE.releasesUrl}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-xs font-medium text-slate-200 hover:border-slate-500"
+            >
+              All Releases
+            </a>
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-slate-800 bg-slate-900/45 p-6 text-sm">
+          <h3 class="font-semibold text-white">Notes for Windows</h3>
+          <ul class="mt-3 space-y-2 text-xs leading-relaxed text-slate-300">
+            <li>• Requires MSVC 2015–2022 x64 Redistributable and an OpenGL 4.5+ GPU driver.</li>
+            <li>• Standard &amp; MCP installers share the same App ID so switching editions upgrades in-place cleanly.</li>
+            <li>• Hardware GPU export supports NVIDIA NVENC, AMD AMF, and Intel Quick Sync when FFmpeg is installed.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Linux Panel -->
+    <div id="panel-linux" class="hidden space-y-6">
+      <div class="grid gap-5 md:grid-cols-2">
+        <div class="rounded-2xl border border-slate-800 bg-[#0d121c] p-6">
+          <div class="flex items-center justify-between gap-2">
+            <span class="rounded-md bg-cyan-500/15 px-2.5 py-1 font-mono text-xs text-cyan-300">
+              Recommended · AppImage
+            </span>
+            <span id="lin-appimage-size" class="font-mono text-xs text-slate-400"></span>
+          </div>
+          <h2 id="lin-appimage-title" class="mt-4 text-lg font-bold text-white">
+            IotaStudio-linux-x86_64-{ver}.AppImage
+          </h2>
+          <p id="lin-appimage-desc" class="mt-2 text-xs leading-relaxed text-slate-300">
+            Self-contained portable binary tested across X11 and Wayland (glibc 2.35+).
+          </p>
+          <div class="mt-5">
+            <a
+              id="lin-appimage-btn"
+              href={`${baseDl}/IotaStudio-linux-x86_64-${ver}.AppImage`}
+              class="inline-flex items-center gap-2 rounded-xl bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300"
+            >
+              Download AppImage
+            </a>
+          </div>
+          <pre class="mt-4 overflow-x-auto rounded-lg border border-slate-800 bg-[#080b11] p-3 font-mono text-[11px] text-slate-300"><code id="lin-appimage-cmd">chmod +x IotaStudio-linux-x86_64-{ver}.AppImage
+./IotaStudio-linux-x86_64-{ver}.AppImage</code></pre>
+        </div>
+
+        <div class="rounded-2xl border border-slate-800 bg-[#0d121c] p-6">
+          <div class="flex items-center justify-between gap-2">
+            <span class="rounded-md bg-slate-800 px-2.5 py-1 font-mono text-xs text-slate-300">
+              Portable Archive · .tar.gz
+            </span>
+            <span id="lin-tar-size" class="font-mono text-xs text-slate-400"></span>
+          </div>
+          <h2 id="lin-tar-title" class="mt-4 text-lg font-bold text-white">
+            IotaStudio-linux-x86_64-{ver}.tar.gz
+          </h2>
+          <p class="mt-2 text-xs leading-relaxed text-slate-300">
+            Includes <code class="font-mono text-slate-200">bin/</code>, FreeDesktop <code class="font-mono text-slate-200">.desktop</code> entry,
+            AppStream <code class="font-mono text-slate-200">.metainfo.xml</code>, and icons ready for system or <code class="font-mono text-slate-200">~/.local</code> prefix installation.
+          </p>
+          <div class="mt-5">
+            <a
+              id="lin-tar-btn"
+              href={`${baseDl}/IotaStudio-linux-x86_64-${ver}.tar.gz`}
+              class="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:border-slate-500"
+            >
+              Download Tarball (.tar.gz)
+            </a>
+          </div>
+          <div class="mt-4 rounded-lg border border-slate-800 bg-[#080b11] p-3 text-xs text-slate-300">
+            <div class="font-semibold text-white">Arch Linux (PKGBUILD)</div>
+            <pre class="mt-1.5 overflow-x-auto font-mono text-[11px] text-cyan-200"><code id="arch-cmd">git clone https://github.com/vorlie/iota-studio.git
+cd iota-studio/packaging/arch &amp;&amp; makepkg -si</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Backup Warning -->
+    <div class="mt-8 rounded-2xl border border-amber-500/35 bg-amber-500/10 p-5 text-sm text-amber-100">
+      <div class="font-semibold text-amber-200">Avee Player Template Compatibility Note</div>
+      <p class="mt-1 text-xs leading-relaxed text-amber-100/90">
+        Any <code class="font-mono">.viz</code> template saved or overwritten in Iota Studio will no longer load in mobile Avee Player.
+        Always keep backups of original <code class="font-mono">.viz</code> templates or save edits as <code class="font-mono">.iota</code> projects.
+      </p>
+    </div>
+
+    <!-- System Requirements -->
+    <div class="mt-10 rounded-2xl border border-slate-800 bg-slate-900/40 p-6">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-lg font-bold text-white">System Requirements</h2>
+        <a href={withBase('/docs/linux/')} class="text-xs font-medium text-cyan-300 hover:underline">
+          Linux Distro Dependency Guide →
+        </a>
+      </div>
+      <div class="mt-4 overflow-x-auto">
+        <table class="w-full border-collapse text-left text-xs">
+          <thead>
+            <tr class="border-b border-slate-800 text-slate-400">
+              <th class="py-2.5 pr-4 font-semibold">Component</th>
+              <th class="py-2.5 pr-4 font-semibold">Minimum (720p/1080p SDR)</th>
+              <th class="py-2.5 font-semibold">Recommended (1080p–4K HDR16F + Bloom)</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800/70 text-slate-300">
+            <tr>
+              <td class="py-3 pr-4 font-medium text-white">OS</td>
+              <td class="py-3 pr-4">Windows 10/11 x64 or Linux x86_64</td>
+              <td class="py-3">Windows 10/11 x64 or Linux Wayland/X11</td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4 font-medium text-white">GPU</td>
+              <td class="py-3 pr-4">OpenGL 4.5 Core Profile capable GPU, 1 GB VRAM</td>
+              <td class="py-3">OpenGL 4.5+ GPU, 4 GB+ VRAM (NVIDIA / AMD / Intel)</td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4 font-medium text-white">CPU &amp; RAM</td>
+              <td class="py-3 pr-4">Dual/Quad-core x86_64 · 4 GB RAM</td>
+              <td class="py-3">6+ core CPU · 8–16 GB RAM</td>
+            </tr>
+            <tr>
+              <td class="py-3 pr-4 font-medium text-white">Runtime Tools</td>
+              <td class="py-3 pr-4">Optional <code class="font-mono">ffmpeg</code> / <code class="font-mono">ffprobe</code> on PATH</td>
+              <td class="py-3">Linux: <code class="font-mono">zenity</code>/<code class="font-mono">kdialog</code>, VA-API or NVENC + <code class="font-mono">ffmpeg</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <script is:inline define:vars={{ apiLatestUrl: SITE.apiLatestUrl, fallbackVersion: SITE.fallbackVersion, releasesUrl: SITE.releasesUrl }}>
+    (function () {
+      var os = /Win/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.userAgent) ? 'windows' : 'linux';
+      var edition = 'standard';
+      var releaseData = null;
+
+      var tabWin = document.getElementById('tab-windows');
+      var tabLin = document.getElementById('tab-linux');
+      var edStd = document.getElementById('ed-standard');
+      var edMcp = document.getElementById('ed-mcp');
+      var panelWin = document.getElementById('panel-windows');
+      var panelLin = document.getElementById('panel-linux');
+
+      function styleSeg(btn, active) {
+        if (!btn) return;
+        btn.className = 'rounded-lg px-4 py-2 text-sm font-medium transition ' +
+          (active ? 'bg-cyan-400 text-slate-950 font-semibold' : 'text-slate-300 hover:text-white');
+      }
+
+      function formatBytes(n) {
+        if (!n) return '';
+        return (n / (1024 * 1024)).toFixed(2) + ' MiB';
+      }
+
+      function findAsset(assets, predicate) {
+        if (!assets) return null;
+        for (var i = 0; i < assets.length; i++) {
+          if (predicate(assets[i].name)) return assets[i];
+        }
+        return null;
+      }
+
+      function render() {
+        styleSeg(tabWin, os === 'windows');
+        styleSeg(tabLin, os === 'linux');
+        styleSeg(edStd, edition === 'standard');
+        styleSeg(edMcp, edition === 'mcp');
+
+        if (panelWin) panelWin.classList.toggle('hidden', os !== 'windows');
+        if (panelLin) panelLin.classList.toggle('hidden', os !== 'linux');
+
+        var tag = (releaseData && releaseData.tag_name) || ('v' + fallbackVersion);
+        var ver = tag.replace(/^v/, '');
+        var dlBase = releasesUrl + '/download/' + tag;
+        var assets = (releaseData && releaseData.assets) || [];
+        var isMcp = edition === 'mcp';
+
+        var tagEl = document.getElementById('dl-release-tag');
+        var linkEl = document.getElementById('dl-release-link');
+        var shaEl = document.getElementById('dl-sha-link');
+        if (tagEl) tagEl.textContent = tag;
+        if (linkEl) linkEl.href = (releaseData && releaseData.html_url) || (releasesUrl + '/tag/' + tag);
+        var shaAsset = findAsset(assets, function (n) { return n === 'SHA256SUMS.txt'; });
+        if (shaEl) shaEl.href = shaAsset ? shaAsset.browser_download_url : (dlBase + '/SHA256SUMS.txt');
+
+        // Windows asset
+        var winName = isMcp ? ('IotaStudio-MCP-Setup-' + ver + '.exe') : ('IotaStudio-Setup-' + ver + '.exe');
+        var winAsset = findAsset(assets, function (n) {
+          return isMcp ? /-MCP-Setup-.*\.exe$/i.test(n) : (/Setup-.*\.exe$/i.test(n) && !/-MCP-/i.test(n));
+        });
+        var winTitle = document.getElementById('win-asset-title');
+        var winBtn = document.getElementById('win-dl-btn');
+        var winSize = document.getElementById('win-asset-size');
+        var winDesc = document.getElementById('win-asset-desc');
+        if (winTitle) winTitle.textContent = winAsset ? winAsset.name : winName;
+        if (winBtn) winBtn.href = winAsset ? winAsset.browser_download_url : (dlBase + '/' + winName);
+        if (winSize) winSize.textContent = winAsset ? formatBytes(winAsset.size) : '';
+        if (winDesc) {
+          winDesc.textContent = isMcp
+            ? 'Includes iota_studio.exe (with Live Studio Bridge menu), standalone iota_mcp.exe stdio server, and MCP.md.'
+            : 'Per-user or machine-wide Windows x64 installer with optional FFmpeg download/extraction during setup.';
+        }
+
+        // Linux AppImage
+        var appName = isMcp ? ('IotaStudio-MCP-linux-x86_64-' + ver + '.AppImage') : ('IotaStudio-linux-x86_64-' + ver + '.AppImage');
+        var appAsset = findAsset(assets, function (n) {
+          return isMcp ? /-MCP-linux-.*\.AppImage$/i.test(n) : (/\.AppImage$/i.test(n) && !/-MCP-/i.test(n));
+        });
+        var linAppTitle = document.getElementById('lin-appimage-title');
+        var linAppBtn = document.getElementById('lin-appimage-btn');
+        var linAppSize = document.getElementById('lin-appimage-size');
+        var linAppDesc = document.getElementById('lin-appimage-desc');
+        var linAppCmd = document.getElementById('lin-appimage-cmd');
+        var actualAppName = appAsset ? appAsset.name : appName;
+        if (linAppTitle) linAppTitle.textContent = actualAppName;
+        if (linAppBtn) linAppBtn.href = appAsset ? appAsset.browser_download_url : (dlBase + '/' + appName);
+        if (linAppSize) linAppSize.textContent = appAsset ? formatBytes(appAsset.size) : '';
+        if (linAppDesc) {
+          linAppDesc.textContent = isMcp
+            ? 'Includes both Studio GUI (with Live Bridge) and iota_mcp. Pass --mcp (or --mcp --attach) to invoke the MCP server.'
+            : 'Self-contained portable binary tested across X11 and Wayland (glibc 2.35+).';
+        }
+        if (linAppCmd) {
+          linAppCmd.textContent = isMcp
+            ? ('chmod +x ' + actualAppName + '\n./' + actualAppName + '             # Launch Studio GUI\n./' + actualAppName + ' --mcp --attach  # Run iota_mcp')
+            : ('chmod +x ' + actualAppName + '\n./' + actualAppName);
+        }
+
+        // Linux Tarball + Arch cmd
+        var tarName = isMcp ? ('IotaStudio-MCP-linux-x86_64-' + ver + '.tar.gz') : ('IotaStudio-linux-x86_64-' + ver + '.tar.gz');
+        var tarAsset = findAsset(assets, function (n) {
+          return isMcp ? /-MCP-linux-.*\.tar\.gz$/i.test(n) : (/\.tar\.gz$/i.test(n) && !/-MCP-/i.test(n));
+        });
+        var linTarTitle = document.getElementById('lin-tar-title');
+        var linTarBtn = document.getElementById('lin-tar-btn');
+        var linTarSize = document.getElementById('lin-tar-size');
+        var archCmd = document.getElementById('arch-cmd');
+        if (linTarTitle) linTarTitle.textContent = tarAsset ? tarAsset.name : tarName;
+        if (linTarBtn) linTarBtn.href = tarAsset ? tarAsset.browser_download_url : (dlBase + '/' + tarName);
+        if (linTarSize) linTarSize.textContent = tarAsset ? formatBytes(tarAsset.size) : '';
+        if (archCmd) {
+          archCmd.textContent = isMcp
+            ? 'git clone https://github.com/vorlie/iota-studio.git\ncd iota-studio/packaging/arch && IOTA_BUILD_MCP=ON makepkg -si'
+            : 'git clone https://github.com/vorlie/iota-studio.git\ncd iota-studio/packaging/arch && makepkg -si';
+        }
+      }
+
+      if (tabWin) tabWin.addEventListener('click', function () { os = 'windows'; render(); });
+      if (tabLin) tabLin.addEventListener('click', function () { os = 'linux'; render(); });
+      if (edStd) edStd.addEventListener('click', function () { edition = 'standard'; render(); });
+      if (edMcp) edMcp.addEventListener('click', function () { edition = 'mcp'; render(); });
+
+      render();
+
+      fetch(apiLatestUrl, { headers: { Accept: 'application/vnd.github+json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.tag_name) {
+            releaseData = d;
+            render();
+          }
+        })
+        .catch(function () {});
+    })();
+  </script>
+</BaseLayout>

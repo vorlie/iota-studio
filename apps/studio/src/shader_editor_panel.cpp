@@ -465,7 +465,7 @@ void ShaderEditorPanel::render(iota::model::Project& project,
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Open GLSL Palette Manager (Web)...")) {
-      actions.requestOpenUrl = "https://vorlie.github.io/iota-studio/";
+      actions.requestOpenUrl = "https://vorlie.github.io/iota-studio/palette/";
     }
     ImGui::EndPopup();
   }
