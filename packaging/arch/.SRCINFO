@@ -1,6 +1,6 @@
 pkgbase = iota-studio-git
 	pkgdesc = Native desktop studio and OpenGL 4.5 engine for designing and exporting audio-reactive music visualizers
-	pkgver = 1.13.2
+	pkgver = 1.14.0
 	pkgrel = 1
 	url = https://github.com/vorlie/iota-studio
 	arch = x86_64
