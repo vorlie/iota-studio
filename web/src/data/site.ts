@@ -9,7 +9,7 @@ export const SITE = {
   releasesUrl: 'https://github.com/vorlie/iota-studio/releases',
   issuesUrl: 'https://github.com/vorlie/iota-studio/issues',
   apiLatestUrl: 'https://api.github.com/repos/vorlie/iota-studio/releases/latest',
-  fallbackVersion: '1.13.1',
+  fallbackVersion: '1.13.2',
 };
 
 export interface NavItem {
