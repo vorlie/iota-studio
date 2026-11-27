@@ -16,6 +16,7 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -55,5 +56,29 @@ void destroyWindowIcons(void*& bigHandle, void*& smallHandle);
 void loadPlatformImGuiFonts(ImGuiIO& io, ImFont*& outCodeFont);
 
 std::string defaultLayoutIniPath();
+
+/// Wayland wl_surface.frame vblank pacer with bounded wait so compositor pings stay responsive.
+class WaylandFramePacer {
+ public:
+  WaylandFramePacer();
+  ~WaylandFramePacer();
+
+  WaylandFramePacer(const WaylandFramePacer&) = delete;
+  WaylandFramePacer& operator=(const WaylandFramePacer&) = delete;
+
+  bool attach(GLFWwindow* window);
+  void detach();
+
+  [[nodiscard]] bool isActive() const noexcept;
+  [[nodiscard]] bool isWaitingForCompositor() const noexcept;
+
+  void cancelPendingFrame();
+  void armBeforeSwap();
+  bool waitForFrameOrTimeout(int maxWaitMs = 50);
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 }  // namespace iota::studio::platform

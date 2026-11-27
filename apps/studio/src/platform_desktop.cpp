@@ -29,6 +29,11 @@
 #include <GLFW/glfw3native.h>
 #else
 #include <GLFW/glfw3.h>
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+#define GLFW_EXPOSE_NATIVE_WAYLAND
+#include <GLFW/glfw3native.h>
+#include <wayland-client.h>
+#endif
 #include <cstdlib>
 #include <errno.h>
 #include <fcntl.h>
@@ -42,6 +47,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <sstream>
 #include <string_view>
@@ -780,6 +786,146 @@ std::string defaultLayoutIniPath() {
     return iota::core::pathToUtf8(appDir / "iota_studio_layout.ini");
   }
   return "iota_studio_layout.ini";
+#endif
+}
+
+struct WaylandFramePacer::Impl {
+  GLFWwindow* window = nullptr;
+  bool active = false;
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+  wl_display* display = nullptr;
+  wl_surface* surface = nullptr;
+  wl_callback* frameCallback = nullptr;
+  bool frameReady = true;
+
+  static void onFrameDone(void* data, wl_callback* cb, uint32_t /*timeMs*/) {
+    auto* self = static_cast<Impl*>(data);
+    if (cb != nullptr) {
+      wl_callback_destroy(cb);
+    }
+    if (self && self->frameCallback == cb) {
+      self->frameCallback = nullptr;
+      self->frameReady = true;
+    }
+  }
+
+  static constexpr wl_callback_listener kFrameListener{
+      &Impl::onFrameDone,
+  };
+#endif
+};
+
+WaylandFramePacer::WaylandFramePacer() : impl_(std::make_unique<Impl>()) {}
+
+WaylandFramePacer::~WaylandFramePacer() {
+  detach();
+}
+
+bool WaylandFramePacer::attach(GLFWwindow* window) {
+  detach();
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+  if (!window || glfwGetPlatform() != GLFW_PLATFORM_WAYLAND) {
+    return false;
+  }
+  impl_->display = glfwGetWaylandDisplay();
+  impl_->surface = glfwGetWaylandWindow(window);
+  if (!impl_->display || !impl_->surface) {
+    impl_->display = nullptr;
+    impl_->surface = nullptr;
+    return false;
+  }
+  impl_->window = window;
+  impl_->frameCallback = nullptr;
+  impl_->frameReady = true;
+  impl_->active = true;
+  return true;
+#else
+  (void)window;
+  return false;
+#endif
+}
+
+void WaylandFramePacer::detach() {
+  cancelPendingFrame();
+  if (impl_) {
+    impl_->window = nullptr;
+    impl_->active = false;
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+    impl_->surface = nullptr;
+    impl_->display = nullptr;
+#endif
+  }
+}
+
+bool WaylandFramePacer::isActive() const noexcept {
+  return impl_ && impl_->active;
+}
+
+bool WaylandFramePacer::isWaitingForCompositor() const noexcept {
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+  return impl_ && impl_->active && impl_->frameCallback != nullptr && !impl_->frameReady;
+#else
+  return false;
+#endif
+}
+
+void WaylandFramePacer::cancelPendingFrame() {
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+  if (!impl_) {
+    return;
+  }
+  if (impl_->frameCallback != nullptr) {
+    wl_callback_destroy(impl_->frameCallback);
+    impl_->frameCallback = nullptr;
+  }
+  impl_->frameReady = true;
+#endif
+}
+
+void WaylandFramePacer::armBeforeSwap() {
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+  if (!impl_ || !impl_->active || !impl_->surface) {
+    return;
+  }
+  if (impl_->frameCallback != nullptr) {
+    wl_callback_destroy(impl_->frameCallback);
+    impl_->frameCallback = nullptr;
+  }
+  impl_->frameReady = false;
+  impl_->frameCallback = wl_surface_frame(impl_->surface);
+  if (impl_->frameCallback != nullptr) {
+    wl_callback_add_listener(impl_->frameCallback, &Impl::kFrameListener, impl_.get());
+  } else {
+    impl_->frameReady = true;
+  }
+#endif
+}
+
+bool WaylandFramePacer::waitForFrameOrTimeout(int maxWaitMs) {
+#ifdef IOTA_HAS_WAYLAND_CLIENT
+  if (!impl_ || !impl_->active || impl_->frameReady || impl_->frameCallback == nullptr) {
+    return true;
+  }
+  if (maxWaitMs <= 0) {
+    return false;
+  }
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(maxWaitMs);
+  while (!impl_->frameReady && impl_->frameCallback != nullptr &&
+         (!impl_->window || !glfwWindowShouldClose(impl_->window))) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      break;
+    }
+    const auto remUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(deadline - now).count();
+    const double remSec = std::clamp(static_cast<double>(remUs) * 1e-6, 0.001, 0.05);
+    glfwWaitEventsTimeout(remSec);
+  }
+  return impl_->frameReady || impl_->frameCallback == nullptr;
+#else
+  (void)maxWaitMs;
+  return true;
 #endif
 }
 

@@ -19,10 +19,21 @@
 #include "miniaudio.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
 namespace iota::audio {
+
+namespace {
+
+int64_t steadyNowNs() noexcept {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+}  // namespace
 
 struct AudioEngine::Impl {
   mutable std::mutex trackMutex;
@@ -39,6 +50,32 @@ struct AudioEngine::Impl {
   std::atomic<uint64_t> totalFrames{0};
   std::atomic<bool> playing{false};
   std::atomic<float> volume{0.9f};
+
+  uint64_t lastBlockStartFrames = 0;
+  uint32_t lastBlockFrames = 0;
+  int64_t lastCallbackSteadyNs = 0;
+  mutable double lastReportedPlaySec = 0.0;
+
+  [[nodiscard]] double computeInterpolatedTimeLocked() const noexcept {
+    const double sr = static_cast<double>(track.sampleRate);
+    if (!playing.load(std::memory_order_acquire) || lastCallbackSteadyNs <= 0) {
+      const double curSec = static_cast<double>(cursorFrames.load(std::memory_order_acquire)) / sr;
+      return std::clamp(curSec, 0.0, track.durationSec);
+    }
+    const double elapsedSec =
+        std::max(0.0, static_cast<double>(steadyNowNs() - lastCallbackSteadyNs) * 1e-9);
+    const double blockSpanSec =
+        (lastBlockFrames > 0) ? (static_cast<double>(lastBlockFrames) / sr) : 0.015;
+    const double maxInterpSec = std::clamp(blockSpanSec * 1.25, 0.005, 0.06);
+    double t = (static_cast<double>(lastBlockStartFrames) / sr) + std::min(elapsedSec, maxInterpSec);
+    t = std::clamp(t, 0.0, track.durationSec);
+    if (t < lastReportedPlaySec) {
+      t = lastReportedPlaySec;
+    } else {
+      lastReportedPlaySec = t;
+    }
+    return t;
+  }
 
   static void dataCallback(ma_device* device, void* output, const void* /*input*/, ma_uint32 frameCount) {
     auto* self = static_cast<Impl*>(device->pUserData);
@@ -59,6 +96,7 @@ struct AudioEngine::Impl {
     uint64_t pos = self->cursorFrames.load(std::memory_order_relaxed);
     if (pos >= trackFrames) {
       self->playing.store(false, std::memory_order_release);
+      self->lastCallbackSteadyNs = 0;
       return;
     }
 
@@ -71,10 +109,15 @@ struct AudioEngine::Impl {
       out[i] = src[i] * vol;
     }
 
+    self->lastBlockStartFrames = pos;
+    self->lastBlockFrames = toCopy;
+    self->lastCallbackSteadyNs = steadyNowNs();
+
     const uint64_t nextPos = pos + toCopy;
     self->cursorFrames.store(nextPos, std::memory_order_release);
     if (nextPos >= trackFrames) {
       self->playing.store(false, std::memory_order_release);
+      self->lastCallbackSteadyNs = 0;
     }
   }
 
@@ -97,6 +140,7 @@ struct AudioEngine::Impl {
     cfg.playback.format = ma_format_f32;
     cfg.playback.channels = 2;
     cfg.sampleRate = static_cast<ma_uint32>(std::max(8000, sampleRate));
+    cfg.periodSizeInMilliseconds = 10;
     cfg.dataCallback = &Impl::dataCallback;
     cfg.pUserData = this;
 
@@ -151,6 +195,10 @@ bool AudioEngine::loadTrack(AudioTrackData track, std::string* /*outError*/) {
     sampleRate = impl_->track.sampleRate;
     impl_->totalFrames.store(impl_->track.monoPcm.size(), std::memory_order_release);
     impl_->cursorFrames.store(0, std::memory_order_release);
+    impl_->lastBlockStartFrames = 0;
+    impl_->lastBlockFrames = 0;
+    impl_->lastCallbackSteadyNs = 0;
+    impl_->lastReportedPlaySec = 0.0;
   }
   impl_->ensureDevice(sampleRate);
   return true;
@@ -163,15 +211,30 @@ void AudioEngine::unload() {
   impl_->hasTrackData = false;
   impl_->totalFrames.store(0, std::memory_order_release);
   impl_->cursorFrames.store(0, std::memory_order_release);
+  impl_->lastBlockStartFrames = 0;
+  impl_->lastBlockFrames = 0;
+  impl_->lastCallbackSteadyNs = 0;
+  impl_->lastReportedPlaySec = 0.0;
 }
 
 void AudioEngine::play() {
   if (!hasTrack()) {
     return;
   }
-  if (impl_->cursorFrames.load(std::memory_order_acquire) >=
-      impl_->totalFrames.load(std::memory_order_acquire)) {
-    impl_->cursorFrames.store(0, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(impl_->trackMutex);
+    if (impl_->cursorFrames.load(std::memory_order_acquire) >=
+        impl_->totalFrames.load(std::memory_order_acquire)) {
+      impl_->cursorFrames.store(0, std::memory_order_release);
+      impl_->lastBlockStartFrames = 0;
+      impl_->lastReportedPlaySec = 0.0;
+    } else if (impl_->track.sampleRate > 0) {
+      const uint64_t pos = impl_->cursorFrames.load(std::memory_order_acquire);
+      impl_->lastBlockStartFrames = pos;
+      impl_->lastReportedPlaySec = static_cast<double>(pos) / static_cast<double>(impl_->track.sampleRate);
+    }
+    impl_->lastBlockFrames = 0;
+    impl_->lastCallbackSteadyNs = 0;
   }
   {
     std::lock_guard<std::mutex> devLock(impl_->deviceMutex);
@@ -183,12 +246,32 @@ void AudioEngine::play() {
 }
 
 void AudioEngine::pause() {
+  if (!impl_->playing.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(impl_->trackMutex);
+  if (impl_->hasTrackData && impl_->track.sampleRate > 0 && impl_->lastCallbackSteadyNs > 0) {
+    const double t = impl_->computeInterpolatedTimeLocked();
+    const uint64_t total = impl_->totalFrames.load(std::memory_order_relaxed);
+    const uint64_t pausedFrame =
+        std::min(total, static_cast<uint64_t>(std::llround(t * static_cast<double>(impl_->track.sampleRate))));
+    impl_->cursorFrames.store(pausedFrame, std::memory_order_release);
+    impl_->lastBlockStartFrames = pausedFrame;
+    impl_->lastReportedPlaySec = static_cast<double>(pausedFrame) / static_cast<double>(impl_->track.sampleRate);
+  }
   impl_->playing.store(false, std::memory_order_release);
+  impl_->lastCallbackSteadyNs = 0;
+  impl_->lastBlockFrames = 0;
 }
 
 void AudioEngine::stop() {
   impl_->playing.store(false, std::memory_order_release);
+  std::lock_guard<std::mutex> lock(impl_->trackMutex);
   impl_->cursorFrames.store(0, std::memory_order_release);
+  impl_->lastBlockStartFrames = 0;
+  impl_->lastBlockFrames = 0;
+  impl_->lastCallbackSteadyNs = 0;
+  impl_->lastReportedPlaySec = 0.0;
 }
 
 void AudioEngine::seekSeconds(double seconds) {
@@ -198,8 +281,15 @@ void AudioEngine::seekSeconds(double seconds) {
   }
   const double clamped = std::clamp(seconds, 0.0, impl_->track.durationSec);
   const uint64_t frame = static_cast<uint64_t>(clamped * static_cast<double>(impl_->track.sampleRate));
-  impl_->cursorFrames.store(std::min(frame, impl_->totalFrames.load(std::memory_order_relaxed)),
-                            std::memory_order_release);
+  const uint64_t bounded = std::min(frame, impl_->totalFrames.load(std::memory_order_relaxed));
+  impl_->cursorFrames.store(bounded, std::memory_order_release);
+  impl_->lastBlockStartFrames = bounded;
+  impl_->lastBlockFrames = 0;
+  impl_->lastCallbackSteadyNs = 0;
+  impl_->lastReportedPlaySec =
+      (impl_->track.sampleRate > 0)
+          ? (static_cast<double>(bounded) / static_cast<double>(impl_->track.sampleRate))
+          : 0.0;
 }
 
 void AudioEngine::setVolume(float volume) {
@@ -224,12 +314,11 @@ float AudioEngine::volume() const noexcept {
 }
 
 double AudioEngine::currentTimeSeconds() const noexcept {
-  const uint64_t pos = impl_->cursorFrames.load(std::memory_order_acquire);
   std::lock_guard<std::mutex> lock(impl_->trackMutex);
   if (!impl_->hasTrackData || impl_->track.sampleRate <= 0) {
     return 0.0;
   }
-  return static_cast<double>(pos) / static_cast<double>(impl_->track.sampleRate);
+  return impl_->computeInterpolatedTimeLocked();
 }
 
 double AudioEngine::durationSeconds() const noexcept {

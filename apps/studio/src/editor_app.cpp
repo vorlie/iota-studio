@@ -104,6 +104,9 @@ bool EditorApp::initialize(bool headlessSmokeTest) {
 #ifdef GLFW_PLATFORM_WAYLAND
   isWaylandPlatform_ = (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND);
 #endif
+  if (!headlessSmokeTest && isWaylandPlatform_) {
+    waylandPacer_.attach(window_);
+  }
   applySwapIntervalForCurrentMode();
 
   if (!headlessSmokeTest) {
@@ -188,6 +191,7 @@ void EditorApp::shutdown() {
     ImGui::DestroyContext();
     imguiInitialized_ = false;
   }
+  waylandPacer_.detach();
   if (window_) {
     glfwDestroyWindow(window_);
     window_ = nullptr;
@@ -203,6 +207,9 @@ void EditorApp::applySwapIntervalForCurrentMode() noexcept {
   if (isSmokeTest_ || isWaylandPlatform_) {
     // Avoid blocking indefinitely in eglSwapBuffers() when a Wayland surface is occluded or on another workspace.
     glfwSwapInterval(0);
+    if (vsyncMode_ == VSyncMode::Off) {
+      waylandPacer_.cancelPendingFrame();
+    }
     return;
   }
   switch (vsyncMode_) {
@@ -306,6 +313,19 @@ int EditorApp::run() {
 #endif
       updateDiscordPresence(lastWallTimeSec_, true);
       continue;
+    }
+
+    if (waylandPacer_.isActive() && waylandPacer_.isWaitingForCompositor() &&
+        vsyncMode_ != VSyncMode::Off && !exportSession_.isActive()) {
+      waylandPacer_.waitForFrameOrTimeout(50);
+      if (waylandPacer_.isWaitingForCompositor()) {
+        lastWallTimeSec_ = glfwGetTime();
+#ifdef IOTA_ENABLE_MCP
+        pollMcpLiveBridge();
+#endif
+        updateDiscordPresence(lastWallTimeSec_, true);
+        continue;
+      }
     }
 
     glfwPollEvents();
@@ -436,14 +456,21 @@ int EditorApp::run() {
     ImGui::Render();
 
     glfwGetFramebufferSize(window_, &fbW, &fbH);
+    const bool useWaylandVblank =
+        waylandPacer_.isActive() && vsyncMode_ != VSyncMode::Off && !exportSession_.isActive();
     if (fbW > 0 && fbH > 0) {
       device_.bindRenderTarget({}, fbW, fbH);
       device_.clear(0.05f, 0.055f, 0.07f, 1.0f);
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+      if (useWaylandVblank) {
+        waylandPacer_.armBeforeSwap();
+      }
       glfwSwapBuffers(window_);
     }
 
-    if (isWaylandPlatform_ && vsyncMode_ != VSyncMode::Off && !exportSession_.isActive()) {
+    if (useWaylandVblank) {
+      waylandPacer_.waitForFrameOrTimeout(50);
+    } else if (isWaylandPlatform_ && vsyncMode_ != VSyncMode::Off && !exportSession_.isActive()) {
       const double targetFrameSec = 1.0 / static_cast<double>(currentMonitorRefreshRateHz());
       for (;;) {
         const double remaining = targetFrameSec - (glfwGetTime() - frameStartWallSec);

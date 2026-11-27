@@ -18,6 +18,7 @@ depends=(
   'hicolor-icon-theme'
   'libglvnd'
   'libx11'
+  'wayland'
 )
 makedepends=(
   'cmake'
@@ -30,7 +31,6 @@ makedepends=(
   'mesa'
   'ninja'
   'pkgconf'
-  'wayland'
   'wayland-protocols'
 )
 optdepends=(

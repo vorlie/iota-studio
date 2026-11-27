@@ -25,7 +25,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -975,4 +977,31 @@ TEST_CASE("Goertzel Spectrum2 filterbank localizes frequencies and invalidates c
   cfg.sampleOutCount = 256;
   az.setConfig(cfg);
   CHECK(az.cachedBarFrequencies().size() == 256);
+}
+
+TEST_CASE("AudioEngine clock handles seek, play, pause, and stop monotonically") {
+  auto track = iota::audio::createSyntheticSineTrack(220.0f, 3.0, 44100, 0.25f, "clock_test");
+  iota::audio::AudioEngine engine;
+  REQUIRE(engine.loadTrack(std::move(track)));
+  CHECK(engine.currentTimeSeconds() == doctest::Approx(0.0));
+
+  engine.seekSeconds(1.25);
+  CHECK(engine.currentTimeSeconds() == doctest::Approx(1.25).epsilon(1e-3));
+
+  engine.play();
+  double prev = engine.currentTimeSeconds();
+  for (int i = 0; i < 15; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const double cur = engine.currentTimeSeconds();
+    CHECK(cur >= prev - 1e-9);
+    CHECK(cur <= engine.durationSeconds() + 1e-6);
+    prev = cur;
+  }
+  engine.pause();
+  const double pausedAt = engine.currentTimeSeconds();
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  CHECK(engine.currentTimeSeconds() == doctest::Approx(pausedAt).epsilon(1e-6));
+
+  engine.stop();
+  CHECK(engine.currentTimeSeconds() == doctest::Approx(0.0));
 }

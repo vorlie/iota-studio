@@ -18,6 +18,7 @@
 #include "asset_browser_panel.hpp"
 #include "docs_panel.hpp"
 #include "hierarchy_panel.hpp"
+#include "platform_desktop.hpp"
 #include "project_manager_modal.hpp"
 #include "shader_editor_panel.hpp"
 #include "update_modal.hpp"
@@ -126,6 +127,7 @@ class EditorApp {
   bool dockLayoutBuilt_ = false;
   bool isSmokeTest_ = false;
   bool isWaylandPlatform_ = false;
+  platform::WaylandFramePacer waylandPacer_;
 
   iota::rhi::Gl45RenderDevice device_;
   iota::engine::SceneRenderer renderer_;
