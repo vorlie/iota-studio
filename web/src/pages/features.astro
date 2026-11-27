@@ -34,9 +34,25 @@ const subsystems = [
   {
     title: 'Cross-Platform Unicode Text & GPU Video Export',
     points: [
-      'Windows DirectWrite & Linux FreeType + HarfBuzz + Fontconfig multi-script shaping with dynamic 2048×2048 shelf-packed glyph atlas.',
+      'Windows DirectWrite, Linux FreeType + HarfBuzz + Fontconfig, and stb_truetype (Web) typography with dynamic 2048×2048 shelf-packed glyph atlas.',
       'Single-draw-call circularly dilated outlines, drop shadows, custom .ttf/.otf/local: font loading, word wrap, and live token expansion.',
       'Deterministic fixed-timestep offscreen rendering piped to FFmpeg (H.264/H.265 + AAC MP4) using NVENC, Linux VA-API, AMD AMF, Intel QSV, or x264/x265.',
+    ],
+  },
+  {
+    title: 'Docking Studio Workspace & Project Manager',
+    points: [
+      'Multi-selection Hierarchy with drag-and-drop reordering across compositions, Copy/Cut/Paste/Duplicate (with synchronized keyframes), Pre-Compose, and Solo toggles.',
+      'Live Asset Browser with thumbnail previews, layer usage counts, virtual bins, multi-file image/shader import, and unused asset cleanup.',
+      'Project templates (.iota, .viz, .json) with portable cross-OS audio paths, full snapshot Undo/Redo, Inspector search & tooltips, and F1 in-app docs.',
+    ],
+  },
+  {
+    title: 'Browser Web Studio (WebAssembly + WebGL2)',
+    points: [
+      'Compiles the full C++20 engine + Dear ImGui studio to single-threaded WebAssembly (no COOP/COEP headers required) via Emscripten.',
+      'WebGL2 RHI with EXT_color_buffer_float HDR16F Bloom and automatic #version 450 core -> #version 300 es shader transpilation.',
+      'Drag-and-drop loading, native browser AudioContext.decodeAudioData() (MP3/WAV/FLAC/OGG/M4A/Opus), IndexedDB persistence, and .iota/.viz downloads.',
     ],
   },
 ];

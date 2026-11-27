@@ -59,6 +59,11 @@ export const DOCS_NAV: DocsNavItem[] = [
     href: '/docs/linux/',
     summary: 'Distro packages, CMake presets, Wayland vblank pacing, VA-API export, and Arch PKGBUILD.',
   },
+  {
+    title: 'Building & Architecture',
+    href: '/docs/building/',
+    summary: 'System requirements, tech stack, module layout, Windows/Linux/Wasm builds, tests, and installers.',
+  },
 ];
 
 export interface ElementInfo {

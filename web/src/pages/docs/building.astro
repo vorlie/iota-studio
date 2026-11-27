@@ -1,0 +1,181 @@
+---
+import DocsLayout from '../../layouts/DocsLayout.astro';
+import { withBase } from '../../lib/url';
+
+const treeText = `.
+├── apps/
+│   ├── studio/       # Dear ImGui docking editor (Desktop GL4.5 + WebAssembly WebGL2)
+│   └── mcp/          # Opt-in stdio MCP server (iota_mcp) for AI co-creation & Live Bridge
+├── libs/
+│   ├── core/         # Math types, color codecs (ARGB/HSLA), ZIP, procedural textures, update checker
+│   ├── model/        # Decoupled scene graph, PropertyBag, ProjectMetadata, MVar modes, Undo/Redo stack
+│   ├── preset_io/    # .iota / .viz / .json serialization, starter templates, ProjectLibrary registry
+│   ├── dsp/          # Waveform/kissfft/DFT analysis, SoundKeys bands, attack/release, splines
+│   ├── audio/        # Audio decoding (FFmpeg/miniaudio/WebAudio) and playback clock
+│   ├── rhi/          # Backend-agnostic Rendering Hardware Interface (IRenderDevice)
+│   ├── rhi_gl45/     # Desktop OpenGL 4.5 Core backend (RGBA8 & RGBA16F targets, float readback)
+│   ├── rhi_webgl2/   # Browser WebGL2 / GLES 3.0 backend with HDR16F + GLSL ES 3.00 transpiler
+│   ├── engine/       # GPU scene composer, HDR Bloom/Tonemap, ParticleSystem, ShakeEffect, FontAtlasCache
+│   ├── export/       # Deterministic fixed-timestep offscreen renderer -> FFmpeg MP4 video exporter
+│   ├── discord/      # Optional Discord Social SDK Rich Presence integration
+│   └── mcp/          # Shared MCP tool registry, schemas, and Named Pipe / Unix Socket IPC
+├── assets/fonts/     # Bundled Noto Sans & Noto Sans Mono fonts for WebAssembly preloading
+├── installer/        # Windows Inno Setup 6 scripts & build_installer.ps1
+├── packaging/        # Linux release bundler (tar.gz / AppImage) and Arch Linux PKGBUILD
+├── tests/            # Automated doctest suite (DSP, SoundKeys, ParticleSystem, ShakeEffect, IO, GL4.5)
+└── web/              # Multi-page Astro 5 + Tailwind CSS v4 website, GLSL Palette Manager & Web Studio`;
+
+const stack = [
+  ['Language & Build', 'C++20, CMake 3.24+, Ninja (CMakePresets.json), MSVC x64 (Windows) / GCC & Clang (Linux) / Emscripten 7.0+ (Web)'],
+  ['UI & Windowing', 'Dear ImGui (v1.93.0-docking, IMGUI_USE_WCHAR32), GLFW 3.4 (contrib.glfw3 on Web)'],
+  ['Typography', 'DirectWrite (Windows), FreeType + HarfBuzz + Fontconfig (Linux), stb_truetype + Noto Sans (Web)'],
+  ['Graphics', 'OpenGL 4.5 Core & WebGL2 (GLES 3.0) via iota_rhi + GLM 1.0.1'],
+  ['Audio Playback & DSP', 'miniaudio (WASAPI / PipeWire / PulseAudio / ALSA / WebAudio), kissfft (float), custom DFT filterbank'],
+  ['Media & Networking', 'FFmpeg / ffprobe (PATH on desktop), Browser decodeAudioData (Web), miniz, nlohmann/json, stb, WinHTTP / libcurl'],
+  ['Testing & Web', 'doctest (v2.4.12), Astro 5 + Tailwind CSS v4 (GitHub Pages)'],
+];
+---
+
+<DocsLayout title="Building, Architecture & Requirements — Iota Studio Docs">
+  <header>
+    <div class="font-mono text-xs uppercase tracking-wider text-cyan-300">Developer Reference</div>
+    <h1 class="mt-2 text-3xl font-bold text-white">Building, Architecture &amp; System Requirements</h1>
+    <p class="mt-2 text-sm leading-relaxed text-slate-300">
+      Complete system requirements, modular repository layout, tech stack, and native/WebAssembly build and packaging instructions.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">System Requirements</h2>
+    <div class="overflow-x-auto rounded-xl border border-slate-800 bg-[#0d121c]">
+      <table class="w-full border-collapse text-left text-xs">
+        <thead class="border-b border-slate-800 bg-slate-900/60 text-slate-300">
+          <tr>
+            <th class="px-4 py-2.5 font-semibold">Component</th>
+            <th class="px-4 py-2.5 font-semibold">Minimum (720p/1080p SDR)</th>
+            <th class="px-4 py-2.5 font-semibold">Recommended (1080p–4K HDR16F &amp; Fast Export)</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/80 text-slate-300">
+          <tr>
+            <td class="px-4 py-2.5 font-semibold text-white">OS / Browser</td>
+            <td class="px-4 py-2.5">Windows 10/11 (x64), Linux x86_64, or modern browser with WebGL2</td>
+            <td class="px-4 py-2.5">Windows 10/11 (x64) or modern Linux x86_64 (Wayland / X11)</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2.5 font-semibold text-white">CPU</td>
+            <td class="px-4 py-2.5">64-bit dual/quad-core (Intel Core i3 6th-gen+ / Ryzen 3)</td>
+            <td class="px-4 py-2.5">6+ core CPU (Intel i5 10th-gen+ / Ryzen 5 3600+) for stacked DFTs, particles &amp; encoding</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2.5 font-semibold text-white">GPU</td>
+            <td class="px-4 py-2.5">OpenGL 4.5-capable GPU (1 GB VRAM: Intel HD 520+, GTX 650+, Vega iGPU+)</td>
+            <td class="px-4 py-2.5">Dedicated OpenGL 4.5+ GPU (4 GB+ VRAM: GTX 1060+ / RX 570+) for RGBA16F HDR &amp; 6-mip Bloom</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2.5 font-semibold text-white">RAM &amp; Storage</td>
+            <td class="px-4 py-2.5">4 GB RAM · ~50 MB app footprint</td>
+            <td class="px-4 py-2.5">8–16 GB RAM · SSD for high-res assets &amp; exported MP4s</td>
+          </tr>
+          <tr>
+            <td class="px-4 py-2.5 font-semibold text-white">Runtime Notes</td>
+            <td class="px-4 py-2.5">Win: MSVC x64 Redist · Linux: FreeType, Fontconfig, HarfBuzz, libcurl, zenity/kdialog</td>
+            <td class="px-4 py-2.5">Optional <code class="font-mono">ffmpeg</code>/<code class="font-mono">ffprobe</code> on <code class="font-mono">PATH</code> + VA-API / NVENC drivers for GPU MP4 export</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="rounded-xl border border-slate-800 bg-slate-900/50 p-3.5 text-xs leading-relaxed text-slate-300">
+      <strong class="text-white">Note:</strong> Older desktop integrated GPUs capped at OpenGL 4.0–4.3 (such as Intel HD 4000 / Haswell) cannot create an OpenGL 4.5 Core context on desktop; try the <a href={withBase('/studio/')} class="text-cyan-300 hover:underline">WebGL2 browser edition</a> instead.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Architecture &amp; Directory Layout</h2>
+    <p class="text-sm leading-relaxed text-slate-300">
+      Core logic lives in UI-agnostic C++20 libraries under <code class="font-mono text-cyan-200">libs/</code>, shared identically by the desktop app, browser WebAssembly build, headless MCP server, and automated test suite.
+    </p>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{treeText}</code></pre>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Tech Stack</h2>
+    <div class="overflow-x-auto rounded-xl border border-slate-800 bg-[#0d121c]">
+      <table class="w-full border-collapse text-left text-xs">
+        <tbody class="divide-y divide-slate-800/80 text-slate-300">
+          {
+            stack.map(([area, tech]) => (
+              <tr>
+                <td class="whitespace-nowrap px-4 py-2.5 font-semibold text-white">{area}</td>
+                <td class="px-4 py-2.5 leading-relaxed">{tech}</td>
+              </tr>
+            ))
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-slate-400">Third-party C/C++ libraries are fetched automatically at configure time via CMake <code class="font-mono">FetchContent</code>.</p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Windows x64 Build, Tests &amp; Installer</h2>
+    <p class="text-xs leading-relaxed text-slate-300">
+      Requires <strong>Visual Studio 2022</strong> (or Build Tools x64), <strong>CMake 3.24+</strong>, <strong>Ninja</strong>, and optional <code class="font-mono">ffmpeg.exe</code> / <code class="font-mono">ffprobe.exe</code> on <code class="font-mono">PATH</code>. From any plain PowerShell window:
+    </p>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`.\\build.ps1                       # Release build
+.\\build.ps1 -Test                 # Release build + tests + smoke test
+.\\build.ps1 -Preset release-mcp   # MCP edition (includes iota_mcp.exe)
+.\\build.ps1 -Run                  # Build, then launch Iota Studio
+
+# Or manually from a VS 2022 Developer Command Prompt:
+cmake --preset windows-msvc-ninja-release
+cmake --build --preset release --parallel
+
+# Run headless OpenGL smoke test:
+.\\build\\release\\apps\\studio\\iota_studio.exe --smoke-test
+
+# Run automated tests (exclude external preset fixture cases if unavailable):
+.\\build\\release\\tests\\iota_tests.exe "-tce=*APK presets*,*built-in presets*"`}</code></pre>
+    <p class="text-xs leading-relaxed text-slate-300">
+      With <strong>Inno Setup 6</strong> installed, package Windows installers into <code class="font-mono">build\installer\</code> (supports optional automated FFmpeg download/bundling or silent flags <code class="font-mono">/INSTALLFFMPEG</code> / <code class="font-mono">/NOFFMPEG</code>):
+    </p>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`.\\installer\\build_installer.ps1                # Standard installer
+.\\installer\\build_installer.ps1 -Variant Mcp   # MCP edition installer
+.\\installer\\build_installer.ps1 -Variant All   # Both installers`}</code></pre>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">Linux Build, Tests &amp; Packaging</h2>
+    <p class="text-xs leading-relaxed text-slate-300">
+      See the <a href={withBase('/docs/linux/')} class="text-cyan-300 hover:underline">Linux &amp; Wayland Guide</a> for full distro package commands (<code class="font-mono">apt</code> / <code class="font-mono">pacman</code>).
+    </p>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`cmake --preset linux-gcc-ninja-release        # or linux-gcc-ninja-release-mcp
+cmake --build --preset linux-release --parallel
+ctest --preset linux-release --output-on-failure
+
+# Stage or install locally (binary, .desktop, AppStream metainfo, icon):
+cmake --install build/linux-release --prefix ~/.local
+
+# Build portable Linux release tarballs and AppImages:
+./packaging/linux/build_release.sh --variant all --appimage
+
+# Arch Linux PKGBUILD (pass IOTA_BUILD_MCP=ON for MCP Live Bridge):
+cd packaging/arch && makepkg -si`}</code></pre>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-white">WebAssembly (Browser Edition) &amp; Website</h2>
+    <p class="text-xs leading-relaxed text-slate-300">
+      With the Emscripten SDK (<code class="font-mono">7.0.1</code>) sourced and <code class="font-mono">pnpm</code> (v12+) installed:
+    </p>
+    <pre class="overflow-x-auto rounded-xl border border-slate-800 bg-[#080b11] p-4 font-mono text-xs leading-relaxed text-slate-200"><code>{`source ~/emsdk/emsdk_env.sh
+cmake --preset wasm-emscripten-release
+cmake --build --preset wasm-emscripten-release --target iota_studio
+
+# Stage Wasm output into Astro and build/preview the full site:
+mkdir -p web/public/studio
+cp build/wasm-release/apps/studio/iota_studio.{js,wasm,data} web/public/studio/
+pnpm --dir web install
+pnpm --dir web run dev       # http://localhost:4321/iota-studio/`}</code></pre>
+  </section>
+</DocsLayout>
